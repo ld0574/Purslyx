@@ -1,3 +1,16 @@
+# macOS metadata and filesystem files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.DocumentRevisions-V100/
+.Spotlight-V100/
+.TemporaryItems/
+.Trashes/
+.fseventsd/
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -99,6 +112,7 @@ ipython_config.py
 #   This is especially recommended for binary packages to ensure reproducibility, and is more
 #   commonly ignored for libraries.
 # uv.lock
+.uv-cache/
 
 # poetry
 #   Similar to Pipfile.lock, it is generally recommended to include poetry.lock in version control.
@@ -149,6 +163,9 @@ activemq-data/
 
 # Environments
 .env
+.env.*
+!.env.example
+!.env.*.example
 .envrc
 .venv
 env/
@@ -156,6 +173,9 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+# Python interactive shell history
+.python_history
 
 # Spyder project settings
 .spyderproject
