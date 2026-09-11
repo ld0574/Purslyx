@@ -40,6 +40,6 @@ Purslyx/
 - **根目录保持简洁**：放项目入口说明、工具配置和环境变量示例；各端独立使用的依赖清单与构建配置放在对应源码目录，共用配置放根目录。
 - **本地文件**如真实密钥、`.env`、依赖目录、日志和构建产物不提交，按实际工具补充 `.gitignore`；环境变量模板使用 `.env.example`，只写变量名和占位值。
 
-现有资料：[项目命名说明](docs/00-overview/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/黑客松信息.md)
+现有资料：[需求记录](docs/01-product/需求记录.md) · [项目命名说明](docs/00-overview/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/黑客松信息.md)
 
 本项目采用 [Apache License 2.0](LICENSE)。
