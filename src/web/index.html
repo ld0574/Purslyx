@@ -275,6 +275,7 @@
       .progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
       .admin-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
       .admin-tab.active { color: #fff; background: var(--brand); }
+      .auth-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 14px; }
       .admin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
       .admin-stat { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
       .admin-stat strong { display: block; margin-top: 9px; font-size: 25px; }
@@ -283,6 +284,10 @@
       .permission-option { display: flex; gap: 7px; align-items: flex-start; padding: 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 11px; line-height: 1.4; }
       .permission-option input { margin-top: 2px; accent-color: var(--brand); }
       .editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; }
+      .variant-sections { display: grid; gap: 12px; }
+      .variant-section { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fbfdff; }
+      .interview-history { padding-top: 16px; border-top: 1px solid var(--line); }
+      .interview-question-row { padding: 13px; border: 1px solid var(--line); border-radius: 11px; background: #fbfdff; }
       .rewrite-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
       .compare-pane { min-height: 112px; padding: 13px; border-radius: 11px; white-space: pre-wrap; font-size: 12px; line-height: 1.65; }
       .compare-pane.original { background: #f5f9fb; }
@@ -376,7 +381,7 @@
             result: null,
             error: "",
           },
-          auth: { mode: "login", email: "", password: "", role: "seeker", error: "", running: false },
+          auth: { mode: "login", email: "", password: "", role: "seeker", token: "", notice: "", error: "", running: false },
           session: loadSession(),
           workspace: {
             page: "dashboard",
@@ -388,11 +393,13 @@
             selectedAnalysis: null,
             selectedInterview: null,
             selectedVariant: null,
+            selectedPreference: null,
             selectedRewrite: null,
             selectedTask: null,
             selectedTaskEtag: "",
             rewriteSource: null,
             rewriteSegmentKeys: [],
+            pendingDocument: null,
             recruiterSubjectId: "",
             adminLogType: "operations",
             selectedRole: null,
@@ -471,6 +478,14 @@
             matched: "符合",
             conflicted: "条件冲突",
             unknown: "未知",
+            unrestricted: "不限",
+            negotiable: "面议",
+            prefer: "倾向",
+            important: "重要",
+            required: "必须",
+            new: "待处理",
+            reviewed: "已查看",
+            closed: "已关闭",
             available: "已完成",
             succeeded: "已完成",
             queued: "排队中",
@@ -509,7 +524,10 @@
           if (formal && !["GET", "HEAD", "OPTIONS"].includes(method) && state.session.csrf) headers["X-CSRF-Token"] = state.session.csrf;
           if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
           const init = { method, headers, credentials: "same-origin", cache: "no-store" };
-          if (options.body !== undefined) {
+          if (options.formData !== undefined) {
+            // 浏览器会自动补 multipart boundary，不能手动设置 Content-Type。
+            init.body = options.formData;
+          } else if (options.body !== undefined) {
             headers["Content-Type"] = "application/json";
             init.body = JSON.stringify(options.body);
           }
@@ -653,9 +671,30 @@
 
         function authPage() {
           const auth = state.auth;
+          const credentialMode = ["login", "register"].includes(auth.mode);
+          const title = { login: "欢迎回来", register: "创建正式账号", verify: "完成邮箱验证", forgot: "找回密码", reset: "设置新密码", recovery: "申请账号恢复", recover: "恢复账号" }[auth.mode] || "欢迎回来";
+          const description = {
+            login: "登录后继续本账号的资料、岗位和历史任务。",
+            register: "注册时选择固定身份；本地演示会自动完成验证。",
+            verify: "输入邮件中的一次性验证码，验证完成后再登录。",
+            forgot: "提交后如果账号存在，会收到重置说明。",
+            reset: "重置成功后，之前的 Web 会话会全部失效。",
+            recovery: "提交后如果账号处于暂停状态，会收到恢复说明。",
+            recover: "使用恢复令牌解除账号暂停状态。",
+          }[auth.mode] || "登录后继续本账号的资料、岗位和历史任务。";
+          let fields = "";
+          if (credentialMode) {
+            fields = `${auth.mode === "register" ? `<div class="field-group"><span class="field-label">注册身份</span><div class="identity-grid"><button class="identity-card ${auth.role === "seeker" ? "active" : ""}" type="button" data-action="auth-role" data-role="seeker"><strong>我要找工作</strong><small>简历、匹配池、面试练习</small></button><button class="identity-card ${auth.role === "recruiter" ? "active" : ""}" type="button" data-action="auth-role" data-role="recruiter"><strong>我要招人</strong><small>岗位与候选人单人分析</small></button></div></div>` : ""}<div class="field-group"><label for="auth-email">邮箱</label><input id="auth-email" class="field" type="email" name="email" autocomplete="email" value="${esc(auth.email)}" placeholder="name@example.com" required /></div><div class="field-group"><label for="auth-password">密码</label><input id="auth-password" class="field" type="password" name="password" autocomplete="current-password" value="${esc(auth.password)}" placeholder="至少 12 个字符" required /></div><button class="button primary full" type="submit" ${auth.running ? "disabled" : ""}>${auth.running ? "正在处理…" : auth.mode === "register" ? "注册并进入工作台" : "登录"}</button>`;
+          } else if (auth.mode === "verify") {
+            fields = `<div class="field-group"><label for="auth-email">邮箱</label><input id="auth-email" class="field" type="email" name="email" value="${esc(auth.email)}" required /></div><div class="field-group"><label for="auth-token">验证令牌</label><input id="auth-token" class="field" type="text" name="token" value="${esc(auth.token)}" autocomplete="one-time-code" required /></div><button class="button primary full" type="submit" ${auth.running ? "disabled" : ""}>${auth.running ? "正在验证…" : "验证邮箱并登录"}</button>`;
+          } else if (auth.mode === "forgot" || auth.mode === "recovery") {
+            fields = `<div class="field-group"><label for="auth-email">邮箱</label><input id="auth-email" class="field" type="email" name="email" value="${esc(auth.email)}" required /></div><button class="button primary full" type="submit" ${auth.running ? "disabled" : ""}>${auth.running ? "正在提交…" : auth.mode === "forgot" ? "发送重置说明" : "发送恢复说明"}</button>`;
+          } else {
+            fields = `<div class="field-group"><label for="auth-token">${auth.mode === "reset" ? "重置令牌" : "恢复令牌"}</label><input id="auth-token" class="field" type="text" name="token" value="${esc(auth.token)}" required /></div>${auth.mode === "reset" ? `<div class="field-group"><label for="auth-new-password">新密码</label><input id="auth-new-password" class="field" type="password" name="new_password" autocomplete="new-password" placeholder="至少 12 个字符" required /></div>` : ""}<button class="button primary full" type="submit" ${auth.running ? "disabled" : ""}>${auth.running ? "正在处理…" : auth.mode === "reset" ? "保存新密码" : "恢复账号"}</button>`;
+          }
           return `<main class="public-main"><section class="auth-layout">
             <div class="auth-story"><div class="eyebrow">FORMAL WORKBENCH</div><h1>让每一次判断，<span>都回到依据。</span></h1><p>正式工作台走完整的账号、CSRF、幂等和用量链路。明天现场先用右侧登录，再从简历、匹配池、报告和面试恢复真实数据。</p><div class="auth-points"><div class="auth-point"><div><strong>资料与版本分开</strong><small>草稿可检查，确认后才进入冻结版本。</small></div></div><div class="auth-point"><div><strong>岗位期望单独成组</strong><small>未知、不限和面议保持不同语义。</small></div></div><div class="auth-point"><div><strong>操作可重试</strong><small>写请求带 CSRF 和 Idempotency-Key。</small></div></div></div></div>
-            <form id="auth-form" class="auth-card"><h2>${auth.mode === "register" ? "创建正式账号" : "欢迎回来"}</h2><p>${auth.mode === "register" ? "注册时选择固定身份；本地演示会自动完成验证。" : "登录后继续本账号的资料、岗位和历史任务。"}</p><div class="auth-tabs"><button class="auth-tab ${auth.mode === "login" ? "active" : ""}" type="button" data-action="auth-mode" data-mode="login">登录</button><button class="auth-tab ${auth.mode === "register" ? "active" : ""}" type="button" data-action="auth-mode" data-mode="register">注册</button></div><div class="auth-fields">${auth.mode === "register" ? `<div class="field-group"><span class="field-label">注册身份</span><div class="identity-grid"><button class="identity-card ${auth.role === "seeker" ? "active" : ""}" type="button" data-action="auth-role" data-role="seeker"><strong>我要找工作</strong><small>简历、匹配池、面试练习</small></button><button class="identity-card ${auth.role === "recruiter" ? "active" : ""}" type="button" data-action="auth-role" data-role="recruiter"><strong>我要招人</strong><small>岗位与候选人单人分析</small></button></div></div>` : ""}<div class="field-group"><label for="auth-email">邮箱</label><input id="auth-email" class="field" type="email" name="email" autocomplete="email" value="${esc(auth.email)}" placeholder="name@example.com" required /></div><div class="field-group"><label for="auth-password">密码</label><input id="auth-password" class="field" type="password" name="password" autocomplete="current-password" value="${esc(auth.password)}" placeholder="至少 12 个字符" required /></div><button class="button primary full" type="submit" ${auth.running ? "disabled" : ""}>${auth.running ? "正在处理…" : auth.mode === "register" ? "注册并进入工作台" : "登录"}</button></div>${auth.error ? `<div class="callout attention">${esc(auth.error)}</div>` : ""}<div class="auth-foot">正式工作台使用当前进程的 201 PostgreSQL。这里不会显示或保存本地开发环境文件中的密码。</div></form>
+            <form id="auth-form" class="auth-card"><h2>${title}</h2><p>${description}</p>${credentialMode ? `<div class="auth-tabs"><button class="auth-tab ${auth.mode === "login" ? "active" : ""}" type="button" data-action="auth-mode" data-mode="login">登录</button><button class="auth-tab ${auth.mode === "register" ? "active" : ""}" type="button" data-action="auth-mode" data-mode="register">注册</button></div>` : ""}<div class="auth-fields">${fields}</div>${auth.notice ? `<div class="callout success">${esc(auth.notice)}</div>` : ""}${auth.error ? `<div class="callout attention">${esc(auth.error)}</div>` : ""}<div class="auth-links">${auth.mode === "login" ? `<button class="button link-button small" type="button" data-action="auth-mode" data-mode="forgot">忘记密码</button><button class="button link-button small" type="button" data-action="auth-mode" data-mode="recovery">账号恢复</button>` : ""}${auth.mode === "register" ? `<button class="button link-button small" type="button" data-action="auth-mode" data-mode="verify">已有验证令牌？去验证</button>` : ""}${auth.mode === "verify" ? `<button class="button link-button small" type="button" data-action="resend-verification">重新发送验证</button>` : ""}${["forgot", "reset", "recovery", "recover", "verify"].includes(auth.mode) ? `<button class="button link-button small" type="button" data-action="auth-mode" data-mode="login">返回登录</button>` : ""}</div><div class="auth-foot">正式工作台使用当前进程的 201 PostgreSQL。这里不会显示或保存本地开发环境文件中的密码。</div></form>
           </section></main>`;
         }
 
@@ -712,7 +751,7 @@
 
         function documentItem(item) {
           const version = item.latest_version;
-          return `<article class="document-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>${esc(item.document_type === "job_description" ? "岗位 JD" : "简历")}</span><span>revision ${esc(item.revision)}</span><span>${version ? `version ${esc(version.version_no)}` : "待确认版本"}</span></div>${version ? `<div class="micro" style="margin-top:9px">冻结版本：${esc(version.id)}</div>` : ""}<div class="item-actions" style="margin-top:11px"><button class="button outline small" data-action="delete-document" data-id="${esc(item.id)}">删除前查看影响</button></div></article>`;
+          return `<article class="document-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>${esc(item.document_type === "job_description" ? "岗位 JD" : "简历")}</span><span>revision ${esc(item.revision)}</span><span>${version ? `version ${esc(version.version_no)}` : "待确认版本"}</span></div>${version ? `<div class="micro" style="margin-top:9px">冻结版本：${esc(version.id)}</div>` : ""}<div class="item-actions" style="margin-top:11px">${item.source_type && item.source_type !== "text" ? `<a class="button soft small" href="/api/v1/documents/${esc(item.id)}/file" target="_blank" rel="noreferrer">下载原文件</a>` : ""}<button class="button outline small" data-action="delete-document" data-id="${esc(item.id)}">删除前查看影响</button></div></article>`;
         }
 
         function preferenceItem(item) {
@@ -721,7 +760,74 @@
           const minK = Number(content.salary?.min) / 1000;
           const maxK = Number(content.salary?.max) / 1000;
           const salary = content.salary?.status === "specified" && Number.isFinite(minK) && Number.isFinite(maxK) ? `${minK}–${maxK}K` : labelStatus(content.salary?.status);
-          return `<article class="document-item"><div class="item-title"><strong>${esc(item.display_name)}</strong>${item.is_default ? `<span class="tag success">默认</span>` : ""}</div><div class="item-meta"><span>${esc(content.job_title?.value || "未知岗位")}</span><span>${esc(location)}</span><span>${esc(salary)}</span></div><div class="micro" style="margin-top:9px">期望版本 v${esc(item.version?.version_no || "—")} · ${esc(item.version?.id || "—")}</div></article>`;
+          return `<article class="document-item"><div class="item-title"><strong>${esc(item.display_name)}</strong>${item.is_default ? `<span class="tag success">默认</span>` : `<span class="tag neutral">备用</span>`}</div><div class="item-meta"><span>${esc(content.job_title?.value || labelStatus(content.job_title?.status))}</span><span>${esc(location)}</span><span>${esc(salary)}</span><span>强度：${esc(labelStatus(content.job_title?.strength || "prefer"))}</span></div><div class="micro" style="margin-top:9px">期望版本 v${esc(item.version?.version_no || "—")} · ${esc(item.version?.id || "—")}</div><div class="item-actions" style="margin-top:11px"><button class="button soft small" data-action="edit-preference" data-id="${esc(item.id)}">编辑</button>${item.is_default ? "" : `<button class="button outline small" data-action="default-preference" data-id="${esc(item.id)}">设为默认</button>`}<button class="button link-button small" data-action="delete-preference" data-id="${esc(item.id)}">删除</button></div></article>`;
+        }
+
+        function preferenceControls(item = null) {
+          const content = item?.version?.content || {};
+          const option = (value, textValue, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${textValue}</option>`;
+          const statusOptions = (current, includeNegotiable = false) => `${option("specified", "已明确", current)}${option("unknown", "未知", current)}${option("unrestricted", "不限", current)}${includeNegotiable ? option("negotiable", "面议", current) : ""}`;
+          const strength = content.job_title?.strength || "prefer";
+          return `<div class="preference-controls callout" data-preference-controls><div class="field-label">条件语义</div><div class="form-row" style="margin-top:9px"><div class="field-group"><label>岗位状态</label><select class="select" name="job_title_status" data-preference-status="job_title">${statusOptions(content.job_title?.status || "specified")}</select></div><div class="field-group"><label>地点状态</label><select class="select" name="location_status" data-preference-status="location">${statusOptions(content.locations?.status || "specified")}</select></div></div><div class="form-row" style="margin-top:9px"><div class="field-group"><label>办公方式状态</label><select class="select" name="work_mode_status" data-preference-status="work_mode">${statusOptions(content.work_mode?.status || "specified")}</select></div><div class="field-group"><label>薪资状态</label><select class="select" name="salary_status" data-preference-status="salary">${statusOptions(content.salary?.status || "specified", true)}</select></div></div><div class="form-row" style="margin-top:9px"><div class="field-group"><label>条件强度</label><select class="select" name="condition_strength">${option("prefer", "倾向", strength)}${option("important", "重要", strength)}${option("required", "必须", strength)}</select></div><label class="micro" style="display:flex;gap:8px;align-items:center;margin-top:27px"><input type="checkbox" name="is_default" ${item?.is_default || !item ? "checked" : ""} /> 设为默认期望</label></div>${item ? `<input type="hidden" name="preference_id" value="${esc(item.id)}" /><input type="hidden" name="base_revision" value="${esc(String(item.revision || 1))}" />` : ""}<p class="micro" style="margin-top:10px">“未知”表示尚未提供，“不限”表示明确不限制，“面议”只适用于薪资；三者不会互相替代。</p></div>`;
+        }
+
+        function syncPreferenceStatus(form) {
+          const fields = { job_title: ["job_title"], location: ["location"], work_mode: ["work_mode"], salary: ["min_salary", "max_salary"] };
+          Object.entries(fields).forEach(([keyName, names]) => {
+            const status = form.elements.namedItem(`${keyName}_status`)?.value || "specified";
+            names.forEach((name) => {
+              const field = form.elements.namedItem(name);
+              if (field) { field.disabled = status !== "specified"; field.required = false; }
+            });
+          });
+        }
+
+        function decoratePreferenceForms() {
+          document.querySelectorAll("#preference-form, #recruiter-preference-form").forEach((form) => {
+            if (!form.querySelector("[data-preference-controls]")) {
+              const subjectId = form.elements.namedItem("subject_document_id")?.value || "";
+              const selected = state.workspace.selectedPreference || state.workspace.data.preferences.find((item) => subjectId && item.subject_document_id === subjectId) || null;
+              form.insertAdjacentHTML("afterbegin", preferenceControls(selected));
+              const content = selected?.version?.content || {};
+              const setValue = (name, value) => { const field = form.elements.namedItem(name); if (field && value !== undefined && value !== null) field.value = value; };
+              setValue("job_title", content.job_title?.value || "");
+              setValue("location", content.locations?.values?.join("、") || "");
+              setValue("work_mode", content.work_mode?.value || "onsite");
+              if (content.salary?.min !== null && content.salary?.min !== undefined) setValue("min_salary", Number(content.salary.min) / 1000);
+              if (content.salary?.max !== null && content.salary?.max !== undefined) setValue("max_salary", Number(content.salary.max) / 1000);
+              syncPreferenceStatus(form);
+            }
+          });
+        }
+
+        function decorateDocumentForms() {
+          document.querySelectorAll("#formal-document-form").forEach((form) => {
+            if (form.querySelector("input[type=file]")) return;
+            const group = document.createElement("div");
+            group.className = "field-group upload-field";
+            group.innerHTML = `<label for="formal-document-file">上传文件（PDF / DOC / DOCX）</label><input id="formal-document-file" class="field" type="file" name="file" accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" /><span class="micro">上传后服务端先解析为草稿；失败时保留此页面的文件和文字输入，便于改用粘贴。</span>`;
+            const text = form.querySelector("textarea[name=text]");
+            if (text) {
+              text.required = false;
+              const textGroup = text.closest(".field-group") || text;
+              textGroup.after(group);
+            }
+            else form.append(group);
+            const pending = state.workspace.pendingDocument;
+            if (pending) {
+              const title = form.elements.namedItem("title");
+              const textInput = form.elements.namedItem("text");
+              const type = form.elements.namedItem("document_type");
+              if (title && pending.title) title.value = pending.title;
+              if (textInput && pending.text) textInput.value = pending.text;
+              if (type && pending.type && type.tagName === "SELECT") type.value = pending.type;
+              if (pending.file && window.DataTransfer) {
+                const transfer = new DataTransfer();
+                transfer.items.add(pending.file);
+                form.querySelector("input[type=file]").files = transfer.files;
+              }
+            }
+          });
         }
 
         function recruiterAnalysisSection(documents) {
@@ -768,7 +874,23 @@
         function variantItem(item) {
           const version = item.versions?.[0];
           const isLast = state.workspace.lastExport && version && state.workspace.lastExport.version_id === version.id;
-          return `<article class="variant-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>版本 ${esc(version?.version_no || "—")}</span><span>${esc(version?.template_version || "resume-template-v1")}</span><span>${esc(date(item.updated_at))}</span></div><div class="item-actions">${version ? `<button class="button primary small" data-action="export-variant" data-version-id="${esc(version.id)}">导出 PDF</button>` : ""}${isLast ? `<a class="button soft small" href="/api/v1/exports/${esc(state.workspace.lastExport.id)}/file" target="_blank" rel="noreferrer">下载 PDF</a>` : ""}</div></article>`;
+          return `<article class="variant-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>版本 ${esc(version?.version_no || "—")}</span><span>${esc(version?.template_version || "resume-template-v1")}</span><span>${esc(date(item.updated_at))}</span></div><div class="item-actions">${version ? `<button class="button soft small" data-action="open-variant" data-id="${esc(item.id)}">编辑内容</button><button class="button primary small" data-action="export-variant" data-version-id="${esc(version.id)}">导出 PDF</button>` : ""}${isLast ? `<a class="button soft small" href="/api/v1/exports/${esc(state.workspace.lastExport.id)}/file" target="_blank" rel="noreferrer">下载 PDF</a>` : ""}<button class="button link-button small" data-action="delete-variant" data-id="${esc(item.id)}">删除</button></div></article>`;
+        }
+
+        function variantEditor(item) {
+          const version = item?.versions?.[0];
+          if (!item || !version) return "";
+          const sections = version.content?.sections || [];
+          const layout = version.layout || {};
+          const selectedBold = new Set(layout.bold_segment_keys || []);
+          return `<section class="card variant-editor-card" style="margin-top:18px"><div class="card-head"><div><h3>编辑岗位版内容与排版</h3><p>保存会追加不可变版本 v${esc(String((version.version_no || 0) + 1))}；预览和 PDF 使用同一份内容与 layout。</p></div><button class="button link-button small" type="button" data-action="close-variant">收起</button></div><div class="card-body"><form id="variant-editor-form" class="variant-editor-form"><div class="variant-sections" data-variant-sections>${sections.map((section, index) => `<section class="variant-section" data-variant-section="${esc(section.section_key)}"><div class="item-title"><strong>${esc(section.title || section.section_key)}</strong><span class="item-actions"><button class="button outline small" type="button" data-action="move-variant-section" data-direction="up" data-index="${index}" ${index === 0 ? "disabled" : ""}>上移</button><button class="button outline small" type="button" data-action="move-variant-section" data-direction="down" data-index="${index}" ${index === sections.length - 1 ? "disabled" : ""}>下移</button></span></div>${(section.segments || []).map((segment) => `<div class="field-group" style="margin-top:10px"><label for="variant-segment-${esc(segment.segment_key)}">${esc(segment.segment_key)}</label><textarea id="variant-segment-${esc(segment.segment_key)}" class="textarea variant-segment" data-variant-segment="${esc(segment.segment_key)}">${esc(segment.text)}</textarea><label class="micro" style="display:flex;gap:7px;align-items:center;margin-top:6px"><input type="checkbox" data-variant-bold="${esc(segment.segment_key)}" ${selectedBold.has(String(segment.segment_key)) ? "checked" : ""} /> 加粗这一段</label></div>`).join("")}</section>`).join("") || `<div class="empty"><div><strong>没有可编辑段落</strong><p>请回到资料页确认简历版本。</p></div></div>`}</div><div class="form-row" style="margin-top:16px"><div class="field-group"><label>字体</label><select class="select" name="font_family"><option value="noto_sans_sc" selected>Noto Sans SC / 系统无衬线</option></select></div><div class="field-group"><label>字号（pt）</label><input class="field" name="font_size_pt" type="number" min="9" max="12" step="0.5" value="${esc(String(layout.font_size_pt ?? 10.5))}" /></div></div><div class="form-row" style="margin-top:10px"><div class="field-group"><label>行距</label><input class="field" name="line_height" type="number" min="1.2" max="1.8" step="0.1" value="${esc(String(layout.line_height ?? 1.4))}" /></div><div class="field-group"><label>模块间距（pt）</label><input class="field" name="section_spacing_pt" type="number" min="4" max="16" step="1" value="${esc(String(layout.section_spacing_pt ?? 8))}" /></div></div><div class="form-foot"><span class="micro">当前岗位版 revision ${esc(String(item.revision))}；并发保存冲突时请刷新。</span><button class="button primary small" type="submit">保存新版本</button></div></form></div></section>`;
+        }
+
+        function decorateVariantPage() {
+          if (state.workspace.page !== "variants" || !state.workspace.selectedVariant) return;
+          const content = document.querySelector(".workspace-content");
+          if (!content || content.querySelector(".variant-editor-card")) return;
+          content.insertAdjacentHTML("beforeend", variantEditor(state.workspace.selectedVariant));
         }
 
         function interviewPage() {
@@ -780,8 +902,9 @@
 
         function interviewDetail(item) {
           const current = item.questions?.find((question) => question.id === item.current_question_id) || item.questions?.find((question) => question.status === "awaiting_answer");
-          const feedback = item.questions?.filter((question) => question.feedback).slice(-1)[0]?.feedback;
-          return `<div class="question"><div class="item-title"><div><div class="eyebrow">${esc(item.title)}</div><h3>${item.status === "awaiting_answer" && current ? `第 ${esc(current.main_no || current.position_no)} 题：${esc(current.question_text)}` : esc(labelStatus(item.status))}</h3></div><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div>${item.status === "awaiting_answer" && current ? `<form id="answer-form" class="answer-box"><input type="hidden" name="question_id" value="${esc(current.id)}" /><label class="field-label" for="interview-answer">你的回答</label><textarea id="interview-answer" class="textarea" name="answer_text" placeholder="按背景、行动、结果写下真实回答……" required></textarea><div class="form-foot"><span class="micro">本轮提交后会生成反馈；重复点击不会重复扣次。</span><button class="button primary small" type="submit">提交回答</button></div></form><button class="button outline small" style="margin-top:12px" data-action="finish-interview" data-id="${esc(item.id)}">提前结束并生成总结</button>` : item.summary ? `<div class="summary-box" style="margin-top:18px"><strong>练习总结</strong><p>${esc(item.summary.content?.summary || "已根据实际提交的回答生成练习总结。")}</p><p>下一步：${esc((item.summary.content?.next_steps || []).join("；"))}</p></div>` : `<div class="callout opportunity" style="margin-top:18px">当前没有可回答题目，刷新后可继续。</div>`}${feedback ? `<div class="feedback-box"><strong>最近一轮反馈</strong><ul>${(feedback.content?.strengths || []).map((item) => `<li>${esc(item)}</li>`).join("")}${(feedback.content?.gaps || []).map((item) => `<li>${esc(item)}</li>`).join("")}</ul></div>` : ""}<details class="raw-report"><summary>查看题目与状态</summary><pre>${esc(json(item))}</pre></details></div>`;
+          const history = (item.questions || []).map((question) => `<article class="interview-question-row"><div class="item-title"><strong>${question.question_type === "followup" ? `第 ${esc(question.main_no)} 题 · 追问` : `第 ${esc(question.main_no || question.position_no)} 题`}</strong><span class="tag ${statusClass(question.status)}">${esc(labelStatus(question.status))}</span></div><p class="micro" style="margin-top:7px">${esc(question.question_text)}</p>${question.answer ? `<div class="compare-pane original" style="margin-top:9px"><h4>我的回答</h4><p>${esc(question.answer.answer_text)}</p></div>` : ""}${question.feedback ? `<div class="feedback-box"><strong>本题反馈</strong><ul>${(question.feedback.content?.strengths || []).map((value) => `<li>${esc(value)}</li>`).join("")}${(question.feedback.content?.gaps || []).map((value) => `<li>${esc(value)}</li>`).join("")}${(question.feedback.content?.suggestions || []).map((value) => `<li>${esc(value)}</li>`).join("")}</ul>${question.feedback.needs_followup ? `<span class="tag opportunity">建议补充一次追问</span>` : ""}</div>` : ""}</article>`).join("");
+          const summary = item.summary ? `<div class="summary-box" style="margin-top:18px"><strong>练习总结 · ${esc(item.summary.completion_type === "full" ? "完整完成" : "提前结束")}</strong><p>${esc(item.summary.content?.content?.summary || item.summary.content?.summary || "已根据实际提交的回答生成练习总结。")}</p><p>已回答主问题：${esc(String(item.summary.content?.answered_main_count ?? "—"))}；追问：${esc(String(item.summary.content?.answered_followup_count ?? "—"))}</p><p>下一步：${esc((item.summary.content?.content?.next_steps || item.summary.content?.next_steps || []).join("；"))}</p></div>` : "";
+          return `<div class="question"><div class="item-title"><div><div class="eyebrow">${esc(item.title)}</div><h3>${item.status === "awaiting_answer" && current ? `第 ${esc(current.main_no || current.position_no)} 题：${esc(current.question_text)}` : esc(labelStatus(item.status))}</h3></div><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div>${item.status === "awaiting_answer" && current ? `<form id="answer-form" class="answer-box"><input type="hidden" name="question_id" value="${esc(current.id)}" /><label class="field-label" for="interview-answer">你的回答</label><textarea id="interview-answer" class="textarea" name="answer_text" placeholder="按背景、行动、结果写下真实回答……" required></textarea><div class="form-foot"><span class="micro">本轮提交后会生成反馈；每个主问题最多一次追问。</span><button class="button primary small" type="submit">提交回答</button></div></form><button class="button outline small" style="margin-top:12px" data-action="finish-interview" data-id="${esc(item.id)}">提前结束并生成总结</button>` : item.status === "processing" ? `<div class="callout opportunity" style="margin-top:18px"><i class="spinner" style="display:inline-block;vertical-align:middle;margin-right:7px"></i>正在生成本轮反馈，刷新后继续。</div>` : summary || `<div class="callout opportunity" style="margin-top:18px">当前没有可回答题目，刷新后可继续。</div>`}${history ? `<section class="interview-history" style="margin-top:22px"><div class="card-head"><div><h3>逐题记录</h3><p>主问题和最多一次追问均保留回答与反馈。</p></div></div><div class="card-list" style="margin-top:12px">${history}</div></section>` : ""}<div class="item-actions" style="margin-top:18px"><button class="button link-button small" data-action="delete-interview" data-id="${esc(item.id)}">删除这场练习（先查看影响）</button></div><details class="raw-report"><summary>查看题目与状态 JSON</summary><pre>${esc(json(item))}</pre></details></div>`;
         }
 
         function usagePage() {
@@ -853,7 +976,7 @@
           const costs = state.workspace.data.admin.costs;
           const feedback = state.workspace.data.admin.feedback || [];
           if (!metrics) return `${heading("ADMIN", "站点概况", "当前账号没有读到站点指标；点击刷新重试。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="empty"><div><strong>指标暂不可用</strong><p>服务端会按权限返回管理数据。</p></div></div>`;
-          return `${heading("ADMIN OVERVIEW", "站点概况", "只展示聚合指标和脱敏元数据；成本、反馈和账号操作均留有审计入口。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="admin-grid"><div class="admin-stat"><div class="eyebrow">账号</div><strong>${esc(String(metrics.accounts?.total ?? 0))}</strong><span>求职 ${esc(String(metrics.accounts?.seeker ?? 0))} · 招聘 ${esc(String(metrics.accounts?.recruiter ?? 0))}</span></div><div class="admin-stat"><div class="eyebrow">岗位</div><strong>${esc(String(metrics.job_pool_items ?? 0))}</strong><span>当前未删除岗位</span></div><div class="admin-stat"><div class="eyebrow">报告</div><strong>${esc(String(metrics.analyses ?? 0))}</strong><span>已完成分析</span></div><div class="admin-stat"><div class="eyebrow">面试</div><strong>${esc(String(metrics.interviews ?? 0))}</strong><span>已创建会话</span></div><div class="admin-stat"><div class="eyebrow">去投递</div><strong>${esc(String(metrics.apply_clicks_today ?? 0))}</strong><span>上海自然日 ${esc(metrics.metric_date)}</span></div><div class="admin-stat"><div class="eyebrow">模型成本</div><strong>${costs?.known_cost_usd == null ? "未知" : `$${esc(Number(costs.known_cost_usd).toFixed(4))}`}</strong><span>未知成本调用 ${esc(String(costs?.unknown_cost_calls ?? 0))}</span></div></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>产品反馈</h3><p>正文只在管理员主动打开详情时读取；状态变更会写入审计日志。</p></div></div><div class="card-body">${feedback.length ? `<div class="admin-list">${feedback.map((item) => `<article class="admin-row"><div><strong>${esc(item.feedback_type)} · ${esc(String(item.rating || "—"))} 分</strong><small>${esc(item.id)} · ${esc(item.account_id || "未知账号")} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${item.status === "closed" ? "success" : item.status === "reviewing" ? "opportunity" : "neutral"}">${esc(item.status)}</span>${new Set(state.session.account?.admin_permissions || []).has("admin.stats.read") ? `<button class="button link-button small" data-action="cycle-feedback" data-id="${esc(item.id)}" data-status="${esc(item.status)}">更新状态</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无反馈</strong><p>用户反馈会在这里汇总。</p></div></div>`}</div></section>`;
+          return `${heading("ADMIN OVERVIEW", "站点概况", "只展示聚合指标和脱敏元数据；成本、反馈和账号操作均留有审计入口。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="admin-grid"><div class="admin-stat"><div class="eyebrow">账号</div><strong>${esc(String(metrics.accounts?.total ?? 0))}</strong><span>求职 ${esc(String(metrics.accounts?.seeker ?? 0))} · 招聘 ${esc(String(metrics.accounts?.recruiter ?? 0))}</span></div><div class="admin-stat"><div class="eyebrow">岗位</div><strong>${esc(String(metrics.job_pool_items ?? 0))}</strong><span>当前未删除岗位</span></div><div class="admin-stat"><div class="eyebrow">报告</div><strong>${esc(String(metrics.analyses ?? 0))}</strong><span>已完成分析</span></div><div class="admin-stat"><div class="eyebrow">面试</div><strong>${esc(String(metrics.interviews ?? 0))}</strong><span>已创建会话</span></div><div class="admin-stat"><div class="eyebrow">去投递</div><strong>${esc(String(metrics.apply_clicks_today ?? 0))}</strong><span>上海自然日 ${esc(metrics.metric_date)}</span></div><div class="admin-stat"><div class="eyebrow">模型成本</div><strong>${costs?.known_cost_usd == null ? "未知" : `$${esc(Number(costs.known_cost_usd).toFixed(4))}`}</strong><span>未知成本调用 ${esc(String(costs?.unknown_cost_calls ?? 0))}</span></div></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>产品反馈</h3><p>正文只在管理员主动打开详情时读取；状态变更会写入审计日志。</p></div></div><div class="card-body">${feedback.length ? `<div class="admin-list">${feedback.map((item) => `<article class="admin-row"><div><strong>${esc(item.feedback_type)} · ${esc(String(item.rating || "—"))} 分</strong><small>${esc(item.id)} · ${esc(item.account_id || "未知账号")} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${item.status === "closed" ? "success" : item.status === "reviewed" ? "opportunity" : "neutral"}">${esc(labelStatus(item.status))}</span>${new Set(state.session.account?.admin_permissions || []).has("admin.stats.read") && item.status !== "closed" ? `<button class="button link-button small" data-action="cycle-feedback" data-id="${esc(item.id)}" data-status="${esc(item.status)}" data-revision="${esc(String(item.revision || 1))}">${item.status === "new" ? "标记已查看" : "关闭反馈"}</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无反馈</strong><p>用户反馈会在这里汇总。</p></div></div>`}</div></section>`;
         }
 
         function adminUsersPage() {
@@ -906,6 +1029,10 @@
           } else {
             app.innerHTML = appFrame(demoPage());
           }
+          // 单文件 Web 端在每次局部刷新后重新补上语义化表单控件。
+          decoratePreferenceForms();
+          decorateDocumentForms();
+          decorateVariantPage();
         }
 
         function setToast(message) {
@@ -995,18 +1122,88 @@
 
         async function submitAuth(form) {
           const values = new FormData(form);
-          const email = String(values.get("email") || "").trim();
-          const password = String(values.get("password") || "");
+          const email = String(values.get("email") || state.auth.email || "").trim();
+          const password = String(values.get("password") || state.auth.password || "");
           state.auth.email = email;
-          state.auth.password = password;
+          if (password) state.auth.password = password;
           state.auth.running = true;
           state.auth.error = "";
+          state.auth.notice = "";
           render();
           try {
-            if (state.auth.mode === "register") await registerAndLogin(email, password, state.auth.role);
-            else await login(email, password);
+            if (state.auth.mode === "register") {
+              await registerAndLogin(email, password, state.auth.role);
+            } else if (state.auth.mode === "login") {
+              await login(email, password);
+            } else if (state.auth.mode === "verify") {
+              const token = String(values.get("token") || state.auth.token || "").trim();
+              state.auth.token = token;
+              await request("/api/v1/auth/verify-email", { method: "POST", body: { token } });
+              if (state.auth.password) await login(email, state.auth.password);
+              else { state.auth.mode = "login"; state.auth.notice = "邮箱已验证，请输入密码登录。"; }
+            } else if (state.auth.mode === "forgot") {
+              const data = await request("/api/v1/auth/forgot-password", { method: "POST", body: { email } });
+              if (data.reset_token) {
+                state.auth.token = data.reset_token;
+                state.auth.mode = "reset";
+                state.auth.notice = "本地演示已生成重置令牌，请确认后设置新密码。";
+              } else state.auth.notice = data.message || "如果账号存在，重置说明会发送到注册邮箱。";
+              state.auth.running = false;
+              render();
+            } else if (state.auth.mode === "reset") {
+              const token = String(values.get("token") || state.auth.token || "").trim();
+              const newPassword = String(values.get("new_password") || "");
+              await request("/api/v1/auth/reset-password", { method: "POST", body: { token, new_password: newPassword } });
+              state.auth.mode = "login";
+              state.auth.token = "";
+              state.auth.password = "";
+              state.auth.notice = "密码已重置，请使用新密码登录。";
+              state.auth.running = false;
+              render();
+            } else if (state.auth.mode === "recovery") {
+              const data = await request("/api/v1/auth/request-account-recovery", { method: "POST", body: { email } });
+              if (data.recovery_token) {
+                state.auth.token = data.recovery_token;
+                state.auth.mode = "recover";
+                state.auth.notice = "本地演示已生成恢复令牌，请确认恢复账号。";
+              } else state.auth.notice = data.message || "如果账号存在，恢复说明会发送到注册邮箱。";
+              state.auth.running = false;
+              render();
+            } else if (state.auth.mode === "recover") {
+              const token = String(values.get("token") || state.auth.token || "").trim();
+              await request("/api/v1/auth/recover-account", { method: "POST", body: { token } });
+              state.auth.mode = "login";
+              state.auth.token = "";
+              state.auth.notice = "账号已恢复，请重新登录。";
+              state.auth.running = false;
+              render();
+            }
           } catch (error) {
             state.auth.error = error instanceof ApiError ? `${error.code}：${error.message}` : `请求失败：${error.message || error}`;
+            if (error instanceof ApiError && error.code === "AUTH_EMAIL_UNVERIFIED") {
+              state.auth.mode = "verify";
+              state.auth.notice = "该账号尚未完成邮箱验证；本地演示可使用验证令牌继续。";
+            }
+            state.auth.running = false;
+            render();
+          }
+        }
+
+        async function resendVerification() {
+          const email = state.auth.email.trim();
+          if (!email) { state.auth.error = "请先填写邮箱"; render(); return; }
+          state.auth.running = true;
+          state.auth.error = "";
+          state.auth.notice = "";
+          render();
+          try {
+            const data = await request("/api/v1/auth/resend-verification", { method: "POST", body: { email } });
+            state.auth.mode = "verify";
+            state.auth.token = data.verification_token || state.auth.token;
+            state.auth.notice = data.verification_token ? "本地演示已生成新的验证令牌。" : (data.message || "验证说明已发送，请查收邮箱。");
+          } catch (error) {
+            state.auth.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "重新发送失败";
+          } finally {
             state.auth.running = false;
             render();
           }
@@ -1079,25 +1276,44 @@
           const subject = type === "resume" ? (seeker ? "self_resume" : "candidate_resume") : "job_description";
           const title = String(values.get("title") || "未命名资料").trim();
           const textValue = String(values.get("text") || "").trim();
-          const created = await request("/api/v1/documents", { method: "POST", formal: true, idempotencyKey: key("document"), body: { document_type: type, subject_type: subject, title, text: textValue } });
+          const file = form.querySelector("input[type=file]")?.files?.[0];
+          const documentOptions = { method: "POST", formal: true, idempotencyKey: key("document") };
+          if (file) {
+            const formData = new FormData();
+            formData.append("document_type", type);
+            formData.append("subject_type", subject);
+            formData.append("title", title);
+            formData.append("file", file, file.name);
+            documentOptions.formData = formData;
+          } else {
+            documentOptions.body = { document_type: type, subject_type: subject, title, text: textValue };
+          }
+          const created = await request("/api/v1/documents", documentOptions);
           const detail = await request(`/api/v1/documents/${encodeURIComponent(created.id)}`, { formal: true });
           const version = await request(`/api/v1/documents/${encodeURIComponent(created.id)}/versions`, { method: "POST", formal: true, idempotencyKey: key("document-version"), body: { draft_id: detail.latest_draft.id, base_revision: detail.revision, content: detail.draft_content } });
           return { document: created, version };
         }
 
         function preferenceContentFromForm(values) {
+          const fieldStatus = (name, fallback = "unknown") => String(values.get(`${name}_status`) || fallback);
+          const strength = String(values.get("condition_strength") || "prefer");
+          const titleStatus = fieldStatus("job_title", "specified");
+          const locationStatus = fieldStatus("location", "specified");
+          const modeStatus = fieldStatus("work_mode", "specified");
+          const salaryStatus = fieldStatus("salary", "specified");
+          const title = String(values.get("job_title") || "").trim();
+          const locations = String(values.get("location") || "").split(/[、,，/／|]/).map((item) => item.trim()).filter(Boolean);
+          const mode = String(values.get("work_mode") || "onsite");
+          if (titleStatus === "specified" && !title) throw new Error("请填写期望岗位，或将岗位状态改为未知/不限");
+          if (locationStatus === "specified" && !locations.length) throw new Error("请填写期望地点，或将地点状态改为未知/不限");
           const minK = Number(values.get("min_salary"));
           const maxK = Number(values.get("max_salary"));
-          if (!Number.isFinite(minK) || !Number.isFinite(maxK) || minK < 0 || maxK < minK) throw new Error("请检查薪资上下限");
-          const title = String(values.get("job_title") || "").trim();
-          const location = String(values.get("location") || "").trim();
-          const mode = String(values.get("work_mode") || "onsite");
-          if (!title || !location) throw new Error("岗位和地点不能为空");
+          if (salaryStatus === "specified" && (!Number.isFinite(minK) || !Number.isFinite(maxK) || minK < 0 || maxK < minK)) throw new Error("请检查薪资上下限，或选择未知/不限/面议");
           return {
-            job_title: { status: "specified", value: title, strength: "prefer" },
-            locations: { status: "specified", values: location.split(/[、,，/／|]/).map((item) => item.trim()).filter(Boolean), strength: "prefer" },
-            work_mode: { status: "specified", value: mode, strength: "prefer" },
-            salary: { status: "specified", min: minK * 1000, max: maxK * 1000, currency: "CNY", period: "monthly", tax_basis: "pre_tax", salary_months: 12, strength: "prefer" },
+            job_title: { status: titleStatus, value: titleStatus === "specified" ? title : null, strength },
+            locations: { status: locationStatus, values: locationStatus === "specified" ? locations : [], strength },
+            work_mode: { status: modeStatus, value: modeStatus === "specified" ? mode : null, strength },
+            salary: { status: salaryStatus, min: salaryStatus === "specified" ? minK * 1000 : null, max: salaryStatus === "specified" ? maxK * 1000 : null, currency: "CNY", period: "monthly", tax_basis: "pre_tax", salary_months: 12, strength },
           };
         }
 
@@ -1105,11 +1321,49 @@
           const values = new FormData(form);
           const content = preferenceContentFromForm(values);
           const subjectId = String(values.get("subject_document_id") || "").trim();
-          const data = await request("/api/v1/preferences", { method: "POST", formal: true, idempotencyKey: key("preference"), body: { display_name: `${content.job_title.value} · ${content.locations.values.join("、")}`, context: subjectId ? "candidate" : "self", ...(subjectId ? { subject_document_id: subjectId } : {}), is_default: true, preference: content } });
-          if (subjectId) {
-            state.workspace.recruiterSubjectId = subjectId;
-            state.workspace.data.preferences = [...state.workspace.data.preferences.filter((item) => item.subject_document_id !== subjectId), data];
+          const preferenceId = String(values.get("preference_id") || "").trim();
+          const displayTitle = content.job_title.value || "未指定岗位";
+          const displayLocation = content.locations.values.length ? content.locations.values.join("、") : labelStatus(content.locations.status);
+          const payload = { display_name: `${displayTitle} · ${displayLocation}`, context: subjectId ? "candidate" : "self", ...(subjectId ? { subject_document_id: subjectId } : {}), is_default: values.get("is_default") === "on", preference: content };
+          let data;
+          if (preferenceId) {
+            payload.base_revision = Number(values.get("base_revision"));
+            payload.status = "active";
+            data = await request(`/api/v1/preferences/${encodeURIComponent(preferenceId)}`, { method: "PUT", formal: true, idempotencyKey: key("preference-update"), body: payload });
+          } else {
+            data = await request("/api/v1/preferences", { method: "POST", formal: true, idempotencyKey: key("preference"), body: payload });
           }
+          state.workspace.recruiterSubjectId = subjectId || state.workspace.recruiterSubjectId;
+          state.workspace.data.preferences = [...state.workspace.data.preferences.filter((item) => item.id !== data.id && (!subjectId || item.subject_document_id !== subjectId)), data];
+          state.workspace.selectedPreference = null;
+        }
+
+        async function setDefaultPreference(id) {
+          const item = state.workspace.data.preferences.find((value) => value.id === id);
+          if (!item?.version) throw new Error("岗位期望版本不可用，请刷新后重试");
+          const payload = {
+            display_name: item.display_name,
+            context: item.subject_document_id ? "candidate" : "self",
+            ...(item.subject_document_id ? { subject_document_id: item.subject_document_id } : {}),
+            is_default: true,
+            status: "active",
+            base_revision: item.revision,
+            preference: item.version.content,
+          };
+          const updated = await request(`/api/v1/preferences/${encodeURIComponent(id)}`, { method: "PUT", formal: true, idempotencyKey: key("preference-default"), body: payload });
+          state.workspace.data.preferences = [...state.workspace.data.preferences.filter((value) => value.id !== id), updated];
+          setToast("已设为默认岗位期望");
+          await loadWorkspace(true);
+        }
+
+        async function deletePreference(id) {
+          const item = state.workspace.data.preferences.find((value) => value.id === id);
+          if (!item) throw new Error("岗位期望不存在，请刷新后重试");
+          if (!window.confirm(`确认删除岗位期望“${item.display_name}”？\n\n已保存的历史分析仍保留本次快照，后续新分析不能再选择它。`)) return;
+          await request(`/api/v1/preferences/${encodeURIComponent(id)}`, { method: "DELETE", formal: true, idempotencyKey: key("preference-delete") });
+          state.workspace.selectedPreference = null;
+          setToast("岗位期望已删除");
+          await loadWorkspace(true);
         }
 
         async function saveFact(form) {
@@ -1160,7 +1414,7 @@
         async function createRecruiterAnalysis(form) {
           const values = new FormData(form);
           const data = await request("/api/v1/analyses", { method: "POST", formal: true, idempotencyKey: key("analysis"), body: { context_type: "recruiter_single", resume_document_version_id: String(values.get("resume_version_id")), job_document_version_id: String(values.get("job_version_id")), confirm_usage: true } });
-          if (data.analysis) state.workspace.selectedAnalysis = data.analysis;
+          if (data.analysis) { state.workspace.selectedAnalysis = data.analysis; state.workspace.page = "report"; }
         }
 
         async function openPool(id) {
@@ -1320,6 +1574,75 @@
           state.workspace.lastExport = { ...(data.export || {}), id: data.export?.id, version_id: versionId };
         }
 
+        async function openVariant(id) {
+          state.workspace.loading = true;
+          state.workspace.error = "";
+          render();
+          try {
+            state.workspace.selectedVariant = await request(`/api/v1/resumes/${encodeURIComponent(id)}`, { formal: true });
+            state.workspace.page = "variants";
+          } catch (error) {
+            state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "岗位版读取失败";
+          } finally {
+            state.workspace.loading = false;
+            render();
+          }
+        }
+
+        async function saveVariantVersion(form) {
+          const item = state.workspace.selectedVariant;
+          const version = item?.versions?.[0];
+          if (!item || !version) throw new Error("没有选中的岗位版简历");
+          const content = JSON.parse(JSON.stringify(version.content));
+          const sectionNodes = [...form.querySelectorAll("[data-variant-section]")];
+          const sectionsByKey = new Map((content.sections || []).map((section) => [String(section.section_key), section]));
+          sectionNodes.forEach((sectionNode, position) => {
+            const section = sectionsByKey.get(String(sectionNode.dataset.variantSection));
+            if (!section) return;
+            section.position = position + 1;
+            [...sectionNode.querySelectorAll("[data-variant-segment]")].forEach((field) => {
+              const segment = (section.segments || []).find((value) => String(value.segment_key) === String(field.dataset.variantSegment));
+              if (segment) segment.text = field.value.trim();
+            });
+          });
+          content.sections = sectionNodes.map((node) => sectionsByKey.get(String(node.dataset.variantSection))).filter(Boolean);
+          const values = new FormData(form);
+          const layout = { ...version.layout, schema_version: "resume-layout-v1", section_order: sectionNodes.map((node) => String(node.dataset.variantSection)), font_family: "noto_sans_sc", font_size_pt: Number(values.get("font_size_pt")), line_height: Number(values.get("line_height")), section_spacing_pt: Number(values.get("section_spacing_pt")), bold_segment_keys: [...form.querySelectorAll("[data-variant-bold]:checked")].map((node) => String(node.dataset.variantBold)) };
+          if (![layout.font_size_pt, layout.line_height, layout.section_spacing_pt].every(Number.isFinite)) throw new Error("请检查排版参数");
+          const data = await request(`/api/v1/resumes/${encodeURIComponent(item.id)}/versions`, { method: "POST", formal: true, idempotencyKey: key("variant-version"), body: { base_revision: item.revision, content, layout, template_version: "resume-template-v1" } });
+          state.workspace.selectedVariant = data;
+          state.workspace.data.variants = [...state.workspace.data.variants.filter((value) => value.id !== data.id), data];
+          setToast("岗位版新版本已保存");
+        }
+
+        function renumberVariantSections(container) {
+          [...container.querySelectorAll(":scope > [data-variant-section]")].forEach((node, index, nodes) => {
+            node.querySelectorAll("[data-action=move-variant-section]").forEach((button) => {
+              button.dataset.index = String(index);
+              button.disabled = button.dataset.direction === "up" ? index === 0 : index === nodes.length - 1;
+            });
+          });
+        }
+
+        function moveVariantSection(actionNode) {
+          const container = document.querySelector("[data-variant-sections]");
+          const current = actionNode.closest("[data-variant-section]");
+          if (!container || !current) return;
+          const sibling = actionNode.dataset.direction === "up" ? current.previousElementSibling : current.nextElementSibling;
+          if (!sibling) return;
+          if (actionNode.dataset.direction === "up") container.insertBefore(current, sibling);
+          else container.insertBefore(sibling, current);
+          renumberVariantSections(container);
+        }
+
+        async function deleteVariant(id) {
+          const deleted = await deleteResource(`/api/v1/resumes/${encodeURIComponent(id)}`, "岗位版简历");
+          if (!deleted) return;
+          state.workspace.selectedVariant = null;
+          setToast("岗位版简历已删除");
+          await loadWorkspace(true);
+        }
+
         async function startInterview() {
           const analysis = state.workspace.selectedAnalysis;
           const pool = state.workspace.selectedPool || findPoolForAnalysis(analysis?.id);
@@ -1354,9 +1677,18 @@
           state.workspace.selectedInterview = data;
         }
 
+        async function deleteInterview(id) {
+          const deleted = await deleteResource(`/api/v1/interviews/${encodeURIComponent(id)}`, "面试练习");
+          if (!deleted) return;
+          state.workspace.selectedInterview = null;
+          setToast("面试练习已删除");
+          await loadWorkspace(true);
+        }
+
         async function sendFeedback(form) {
           const values = new FormData(form);
-          await request("/api/v1/feedback", { method: "POST", formal: true, idempotencyKey: key("feedback"), body: { feedback_type: String(values.get("feedback_type")), content: String(values.get("content") || "").trim(), rating: Number(values.get("rating")) } });
+          const type = { experience: "suggestion", accuracy: "issue", workflow: "suggestion" }[String(values.get("feedback_type"))] || "other";
+          await request("/api/v1/feedback", { method: "POST", formal: true, idempotencyKey: key("feedback"), body: { feedback_type: type, content: String(values.get("content") || "").trim(), rating: Number(values.get("rating")) } });
         }
 
         async function searchAdminUsers(form) {
@@ -1409,10 +1741,11 @@
           await loadWorkspace(true);
         }
 
-        async function cycleFeedback(id, currentStatus) {
-          const nextStatus = { new: "reviewing", reviewing: "closed", closed: "new" }[currentStatus] || "reviewing";
-          await request(`/api/v1/admin/feedback/${encodeURIComponent(id)}`, { method: "PUT", formal: true, body: { status: nextStatus } });
-          setToast(`反馈状态已更新为 ${nextStatus}`);
+        async function cycleFeedback(id, currentStatus, revision) {
+          const nextStatus = { new: "reviewed", reviewed: "closed" }[currentStatus];
+          if (!nextStatus) return;
+          const data = await request(`/api/v1/admin/feedback/${encodeURIComponent(id)}`, { method: "PUT", formal: true, idempotencyKey: key("feedback-status"), body: { status: nextStatus, base_revision: Number(revision || 1), reason: nextStatus === "reviewed" ? "已查看反馈" : "反馈处理完成" } });
+          setToast(`反馈状态已更新为 ${labelStatus(data.status || nextStatus)}`);
           await loadWorkspace(true);
         }
 
@@ -1424,7 +1757,8 @@
 
         async function exportLogs() {
           const type = state.workspace.adminLogType || "operations";
-          const data = await request("/api/v1/admin/log-exports", { method: "POST", formal: true, idempotencyKey: key("log-export"), body: { log_type: type, filters: {} } });
+          const category = { operations: "admin_operations", security: "security", tasks: "task_runs" }[type] || "admin_operations";
+          const data = await request("/api/v1/admin/log-exports", { method: "POST", formal: true, idempotencyKey: key("log-export"), body: { log_category: category, export_format: "jsonl", filter: {} } });
           state.workspace.lastLogExport = data;
           setToast("日志导出已生成");
         }
@@ -1434,7 +1768,7 @@
           if (button) button.disabled = true;
           try {
             if (form.id === "auth-form") return await submitAuth(form);
-            if (form.id === "formal-document-form") { await createFormalDocument(form); setToast("资料已确认，已生成不可变版本"); }
+            if (form.id === "formal-document-form") { const pendingFile = form.querySelector("input[type=file]")?.files?.[0] || null; state.workspace.pendingDocument = { type: String(form.elements.namedItem("document_type")?.value || "resume"), title: String(form.elements.namedItem("title")?.value || ""), text: String(form.elements.namedItem("text")?.value || ""), file: pendingFile }; await createFormalDocument(form); state.workspace.pendingDocument = null; setToast("资料已确认，已生成不可变版本"); }
             else if (form.id === "preference-form") { await savePreference(form); setToast("岗位期望已保存为独立版本"); }
             else if (form.id === "recruiter-preference-form") { await savePreference(form); setToast("候选人岗位期望已保存"); }
             else if (form.id === "pool-form") { await savePool(form); setToast("岗位已入池，分析结果已可恢复"); }
@@ -1442,6 +1776,7 @@
             else if (form.id === "fact-form") { await saveFact(form); form.reset(); setToast("事实已保存为 version 1"); }
             else if (form.id === "rewrite-form") { await createRewrite(form); setToast("逐段改写建议已生成"); }
             else if (form.id === "variant-form") { const values = new FormData(form); const pool = state.workspace.data.pool.find((item) => item.id === values.get("pool_id")); if (!pool) throw new Error("岗位不存在，请刷新后重试"); const resumeId = pool.resume_version_id; if (!resumeId) throw new Error("该岗位还没有绑定简历版本"); const data = await request("/api/v1/resumes", { method: "POST", formal: true, idempotencyKey: key("variant"), body: { job_pool_item_id: pool.id, source_resume_version_id: resumeId, title: String(values.get("title") || "岗位版简历") } }); state.workspace.selectedVariant = data; setToast("岗位版简历版本已创建"); }
+            else if (form.id === "variant-editor-form") { await saveVariantVersion(form); }
             else if (form.id === "answer-form") { await answerInterview(form); setToast("回答已保存，反馈已返回"); }
             else if (form.id === "feedback-form") { await sendFeedback(form); form.reset(); setToast("感谢反馈，已单独记录"); }
             else if (form.id === "admin-user-search") return await searchAdminUsers(form);
@@ -1466,6 +1801,12 @@
         document.addEventListener("input", (event) => {
           if (event.target.id === "auth-email") state.auth.email = event.target.value;
           if (event.target.id === "auth-password") state.auth.password = event.target.value;
+          if (event.target.id === "auth-token") state.auth.token = event.target.value;
+        });
+
+        document.addEventListener("change", (event) => {
+          const form = event.target.closest("#preference-form, #recruiter-preference-form");
+          if (form && event.target.matches("[data-preference-status]")) syncPreferenceStatus(form);
         });
 
         document.addEventListener("click", (event) => {
@@ -1482,8 +1823,9 @@
           if (action === "home") { state.screen = "demo"; state.toast = ""; render(); return; }
           if (action === "demo-scroll") { document.querySelector("#demo-flow")?.scrollIntoView({ behavior: "smooth" }); return; }
           if (action === "formal") { void openFormal(); return; }
-          if (action === "auth-mode") { state.auth.mode = actionNode.dataset.mode; state.auth.error = ""; render(); return; }
+          if (action === "auth-mode") { state.auth.mode = actionNode.dataset.mode; state.auth.error = ""; state.auth.notice = ""; render(); return; }
           if (action === "auth-role") { state.auth.role = actionNode.dataset.role; render(); return; }
+          if (action === "resend-verification") { void resendVerification(); return; }
           if (action === "logout") { void (async () => { try { await request("/api/v1/auth/logout", { method: "POST", formal: true }); } catch (_) {} clearSession(); state.screen = "demo"; setToast("已退出正式工作台"); })(); return; }
           if (action === "refresh") { void refreshWorkspace(); return; }
           if (action === "open-task") { void openTask(actionNode.dataset.id); return; }
@@ -1491,6 +1833,9 @@
           if (action === "retry-task") { void (async () => { try { await retryTask(actionNode.dataset.id); setToast("任务已重新排队"); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "任务重试失败"; render(); } })(); return; }
           if (action === "open-pool") { void openPool(actionNode.dataset.id); return; }
           if (action === "close-pool") { state.workspace.selectedPool = null; render(); return; }
+          if (action === "edit-preference") { state.workspace.selectedPreference = state.workspace.data.preferences.find((item) => item.id === actionNode.dataset.id) || null; state.workspace.page = "resume"; render(); return; }
+          if (action === "default-preference") { void (async () => { try { await setDefaultPreference(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "设置默认期望失败"; render(); } })(); return; }
+          if (action === "delete-preference") { void (async () => { try { await deletePreference(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "岗位期望删除失败"; render(); } })(); return; }
           if (action === "open-analysis") { void openAnalysis(actionNode.dataset.id); return; }
           if (action === "open-rewrite") { void (async () => { try { await openRewrite(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "改写入口打开失败"; render(); } })(); return; }
           if (action === "decide-rewrite") { void (async () => { try { await decideRewrite(actionNode); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "改写决定保存失败"; render(); } })(); return; }
@@ -1498,12 +1843,17 @@
           if (action === "go-apply") { void (async () => { try { await goToApply(actionNode.dataset.id, actionNode.dataset.token); setToast("已记录去投递点击"); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "去投递失败"; render(); } })(); return; }
           if (["delete-document", "delete-pool", "delete-analysis"].includes(action)) { void (async () => { const resource = action === "delete-document" ? "documents" : action === "delete-pool" ? "job-pool/items" : "analyses"; const label = action === "delete-document" ? "资料" : action === "delete-pool" ? "岗位" : "报告"; try { const deleted = await deleteResource(`/api/v1/${resource}/${encodeURIComponent(actionNode.dataset.id)}`, label); if (!deleted) return; state.workspace.selectedPool = null; state.workspace.selectedAnalysis = null; state.workspace.selectedRewrite = null; state.workspace.rewriteSource = null; setToast(`${label}已删除`); await loadWorkspace(true); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || `${label}删除失败`; render(); } })(); return; }
           if (action === "create-variant") { void (async () => { try { await createVariant(); setToast("岗位版简历已创建"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error.message || "岗位版创建失败"; render(); } })(); return; }
+          if (action === "open-variant") { void openVariant(actionNode.dataset.id); return; }
+          if (action === "close-variant") { state.workspace.selectedVariant = null; render(); return; }
+          if (action === "move-variant-section") { moveVariantSection(actionNode); return; }
+          if (action === "delete-variant") { void (async () => { try { await deleteVariant(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "岗位版删除失败"; render(); } })(); return; }
           if (action === "export-variant") { void (async () => { try { await exportVariant(actionNode.dataset.versionId); setToast("PDF 导出已完成，可下载"); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message; render(); } })(); return; }
           if (action === "start-interview") { void (async () => { try { await startInterview(); setToast("面试会话已创建"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error.message || "面试创建失败"; render(); } })(); return; }
           if (action === "new-interview") { const candidate = state.workspace.data.pool.find((item) => item.latest_analysis && item.resume_version_id); if (candidate) void (async () => { try { await openAnalysis(candidate.latest_analysis.id); await startInterview(); setToast("面试会话已创建"); render(); } catch (error) { state.workspace.error = error.message || "面试创建失败"; render(); } })(); return; }
           if (action === "open-interview") { void openInterview(actionNode.dataset.id); return; }
+          if (action === "delete-interview") { void (async () => { try { await deleteInterview(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "面试删除失败"; render(); } })(); return; }
           if (action === "finish-interview") { void (async () => { try { await finishInterview(actionNode.dataset.id); setToast("已生成练习总结"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message; render(); } })(); }
-          if (action === "cycle-feedback") { void (async () => { try { await cycleFeedback(actionNode.dataset.id, actionNode.dataset.status); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "反馈状态更新失败"; render(); } })(); return; }
+          if (action === "cycle-feedback") { void (async () => { try { await cycleFeedback(actionNode.dataset.id, actionNode.dataset.status, actionNode.dataset.revision); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "反馈状态更新失败"; render(); } })(); return; }
           if (action === "toggle-user-status") { void (async () => { try { await toggleUserStatus(actionNode.dataset.id, actionNode.dataset.status); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "账号状态更新失败"; render(); } })(); return; }
           if (action === "select-role") { state.workspace.selectedRole = state.workspace.data.admin.roles.find((item) => item.id === actionNode.dataset.id) || null; render(); return; }
           if (action === "clear-role") { state.workspace.selectedRole = null; render(); return; }
@@ -1513,6 +1863,21 @@
           if (action === "export-logs") { void (async () => { try { await exportLogs(); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "日志导出失败"; render(); } })(); return; }
         });
 
+        function restoreAuthActionFromLink() {
+          const params = new URLSearchParams(window.location.search);
+          const token = params.get("token");
+          const action = params.get("action");
+          const mode = { verify: "verify", reset: "reset", recover: "recover" }[action];
+          if (!token || !mode) return;
+          state.screen = "formal";
+          state.auth.mode = mode;
+          state.auth.token = token;
+          state.auth.notice = "已从安全链接带入一次性令牌；提交后该链接会失效。";
+          // 令牌只用于当前内存流程，去掉地址栏副本，避免复制链接时意外传播。
+          window.history.replaceState({}, document.title, window.location.pathname);
+        }
+
+        restoreAuthActionFromLink();
         render();
         void loadHealth();
       })();

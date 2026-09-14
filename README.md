@@ -70,7 +70,7 @@ Node.js 构建，默认内联执行不阻塞演示，也可以切换到同一 Po
 ```bash
 uv venv .venv
 uv pip install -e '.[test]'
-scripts/start_201_local.sh
+PURSLYX_PORT=8001 scripts/start_201_local.sh
 ```
 
 启动脚本只从被 Git 忽略的 `docs/02-technical/deployment/本地开发环境.md` 读取

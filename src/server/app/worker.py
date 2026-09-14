@@ -530,7 +530,7 @@ class TaskWorker:
                     interview.current_question_id = next_main.public_id
                     interview.status = "awaiting_answer"
                 else:
-                    self._save_summary(db, interview, "completed")
+                    self._save_summary(db, interview, "full")
 
         _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="interview_feedback", on_success=save_feedback)
 
@@ -542,14 +542,14 @@ class TaskWorker:
         value = get_model_provider().summary(question_values, answer_values, completion_type).value
         db.add(InterviewSummary(account_id=interview.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
         interview.summary = value
-        interview.status = "completed" if completion_type == "completed" else "ended_early"
+        interview.status = "completed" if completion_type == "full" else "ended_early"
         interview.revision += 1
 
     def _handle_interview_summary(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         interview = db.scalar(select(Interview).where(Interview.public_id == _input(task, "interview_id"), Interview.account_id == task.account_id, Interview.deleted_at.is_(None)))
         if interview is None:
             raise DomainError("INTERVIEW_SOURCE_INVALID", "面试会话不存在", 409)
-        completion_type = str((task.input_data or {}).get("completion_type") or "ended_early")
+        completion_type = str((task.input_data or {}).get("completion_type") or "early")
 
         def work() -> dict[str, Any]:
             questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
@@ -561,7 +561,7 @@ class TaskWorker:
         def save_result(value: dict[str, Any]) -> None:
             db.add(InterviewSummary(account_id=task.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
             interview.summary = value
-            interview.status = "completed" if completion_type == "completed" else "ended_early"
+            interview.status = "completed" if completion_type == "full" else "ended_early"
             interview.revision += 1
 
         _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="interview_summary", on_success=save_result)

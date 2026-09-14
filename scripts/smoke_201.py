@@ -474,6 +474,40 @@ def main() -> None:
         variant_version = ((variant.get("versions") or [None])[0] or {}).get("id")
         if not variant_version:
             raise RuntimeError("岗位版简历没有版本")
+        # 覆盖岗位版编辑保存这条回归链路：内部岗位主键不能被误当成 public_id。
+        initial_version = (variant.get("versions") or [])[0]
+        _, saved_variant_body = call(
+            client,
+            "POST",
+            f"/api/v1/resumes/{variant['id']}/versions",
+            expected=(201,),
+            headers={**web_headers, "Idempotency-Key": f"variant-version-{suffix}"},
+            json={
+                "base_revision": variant["revision"],
+                "content": initial_version["content"],
+                "layout": initial_version["layout"],
+                "template_version": initial_version["template_version"],
+            },
+        )
+        saved_variant = data_of(saved_variant_body)
+        if saved_variant.get("revision") != variant["revision"] + 1 or len(saved_variant.get("versions") or []) != 2:
+            raise RuntimeError("岗位版简历保存没有生成新版本")
+        _, saved_variant_repeat_body = call(
+            client,
+            "POST",
+            f"/api/v1/resumes/{variant['id']}/versions",
+            expected=(200,),
+            headers={**web_headers, "Idempotency-Key": f"variant-version-{suffix}"},
+            json={
+                "base_revision": variant["revision"],
+                "content": initial_version["content"],
+                "layout": initial_version["layout"],
+                "template_version": initial_version["template_version"],
+            },
+        )
+        if data_of(saved_variant_repeat_body).get("revision") != saved_variant.get("revision"):
+            raise RuntimeError("岗位版简历保存幂等重试改变了版本")
+        variant_version = ((saved_variant.get("versions") or [None])[0] or {}).get("id")
         _, export_body = call(
             client,
             "POST",
@@ -577,7 +611,7 @@ def main() -> None:
         if data_of(interview_resume_body).get("id") != interview.get("id"):
             raise RuntimeError("刷新面试详情没有恢复原会话")
         first_question = interview["questions"][0]
-        call(
+        _, interview_after_answer_body = call(
             client,
             "POST",
             f"/api/v1/interviews/{interview['id']}/answers",
@@ -589,6 +623,20 @@ def main() -> None:
                 "base_revision": interview["revision"],
             },
         )
+        interview_after_answer = data_of(interview_after_answer_body)["interview"]
+        if interview_after_answer.get("status") != "awaiting_answer":
+            raise RuntimeError("面试首轮回答后没有回到可恢复的等待状态")
+        _, early_finish_body = call(
+            client,
+            "POST",
+            f"/api/v1/interviews/{interview['id']}/finish",
+            expected=(200,),
+            headers={**web_headers, "Idempotency-Key": f"finish-{suffix}"},
+            json={"base_revision": interview_after_answer["revision"]},
+        )
+        early_finished = data_of(early_finish_body)
+        if early_finished.get("status") != "ended_early" or (early_finished.get("summary") or {}).get("completion_type") != "early":
+            raise RuntimeError("提前结束面试没有生成 early 总结")
 
         # 用独立 HTTP 客户端验证跨账号隔离，不覆盖主演示账号的 Cookie。
         with httpx.Client(timeout=30, follow_redirects=False) as isolated_client:
@@ -692,6 +740,7 @@ def main() -> None:
                 "browser_draft_deduped": True,
                 "apply_status": 303,
                 "interview_status_after_answer": "awaiting_answer",
+                "interview_early_summary": (early_finished.get("summary") or {}).get("completion_type"),
                 "cross_account_isolation": True,
                 "delete_old_entry_blocked": True,
                 "cascade_delete_access_revoked": True,

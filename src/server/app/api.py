@@ -677,6 +677,15 @@ class DocumentJSONRequest(BaseModel):
         return value
 
 
+class DocumentUploadMeta(BaseModel):
+    """multipart 文件上传的元字段，与 JSON 入口保持相同的基础校验。"""
+
+    model_config = ConfigDict(extra="forbid")
+    document_type: Literal["resume", "job_description"]
+    subject_type: Literal["self_resume", "candidate_resume", "job_description"]
+    title: str = Field(default="未命名资料", min_length=1, max_length=160)
+
+
 class VersionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     draft_id: str = Field(min_length=1, max_length=36)
@@ -1025,9 +1034,16 @@ async def _read_document_request(request: Request) -> tuple[dict[str, Any], str,
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("multipart/form-data"):
         form = await request.form()
-        document_type = str(form.get("document_type", ""))
-        subject_type = str(form.get("subject_type", ""))
-        title = str(form.get("title") or "未命名资料")
+        metadata = DocumentUploadMeta.model_validate(
+            {
+                "document_type": form.get("document_type", ""),
+                "subject_type": form.get("subject_type", ""),
+                "title": form.get("title") or "未命名资料",
+            }
+        )
+        document_type = metadata.document_type
+        subject_type = metadata.subject_type
+        title = metadata.title
         text_value = str(form.get("text") or "").strip()
         file_value = form.get("file")
         if bool(text_value) == bool(file_value):
@@ -1037,7 +1053,10 @@ async def _read_document_request(request: Request) -> tuple[dict[str, Any], str,
             content = await file_value.read()
             source_type = detect_source_type(filename, getattr(file_value, "content_type", None))
             return {"document_type": document_type, "subject_type": subject_type, "title": title}, source_type, content, filename
-        return {"document_type": document_type, "subject_type": subject_type, "title": title, "text": text_value}, "text", None, None
+        parsed = DocumentJSONRequest.model_validate(
+            {"document_type": document_type, "subject_type": subject_type, "title": title, "text": text_value}
+        )
+        return parsed.model_dump(), "text", None, None
     try:
         data = await request.json()
     except Exception as exc:
@@ -2370,6 +2389,20 @@ def _pool(db: Session, account_id: int, public_id: str) -> JobPoolItem:
     return item
 
 
+def _pool_by_pk(db: Session, account_id: int, pool_id: int) -> JobPoolItem:
+    """按内部主键读取岗位，同时重复执行账号和软删除隔离校验。
+
+    岗位版简历内部保存的是 ``job_pool_item_id`` 主键，而对外接口使用岗位的
+    ``public_id``。这两个标识不能混用，否则 PostgreSQL 会在 varchar 与 integer
+    比较时直接报错，且可能绕过岗位资源隔离。
+    """
+
+    item = db.scalar(select(JobPoolItem).where(JobPoolItem.id == pool_id, JobPoolItem.account_id == account_id, JobPoolItem.deleted_at.is_(None)))
+    if item is None:
+        raise NotFoundError("匹配池岗位不存在")
+    return item
+
+
 def _variant(db: Session, account_id: int, public_id: str) -> ResumeVariant:
     item = db.scalar(select(ResumeVariant).where(ResumeVariant.public_id == public_id, ResumeVariant.account_id == account_id, ResumeVariant.deleted_at.is_(None)))
     if item is None:
@@ -2458,20 +2491,21 @@ def create_resume_variant_version(payload: ResumeVersionRequest, request: Reques
     require_seeker(account)
     key = _idempotency_key(request)
     item = _variant(db, account.id, resume_id)
-    if payload.base_revision != item.revision:
-        raise DomainError("RESUME_REVISION_CONFLICT", "岗位版简历已变化，请刷新后重试", 409, "refresh")
     content = _normalise_resume_variant_content(payload.content)
     layout = _validate_resume_layout(content, payload.layout)
-    source_version = db.get(DocumentVersion, item.source_resume_version_id)
-    if source_version is None or source_version.account_id != account.id:
-        raise DomainError("RESUME_SOURCE_INVALID", "岗位版起点资料已不可用", 409)
-    rewrite = _rewrite_for_variant(db, account, _pool(db, account.id, item.job_pool_item_id), source_version, payload.rewrite_id) if payload.rewrite_id else None
     request_digest = payload_hash({"resume_id": resume_id, "base_revision": payload.base_revision, "content": content, "layout": layout, "template_version": payload.template_version, "rewrite_id": payload.rewrite_id})
     existing = db.scalar(select(ResumeVariantVersion).where(ResumeVariantVersion.account_id == account.id, ResumeVariantVersion.resume_variant_id == item.id, ResumeVariantVersion.idempotency_key == key)) if key else None
     if existing is not None:
         if existing.request_hash != request_digest:
             raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的岗位版版本不同", 409)
         return _ok(request, _variant_view(db, item))
+    if payload.base_revision != item.revision:
+        raise DomainError("RESUME_REVISION_CONFLICT", "岗位版简历已变化，请刷新后重试", 409, "refresh")
+    source_version = db.get(DocumentVersion, item.source_resume_version_id)
+    if source_version is None or source_version.account_id != account.id:
+        raise DomainError("RESUME_SOURCE_INVALID", "岗位版起点资料已不可用", 409)
+    pool = _pool_by_pk(db, account.id, item.job_pool_item_id)
+    rewrite = _rewrite_for_variant(db, account, pool, source_version, payload.rewrite_id) if payload.rewrite_id else None
     current = db.scalar(select(func.max(ResumeVariantVersion.version_no)).where(ResumeVariantVersion.resume_variant_id == item.id)) or 0
     item.revision += 1
     row = ResumeVariantVersion(account_id=account.id, resume_variant_id=item.id, version_no=int(current) + 1, content=content, layout=layout, rewrite_id=rewrite.id if rewrite else None, idempotency_key=key, request_hash=request_digest, template_version=payload.template_version)
@@ -3360,7 +3394,7 @@ def _finish_interview_summary(db: Session, account: Account, item: Interview, co
     value = get_model_provider().summary(question_values, answer_values, completion_type).value
     db.add(InterviewSummary(account_id=account.id, interview_id=item.id, completion_type=completion_type, content=value))
     item.summary = value
-    item.status = "completed" if completion_type == "completed" else "ended_early"
+    item.status = "completed" if completion_type == "full" else "ended_early"
     item.revision += 1
 
 
@@ -3459,7 +3493,7 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                     item.current_question_id = next_main.public_id
                     item.status = "awaiting_answer"
                 else:
-                    _finish_interview_summary(db, account, item, "completed")
+                    _finish_interview_summary(db, account, item, "full")
                 task_result.update({"question_id": question.public_id, "needs_followup": False})
 
         try:
@@ -3495,7 +3529,7 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
         raise DomainError("INTERVIEW_ROUND_CONFLICT", "会话轮次已变化，请刷新后重试", 409, "refresh")
     for row in db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == item.id, InterviewQuestion.status == "awaiting_answer")).all():
         row.status = "skipped"
-    _finish_interview_summary(db, account, item, "ended_early")
+    _finish_interview_summary(db, account, item, "early")
     db.commit()
     return _ok(request, _interview_view(db, item))
 
