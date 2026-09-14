@@ -46,6 +46,6 @@ Purslyx/
 - **根目录保持简洁**：放项目入口说明、工具配置和环境变量示例；各端独立使用的依赖清单与构建配置放在对应源码目录，共用配置放根目录。
 - **本地文件**如真实密钥、`.env`、依赖目录、日志和构建产物不提交，按实际工具补充 `.gitignore`；环境变量模板使用 `.env.example`，只写变量名和占位值。
 
-现有资料：[需求说明（已评审）](docs/01-product/specs/需求说明.md) · [首版模块与页面清单（已评审）](docs/01-product/specs/首版模块与页面清单.md) · [首版高保真产品稿](docs/01-product/prototypes/高保真产品稿.html) · [篡改猴高保真产品稿](docs/01-product/prototypes/篡改猴高保真产品稿.html) · [技术架构（已评审）](docs/02-technical/技术架构.md) · [数据库设计规范（已评审）](docs/02-technical/数据库设计规范.md) · [原始需求记录](docs/01-product/specs/需求记录.md) · [视觉方案](docs/01-product/visual/视觉方案.md) · [配色对比](docs/01-product/visual/视觉对比.html) · [项目命名说明](docs/00-overview/brand/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/event/黑客松信息.md) · [黑客松规则与赛题说明](docs/00-overview/event/黑客松规则与赛题说明.md)
+现有资料：[需求说明（已评审）](docs/01-product/specs/需求说明.md) · [首版模块与页面清单（已评审）](docs/01-product/specs/首版模块与页面清单.md) · [首版高保真产品稿](docs/01-product/prototypes/高保真产品稿.html) · [篡改猴高保真产品稿](docs/01-product/prototypes/篡改猴高保真产品稿.html) · [技术架构（已评审）](docs/02-technical/技术架构.md) · [数据库设计规范（已评审）](docs/02-technical/数据库设计规范.md) · [项目起点与复用说明](docs/03-presentations/项目起点与复用说明.md) · [原始需求记录](docs/01-product/specs/需求记录.md) · [视觉方案](docs/01-product/visual/视觉方案.md) · [配色对比](docs/01-product/visual/视觉对比.html) · [项目命名说明](docs/00-overview/brand/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/event/黑客松信息.md) · [黑客松规则与赛题说明](docs/00-overview/event/黑客松规则与赛题说明.md)
 
 本项目采用 [Apache License 2.0](LICENSE)。
