@@ -54,3 +54,35 @@ Purslyx/
 现有资料：[需求说明（已评审）](docs/01-product/specs/需求说明.md) · [首版模块与页面清单（已评审）](docs/01-product/specs/首版模块与页面清单.md) · [首版高保真产品稿](docs/01-product/prototypes/高保真产品稿.html) · [篡改猴高保真产品稿](docs/01-product/prototypes/篡改猴高保真产品稿.html) · [技术架构（已评审）](docs/02-technical/技术架构.md) · [API 设计索引](docs/02-technical/api/API设计索引.md) · [技术模块设计索引](docs/02-technical/modules/技术模块设计索引.md) · [数据库设计规范（已评审）](docs/02-technical/database/数据库设计规范.md) · [模块数据库设计索引](docs/02-technical/database/数据库设计索引.md) · [项目起点与复用说明](docs/04-presentations/项目起点与复用说明.md) · [原始需求记录](docs/01-product/specs/需求记录.md) · [视觉方案](docs/01-product/visual/视觉方案.md) · [配色对比](docs/01-product/visual/视觉对比.html) · [项目命名说明](docs/00-overview/brand/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/event/黑客松信息.md) · [黑客松规则与赛题说明](docs/00-overview/event/黑客松规则与赛题说明.md)
 
 本项目采用 [Apache License 2.0](LICENSE)。
+
+## 明日可直接演示的最小链路
+
+当前先交付一条能落地的纵向切片：提交简历文字和岗位 JD → 确认不可变资料版本 → 生成
+带证据、覆盖率和条件状态的匹配报告。接口集中在 `/api/v1/demo`，页面由服务根路径直接
+提供，不需要 Node.js 构建；邮件、浏览器授权、Celery 和管理端暂不阻塞演示。
+
+数据库固定直连【本地开发环境.md】中的 201 PostgreSQL，禁止 SQLite。密码不要拼进 URL（本
+地密码含 URL 特殊字符），用 `PGPASSWORD` 注入：
+
+```bash
+uv venv .venv
+uv pip install -e '.[test]'
+
+export DATABASE_URL='postgresql+psycopg://purslyx@10.10.10.201:5432/purslyx'
+export PGPASSWORD='<从 docs/02-technical/deployment/本地开发环境.md 读取>'
+export PURSLYX_TOKEN_SECRET='<至少 32 个随机字符>'
+export PURSLYX_DEBUG=true
+export PURSLYX_AUTO_CREATE_SCHEMA=true
+
+PYTHONPATH=src .venv/bin/uvicorn server.app.main:app --host 127.0.0.1 --port 8000
+```
+
+另开终端执行：
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/smoke_201.py
+```
+
+看到 `"database": {"backend": "postgresql"...}`、`"analysis_status": "succeeded"` 即可
+进入浏览器打开 <http://127.0.0.1:8000/> 演示。完整的 201 连接约定见
+[201 环境部署约定](docs/02-technical/deployment/201环境部署.md)。

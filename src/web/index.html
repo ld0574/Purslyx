@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Purslyx · SDD 演示</title>
+    <style>
+      :root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      body { margin: 0; color: #16324f; background: #f3f8fc; }
+      main { max-width: 1080px; margin: 0 auto; padding: 42px 20px 64px; }
+      .brand { display: flex; align-items: center; gap: 14px; margin-bottom: 30px; }
+      .brand-mark { width: 44px; height: 44px; border-radius: 14px; background: #1264e8; color: #fff; display: grid; place-items: center; font-size: 24px; }
+      .brand h1, h2 { margin: 0; } .brand h1 { font-size: 30px; } h2 { font-size: 18px; }
+      .subtle { color: #6c8296; margin: 6px 0 0; }
+      .status { margin-left: auto; padding: 8px 12px; border-radius: 99px; background: #e7f5ed; color: #16734d; font-size: 13px; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+      .card { background: #fff; border: 1px solid #dce9f4; border-radius: 18px; padding: 20px; box-shadow: 0 8px 28px rgba(35, 84, 125, .06); }
+      label { display: block; font-size: 13px; font-weight: 700; margin: 18px 0 8px; }
+      input, textarea { box-sizing: border-box; width: 100%; border: 1px solid #c7d9e8; border-radius: 10px; padding: 11px 12px; font: inherit; color: inherit; background: #fbfdff; }
+      textarea { min-height: 230px; resize: vertical; line-height: 1.55; }
+      button { margin-top: 18px; border: 0; border-radius: 10px; padding: 12px 18px; font-weight: 700; cursor: pointer; background: #1264e8; color: #fff; }
+      button:disabled { opacity: .55; cursor: wait; }
+      pre { margin: 0; white-space: pre-wrap; word-break: break-word; line-height: 1.55; font-size: 13px; }
+      .result { margin-top: 18px; } .result strong { color: #1264e8; }
+      @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .status { display: none; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <div class="brand-mark">猞</div>
+        <div><h1>Purslyx</h1><p class="subtle">SDD 最小纵向演示：有依据地找到下一步机会</p></div>
+        <div id="health" class="status">正在检查 201 PostgreSQL…</div>
+      </div>
+      <div class="grid">
+        <section class="card">
+          <h2>① 提交简历</h2>
+          <label for="resume-title">资料名称</label>
+          <input id="resume-title" value="演示简历" />
+          <label for="resume-text">简历正文</label>
+          <textarea id="resume-text">张三
+工作经历：
+负责 React 前端项目开发，使用 TypeScript 和 Vue 完成组件设计。
+通过性能优化和自动化测试提升交付质量。
+项目经历：
+参与用户后台改版，推动需求分析、开发和上线。</textarea>
+        </section>
+        <section class="card">
+          <h2>② 提交岗位 JD</h2>
+          <label for="job-title">资料名称</label>
+          <input id="job-title" value="前端开发工程师 JD" />
+          <label for="job-text">岗位正文</label>
+          <textarea id="job-text">前端开发工程师
+公司：示例科技
+地点：杭州
+薪资：18K-28K
+任职要求：
+1、熟悉 React 或 Vue 与 TypeScript
+2、负责前端项目开发和交付
+3、关注性能优化与自动化测试</textarea>
+        </section>
+      </div>
+      <section class="card result">
+        <button id="run" type="button">确认资料并生成匹配报告</button>
+        <p class="subtle">综合分、证据覆盖率和条件状态由代码计算，模型不直接决定分数。</p>
+        <pre id="output">等待执行…</pre>
+      </section>
+    </main>
+    <script>
+      const output = document.querySelector('#output');
+      const runButton = document.querySelector('#run');
+      const write = (value) => { output.textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2); };
+      async function call(path, options) {
+        const response = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
+        const body = await response.json();
+        if (!response.ok) throw new Error(body?.error?.message || `请求失败（${response.status}）`);
+        return body.data;
+      }
+      async function createAndConfirm(documentType, title, text) {
+        const document = await call('/api/v1/demo/documents', { method: 'POST', body: JSON.stringify({ document_type: documentType, title, text }) });
+        return call(`/api/v1/demo/documents/${document.id}/confirm`, { method: 'POST' });
+      }
+      fetch('/health').catch(() => { document.querySelector('#health').textContent = '201 PostgreSQL · 未连接'; });
+      runButton.addEventListener('click', async () => {
+        runButton.disabled = true; write('正在提交资料、创建不可变版本并计算报告…');
+        try {
+          const resume = await createAndConfirm('resume', document.querySelector('#resume-title').value, document.querySelector('#resume-text').value);
+          const job = await createAndConfirm('job', document.querySelector('#job-title').value, document.querySelector('#job-text').value);
+          const result = await call('/api/v1/demo/matches', { method: 'POST', body: JSON.stringify({ resume_version_id: resume.version.id, job_version_id: job.version.id }) });
+          write({ resume_version: resume.version, job_version: job.version, match: result });
+        } catch (error) { write(`演示失败：${error.message}`); }
+        finally { runButton.disabled = false; }
+      });
+    </script>
+  </body>
+</html>

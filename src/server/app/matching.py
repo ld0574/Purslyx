@@ -1,0 +1,314 @@
+"""可复核的岗位匹配内核。
+
+模型只负责把 JD 与简历整理成结构化候选结果；最终能力分、覆盖率和条件状态全部由
+这里的代码计算，防止模型随机输出一个无法解释的综合分。
+"""
+
+from __future__ import annotations
+
+import re
+from decimal import Decimal, InvalidOperation
+from typing import Any
+
+
+DIMENSION_CONFIG = {
+    "engineering": [
+        ("technical", "技术能力", 0.40),
+        ("delivery", "工程交付", 0.30),
+        ("quality", "问题解决与质量", 0.20),
+        ("business", "业务理解", 0.10),
+    ],
+    "product": [
+        ("discovery", "需求洞察", 0.30),
+        ("delivery", "产品方案与交付", 0.35),
+        ("data", "数据分析与验证", 0.25),
+        ("business", "业务理解", 0.10),
+    ],
+    "operations": [
+        ("strategy", "策略与执行", 0.35),
+        ("growth", "内容渠道与用户运营", 0.30),
+        ("data", "数据复盘", 0.25),
+        ("business", "业务理解", 0.10),
+    ],
+    "general": [
+        ("core", "核心能力", 0.40),
+        ("delivery", "职责交付", 0.30),
+        ("problem_solving", "问题解决与协作", 0.20),
+        ("business", "业务理解", 0.10),
+    ],
+}
+
+
+def _tokens(text: str) -> set[str]:
+    words = set(re.findall(r"[A-Za-z][A-Za-z0-9+#.-]*|[\u4e00-\u9fff]{2,6}", text.lower()))
+    # 中文短语再拆成二字词，保证“性能优化”能和“性能”有可解释的交集。
+    for phrase in list(words):
+        if re.fullmatch(r"[\u4e00-\u9fff]+", phrase):
+            words.update(phrase[index : index + 2] for index in range(len(phrase) - 1))
+    return {word for word in words if len(word) >= 2 or re.search(r"[a-z0-9]", word)}
+
+
+def _resume_segments(resume_content: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        segment
+        for section in resume_content.get("sections", [])
+        for segment in section.get("segments", [])
+        if isinstance(segment, dict) and segment.get("text")
+    ]
+
+
+def _requirements(job_fields: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = job_fields.get("requirements") or job_fields.get("responsibilities") or []
+    result = []
+    if isinstance(raw, str):
+        raw = re.split(r"[\n；;。]", raw)
+    for index, item in enumerate(raw, start=1):
+        if isinstance(item, str) and item.strip():
+            result.append({"requirement_id": f"req-{index}", "text": item.strip()})
+        elif isinstance(item, dict) and item.get("text"):
+            result.append({"requirement_id": item.get("requirement_id", f"req-{index}"), **item})
+    return result
+
+
+def _dimension_for(text: str, category: str) -> str:
+    value = text.lower()
+    keywords = {
+        "technical": ("开发", "前端", "后端", "react", "vue", "python", "java", "技术", "sql"),
+        "delivery": ("交付", "项目", "负责", "方案", "上线", "协作"),
+        "quality": ("性能", "质量", "测试", "问题", "稳定", "排查"),
+        "business": ("业务", "用户", "行业", "增长", "商业"),
+        "discovery": ("需求", "研究", "洞察", "用户", "场景"),
+        "data": ("数据", "指标", "分析", "复盘", "实验"),
+        "strategy": ("策略", "规划", "执行", "渠道"),
+        "growth": ("内容", "运营", "增长", "用户", "社群"),
+        "problem_solving": ("问题", "解决", "协作", "沟通"),
+        "core": ("能力", "经验", "专业"),
+    }
+    for dimension, words in keywords.items():
+        if any(word in value for word in words):
+            if dimension in {key for key, _, _ in DIMENSION_CONFIG.get(category, DIMENSION_CONFIG["general"])}:
+                return dimension
+    return DIMENSION_CONFIG.get(category, DIMENSION_CONFIG["general"])[0][0]
+
+
+def _classify(requirement: str, segments: list[dict[str, Any]], explicit_gaps: set[str]) -> tuple[str, list[dict[str, Any]]]:
+    req_tokens = _tokens(requirement)
+    evidence: list[dict[str, Any]] = []
+    for segment in segments:
+        segment_text = str(segment.get("text", ""))
+        hits = sorted(req_tokens & _tokens(segment_text))
+        if hits:
+            evidence.append(
+                {
+                    "segment_key": segment.get("segment_key"),
+                    "quote": segment_text,
+                    "matched_terms": hits[:8],
+                    "source_type": segment.get("source", "user_confirmed"),
+                }
+            )
+    if requirement in explicit_gaps:
+        return "gap", evidence
+    if not evidence:
+        return "needs_confirmation", []
+    hit_count = sum(len(item["matched_terms"]) for item in evidence)
+    status = "supported" if hit_count >= max(2, len(req_tokens) // 2) else "partially_supported"
+    return status, evidence[:3]
+
+
+def _number(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except InvalidOperation:
+        return None
+
+
+def _field_status(obj: dict[str, Any] | None) -> str:
+    if not obj:
+        return "unknown"
+    return str(obj.get("status", "unknown"))
+
+
+def compare_salary(preference: dict[str, Any] | None, job_salary: dict[str, Any] | None) -> dict[str, Any]:
+    """按文档规则比较薪资，不把未知当成冲突。"""
+
+    if not preference or _field_status(preference) != "specified":
+        return {"status": "unknown", "explanation": "求职期望未明确提供薪资范围。"}
+    if not job_salary or _field_status(job_salary) != "specified":
+        if job_salary and _field_status(job_salary) == "negotiable":
+            return {"status": "unknown", "explanation": "岗位薪资为面议，暂不可与期望范围比较。"}
+        return {"status": "unknown", "explanation": "岗位未披露可比较的薪资范围。"}
+    fields = ("currency", "period", "tax_basis")
+    if any(not preference.get(field) or not job_salary.get(field) for field in fields):
+        return {"status": "unknown", "explanation": "币种、周期或税前税后口径缺失，暂不可比较。"}
+    if any(preference.get(field) != job_salary.get(field) for field in fields):
+        return {"status": "unknown", "explanation": "双方薪资口径不同，未擅自换算。"}
+    expected_min = _number(preference.get("min"))
+    expected_max = _number(preference.get("max"))
+    job_min = _number(job_salary.get("min"))
+    job_max = _number(job_salary.get("max"))
+    if None in (expected_min, expected_max, job_min, job_max) or expected_min > expected_max or job_min > job_max:
+        return {"status": "unknown", "explanation": "薪资区间缺失或无效，需要先修正。"}
+    if job_max < expected_min:
+        return {"status": "conflicted", "explanation": "岗位披露上限低于求职期望下限。"}
+    if job_min > expected_max:
+        return {"status": "matched", "explanation": "岗位披露范围高于期望上限，不因此判定为不匹配。"}
+    return {"status": "matched", "explanation": "岗位披露范围与期望有交集，仍需确认实际预算。"}
+
+
+def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """单独计算岗位方向、地点、办公方式和薪资条件。"""
+
+    preference = preference or {}
+    results: list[dict[str, Any]] = []
+    title = preference.get("job_title") or {}
+    job_title = job_fields.get("title") or job_fields.get("job_title")
+    if title.get("status") != "specified" or not job_title:
+        results.append({"condition": "job_title", "status": "unknown", "explanation": "岗位方向信息不足。"})
+    elif str(title.get("value", "")).lower() in str(job_title).lower() or str(job_title).lower() in str(title.get("value", "")).lower():
+        results.append({"condition": "job_title", "status": "matched", "explanation": "岗位名称方向相符。"})
+    else:
+        results.append({"condition": "job_title", "status": "unknown", "explanation": "名称不同，需要结合实际职责确认方向。"})
+
+    locations = preference.get("locations") or {}
+    wanted = {str(item).strip() for item in locations.get("values", []) if str(item).strip()}
+    actual = {str(item).strip() for item in (job_fields.get("locations") or []) if str(item).strip()}
+    if locations.get("status") != "specified" or not actual:
+        results.append({"condition": "location", "status": "unknown", "explanation": "地点未完整披露或未提供期望。"})
+    elif wanted & actual:
+        results.append({"condition": "location", "status": "matched", "explanation": "岗位地点包含可接受城市。"})
+    else:
+        results.append({"condition": "location", "status": "conflicted", "explanation": "岗位地点不在已确认的可接受城市内。"})
+
+    work_mode = preference.get("work_mode") or {}
+    actual_mode = job_fields.get("work_mode")
+    if work_mode.get("status") != "specified" or not actual_mode:
+        results.append({"condition": "work_mode", "status": "unknown", "explanation": "办公方式未完整披露或未提供期望。"})
+    elif work_mode.get("value") == actual_mode:
+        results.append({"condition": "work_mode", "status": "matched", "explanation": "办公方式符合已确认期望。"})
+    else:
+        results.append({"condition": "work_mode", "status": "conflicted", "explanation": "办公方式与已确认期望不同。"})
+
+    results.append(
+        {
+            "condition": "salary",
+            **compare_salary(preference.get("salary"), job_fields.get("salary")),
+        }
+    )
+    return results
+
+
+def build_match_result(
+    resume_content: dict[str, Any],
+    job_content: dict[str, Any],
+    preference_content: dict[str, Any] | None = None,
+    context_type: str = "seeker_pool",
+) -> dict[str, Any]:
+    """生成可持久化、可复核的匹配报告。"""
+
+    job_fields = job_content.get("job_fields") or {}
+    category = job_fields.get("category") or "general"
+    dimensions = DIMENSION_CONFIG.get(category, DIMENSION_CONFIG["general"])
+    segments = _resume_segments(resume_content)
+    explicit_gaps = set(resume_content.get("explicit_gaps", []))
+    requirements = _requirements(job_fields)
+    dimension_rows: dict[str, list[dict[str, Any]]] = {key: [] for key, _, _ in dimensions}
+    for requirement in requirements:
+        dimension = requirement.get("dimension") or _dimension_for(requirement["text"], category)
+        if dimension not in dimension_rows:
+            dimension = dimensions[0][0]
+        status, evidence = _classify(requirement["text"], segments, explicit_gaps)
+        dimension_rows[dimension].append(
+            {
+                "requirement_id": requirement["requirement_id"],
+                "job_quote": requirement["text"],
+                "status": status,
+                "evidence": evidence,
+                "explanation": {
+                    "supported": "已有确认经历提供了对应依据。",
+                    "partially_supported": "已有经历提供了部分可迁移依据，还需补充承担范围或结果。",
+                    "gap": "确认资料明确显示该要求存在差距。",
+                    "needs_confirmation": "当前资料没有足够依据，不能断言具备或不具备。",
+                }[status],
+            }
+        )
+
+    total_score = Decimal("0")
+    total_coverage = Decimal("0")
+    applicable_weight = Decimal("0")
+    dimension_output = []
+    for key, label, base_weight in dimensions:
+        rows = dimension_rows[key]
+        if not rows:
+            dimension_output.append(
+                {"key": key, "label": label, "base_weight": base_weight, "effective_weight": 0, "score": None, "evidence_status": "not_applicable", "requirements": []}
+            )
+            continue
+        weight = Decimal(str(base_weight))
+        applicable_weight += weight
+        score_sum = Decimal("0")
+        coverage_sum = Decimal("0")
+        for row in rows:
+            if row["status"] == "supported":
+                score_sum += Decimal("1")
+                coverage_sum += Decimal("1")
+            elif row["status"] == "partially_supported":
+                score_sum += Decimal("0.5")
+                coverage_sum += Decimal("1")
+            elif row["status"] == "gap":
+                coverage_sum += Decimal("1")
+        row_score = (score_sum / Decimal(len(rows)) * Decimal("100")).quantize(Decimal("0.1"))
+        row_coverage = (coverage_sum / Decimal(len(rows)) * Decimal("100")).quantize(Decimal("0.1"))
+        dimension_output.append(
+            {
+                "key": key,
+                "label": label,
+                "base_weight": float(weight),
+                "effective_weight": float(weight),
+                "score": float(row_score),
+                "evidence_status": "needs_confirmation" if row_coverage < 100 else "available",
+                "summary": f"{row_score} 分，证据覆盖率 {row_coverage}%",
+                "requirements": rows,
+            }
+        )
+        total_score += weight * score_sum / Decimal(len(rows))
+        total_coverage += weight * coverage_sum / Decimal(len(rows))
+
+    if applicable_weight == 0 or not requirements:
+        ability_score = None
+        coverage = None
+    else:
+        ability_score = (total_score / applicable_weight * Decimal("100")).quantize(Decimal("0.1"))
+        coverage = (total_coverage / applicable_weight).quantize(Decimal("0.0001"))
+
+    conditions = compare_conditions(preference_content, job_fields)
+    hard_conflict = any(
+        item["status"] == "conflicted"
+        and (preference_content or {}).get(
+            {"job_title": "job_title", "location": "locations", "work_mode": "work_mode", "salary": "salary"}.get(item["condition"], item["condition"]), {}
+        ).get("strength") == "required"
+        for item in conditions
+    )
+    unknown = any(item["status"] == "unknown" for item in conditions)
+    if hard_conflict:
+        advice = {"status": "not_priority", "text": "当前不优先，先确认或调整必须符合的条件。", "next_steps": ["先处理硬性条件冲突，再决定是否继续准备。"]}
+    elif ability_score is None or (coverage is not None and coverage < Decimal("0.5")):
+        advice = {"status": "needs_more_information", "text": "当前资料不足，先补充可核验经历和岗位条件。", "next_steps": ["补充与岗位要求直接相关的事实。"]}
+    elif unknown:
+        advice = {"status": "needs_confirmation", "text": "能力分析已有依据，但部分求职条件仍待确认。", "next_steps": ["核实岗位地点、办公方式和薪资口径。"]}
+    else:
+        advice = {"status": "review", "text": "请结合能力依据和条件对照做人工判断。", "next_steps": ["查看证据并决定是否补充事实或开始面试练习。"]}
+
+    return {
+        "context_type": context_type,
+        "job_category": category,
+        "ability_score": float(ability_score) if ability_score is not None else None,
+        "evidence_coverage": float(coverage) if coverage is not None else None,
+        "dimensions": dimension_output,
+        "conditions": conditions,
+        "overall_advice": advice,
+        "scoring_rule_version": "ability-v0.1",
+        "result_schema_version": "analysis-result-v1",
+        "prompt_version": "analysis-local-v1",
+    }
