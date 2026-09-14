@@ -6,12 +6,14 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -57,6 +59,76 @@ def payload_hash(value: Any) -> str:
 
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def encode_page_cursor(value: datetime, row_id: int) -> str:
+    """生成不透明的倒序分页游标。
+
+    游标只包含排序字段，不包含账号、过滤条件或业务正文；读取时仍会重新应用当前
+    请求的账号和筛选条件。使用 base64url 只是编码，不把它当作安全凭据。
+    """
+
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    payload = {"v": 1, "at": value.astimezone(timezone.utc).isoformat(), "id": int(row_id)}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_page_cursor(value: str) -> tuple[datetime, int]:
+    """解析并严格校验游标，拒绝任意 SQL 排序表达式或过大的输入。"""
+
+    if not value or len(value) > 512:
+        raise DomainError("PAGINATION_CURSOR_INVALID", "分页游标无效，请重新加载列表", 422, "refresh")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        if not isinstance(payload, dict):
+            raise ValueError("cursor payload must be an object")
+        timestamp = datetime.fromisoformat(str(payload["at"]))
+        raw_row_id = payload["id"]
+        if isinstance(raw_row_id, bool) or not isinstance(raw_row_id, int):
+            raise ValueError("cursor id must be an integer")
+        row_id = raw_row_id
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise DomainError("PAGINATION_CURSOR_INVALID", "分页游标无效，请重新加载列表", 422, "refresh") from exc
+    if payload.get("v") != 1 or row_id < 1:
+        raise DomainError("PAGINATION_CURSOR_INVALID", "分页游标无效，请重新加载列表", 422, "refresh")
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc), row_id
+
+
+def page_rows(
+    db: Session,
+    statement: Any,
+    model: Any,
+    *,
+    cursor: str | None,
+    limit: int,
+    timestamp_field: str = "created_at",
+) -> tuple[list[Any], dict[str, Any]]:
+    """按 ``timestamp DESC, id DESC`` 读取一页并返回统一 page 元数据。"""
+
+    if not 1 <= limit <= 100:
+        raise DomainError("PAGINATION_LIMIT_INVALID", "limit 必须在 1 到 100 之间", 422)
+    timestamp_column = getattr(model, timestamp_field)
+    if cursor:
+        timestamp, row_id = decode_page_cursor(cursor)
+        statement = statement.where(
+            or_(
+                timestamp_column < timestamp,
+                and_(timestamp_column == timestamp, model.id < row_id),
+            )
+        )
+    statement = statement.order_by(timestamp_column.desc(), model.id.desc()).limit(limit + 1)
+    rows = list(db.scalars(statement).all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more and rows:
+        next_cursor = encode_page_cursor(getattr(rows[-1], timestamp_field), rows[-1].id)
+    return rows, {"next_cursor": next_cursor, "has_more": has_more, "limit": limit}
 
 
 def feature_allowed(account: Account, feature: str) -> bool:
@@ -508,7 +580,14 @@ def model_call(
     return call
 
 
-def usage_view(db: Session, account: Account, feature: str | None = None) -> dict[str, Any]:
+def usage_view(
+    db: Session,
+    account: Account,
+    feature: str | None = None,
+    *,
+    entries_cursor: str | None = None,
+    entries_limit: int = 20,
+) -> dict[str, Any]:
     features = sorted(FEATURES_BY_ROLE.get(account.registration_role, set()))
     if feature:
         check_feature_allowed(account, feature)
@@ -527,12 +606,18 @@ def usage_view(db: Session, account: Account, feature: str | None = None) -> dic
                 "updated_at": balance.updated_at.isoformat(),
             }
         )
-    entries = db.scalars(
-        select(UsageLedger)
-        .where(UsageLedger.account_id == account.id, *([UsageLedger.feature == feature] if feature else []))
-        .order_by(UsageLedger.created_at.desc())
-        .limit(100)
-    ).all()
+    entry_statement = select(UsageLedger).where(
+        UsageLedger.account_id == account.id,
+        *([UsageLedger.feature == feature] if feature else []),
+    )
+    entries, page = page_rows(
+        db,
+        entry_statement,
+        UsageLedger,
+        cursor=entries_cursor,
+        limit=entries_limit,
+        timestamp_field="created_at",
+    )
     return {
         "registration_role": account.registration_role,
         "balances": balances,
@@ -543,13 +628,17 @@ def usage_view(db: Session, account: Account, feature: str | None = None) -> dic
                 "entry_type": item.event_type,
                 "count": item.amount,
                 "source_type": "task" if item.task_id else ("trial" if item.event_type == "grant" else "admin_grant"),
-                "source_id": None,
+                "source_id": (
+                    db.get(Task, item.task_id).public_id
+                    if item.task_id and db.get(Task, item.task_id) and db.get(Task, item.task_id).account_id == account.id
+                    else None
+                ),
                 "reason": item.reason,
                 "created_at": item.created_at.isoformat(),
             }
             for item in entries
         ],
-        "page": {"next_cursor": None, "has_more": False},
+        "page": page,
     }
 
 

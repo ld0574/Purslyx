@@ -6,18 +6,21 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import hmac
+import io
 import json
 import logging
 import math
 import re
 import secrets
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Annotated, Literal
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, Header, Path as PathParam, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
@@ -104,6 +107,7 @@ from .security import (
     session_expiry,
     verify_password,
 )
+from .storage import atomic_write_bytes, ensure_storage_capacity, private_path, safe_download_name, storage_key
 from .services import (
     FEATURES_BY_ROLE,
     available_count,
@@ -114,6 +118,7 @@ from .services import (
     grant_trial_if_needed,
     mark_task_running,
     model_call,
+    page_rows,
     payload_hash,
     release_feature,
     run_local_task,
@@ -999,9 +1004,8 @@ async def create_document_form(request: Request, account: WebAccount, db: Sessio
         if file_bytes is not None:
             extension = {"pdf": ".pdf", "doc": ".doc", "docx": ".docx", "text": ".txt"}[source_type]
             stored_hash = sha256_bytes(file_bytes)
-            stored_path = settings.file_dir / f"{secrets.token_hex(16)}{extension}"
-            settings.file_dir.mkdir(parents=True, exist_ok=True)
-            stored_path.write_bytes(file_bytes)
+            ensure_storage_capacity(db, len(file_bytes))
+            stored_path = atomic_write_bytes(settings.file_dir, file_bytes, extension)
             text_value = extract_file_text(stored_path, source_type)
         provider = get_model_provider()
         model_result = provider.extract_resume(text_value) if document_type == "resume" else provider.extract_job(text_value)
@@ -1013,7 +1017,7 @@ async def create_document_form(request: Request, account: WebAccount, db: Sessio
             source_type=source_type,
             status="available",
             raw_text=text_value,
-            file_path=str(stored_path) if stored_path else None,
+            file_path=storage_key(stored_path, settings.data_dir) if stored_path else None,
             file_sha256=stored_hash,
             idempotency_key=key,
             request_hash=request_digest,
@@ -1037,7 +1041,7 @@ async def create_document_form(request: Request, account: WebAccount, db: Sessio
                     ),
                     byte_size=len(file_bytes or b""),
                     sha256=stored_hash,
-                    storage_key=str(stored_path),
+                    storage_key=storage_key(stored_path, settings.data_dir),
                     status="available",
                 )
             )
@@ -1086,7 +1090,7 @@ def parse_document(
             db.commit()
             content_text = document.raw_text
             if not content_text and document.file_path:
-                content_text = extract_file_text(Path(document.file_path), document.source_type)
+                content_text = extract_file_text(private_path(document.file_path, settings.data_dir), document.source_type)
             if not content_text:
                 raise DomainError("DOCUMENT_CONTENT_UNREADABLE", "原始资料无法读取", 422, "paste_text")
             provider = get_model_provider()
@@ -1122,17 +1126,19 @@ def list_documents(
     document_type: str | None = Query(default=None),
     subject_type: str | None = Query(default=None),
     document_status: str | None = Query(default=None, alias="status"),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
-    statement = select(Document).where(Document.account_id == account.id, Document.deleted_at.is_(None)).order_by(Document.updated_at.desc()).limit(100)
+    statement = select(Document).where(Document.account_id == account.id, Document.deleted_at.is_(None))
     if document_type:
         statement = statement.where(Document.document_type.in_([document_type, "job" if document_type == "job_description" else document_type]))
     if subject_type:
         statement = statement.where(Document.subject_type == subject_type)
     if document_status:
         statement = statement.where(Document.status == document_status)
-    rows = db.scalars(statement).all()
-    return _ok(request, {"items": [_document_summary(db, item) for item in rows], "page": {"next_cursor": None, "has_more": False}})
+    rows, page = page_rows(db, statement, Document, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    return _ok(request, {"items": [_document_summary(db, item) for item in rows], "page": page})
 
 
 @router.get("/documents/{document_id}", tags=["documents"])
@@ -1200,9 +1206,24 @@ def get_document_file(
     db: Session = Depends(get_db),
 ) -> Response:
     item = _document(db, account.id, document_id)
-    if not item.file_path or not Path(item.file_path).is_file():
+    if not item.file_path:
         raise NotFoundError("资料没有可下载的原始文件")
-    response = FileResponse(item.file_path, filename=Path(item.file_path).name, media_type="application/octet-stream")
+    file_path = private_path(item.file_path, settings.data_dir)
+    if not file_path.is_file():
+        raise NotFoundError("资料没有可下载的原始文件")
+    stored = db.scalar(
+        select(StoredFile).where(
+            StoredFile.account_id == account.id,
+            StoredFile.purpose == "document_source",
+            StoredFile.storage_key == storage_key(file_path, settings.data_dir),
+            StoredFile.status == "available",
+            StoredFile.deleted_at.is_(None),
+        )
+    )
+    fallback_name = f"{item.public_id}.{item.source_type if item.source_type != 'text' else 'txt'}"
+    filename = safe_download_name(stored.original_filename if stored else None, fallback_name)
+    media_type = stored.media_type if stored else "application/octet-stream"
+    response = FileResponse(file_path, filename=filename, media_type=media_type)
     response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -1236,6 +1257,12 @@ def delete_document(request: Request, account: WebAccount, document_id: str = Pa
     # 删除是业务事实的可见性撤销，分析历史保留最小状态但不能再读正文。
     version_ids = select(DocumentVersion.id).where(DocumentVersion.document_id == item.id)
     db.query(Analysis).filter(Analysis.account_id == account.id, (Analysis.resume_version_id.in_(version_ids) | Analysis.job_version_id.in_(version_ids))).update({Analysis.deleted_at: now_utc()}, synchronize_session=False)
+    db.query(StoredFile).filter(
+        StoredFile.account_id == account.id,
+        StoredFile.purpose == "document_source",
+        StoredFile.storage_key == item.file_path,
+        StoredFile.deleted_at.is_(None),
+    ).update({StoredFile.status: "deleted", StoredFile.deleted_at: now_utc()}, synchronize_session=False)
     db.commit()
     return _no_content(request)
 
@@ -1461,8 +1488,15 @@ def _set_default_preference(db: Session, account_id: int, selected_id: int) -> N
 
 
 @router.get("/preferences", tags=["preferences"])
-def list_preferences(request: Request, account: WebAccount, subject_document_id: str | None = Query(default=None), db: Session = Depends(get_db)) -> JSONResponse:
-    statement = select(Preference).where(Preference.account_id == account.id, Preference.deleted_at.is_(None), Preference.status == "active").order_by(Preference.updated_at.desc())
+def list_preferences(
+    request: Request,
+    account: WebAccount,
+    subject_document_id: str | None = Query(default=None),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    statement = select(Preference).where(Preference.account_id == account.id, Preference.deleted_at.is_(None), Preference.status == "active")
     if account.registration_role == "recruiter":
         if not subject_document_id:
             raise DomainError("PREFERENCE_SUBJECT_REQUIRED", "招聘方查询期望时必须提供候选人资料", 422)
@@ -1470,8 +1504,8 @@ def list_preferences(request: Request, account: WebAccount, subject_document_id:
         statement = statement.where(Preference.subject_document_id == subject.id)
     elif subject_document_id:
         raise DomainError("PREFERENCE_SUBJECT_INVALID", "求职方不能按候选人资料查询期望", 422)
-    rows = db.scalars(statement).all()
-    return _ok(request, {"items": [_preference_view(db, item) for item in rows], "page": {"next_cursor": None, "has_more": False}})
+    rows, page = page_rows(db, statement, Preference, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    return _ok(request, {"items": [_preference_view(db, item) for item in rows], "page": page})
 
 
 @router.post("/preferences", tags=["preferences"], status_code=201)
@@ -1596,13 +1630,23 @@ def _validate_fact_source(document: Document, source_version: DocumentVersion | 
 
 
 @router.get("/facts", tags=["facts"])
-def list_facts(request: Request, account: WebAccount, document_id: str | None = Query(default=None), db: Session = Depends(get_db)) -> JSONResponse:
+def list_facts(
+    request: Request,
+    account: WebAccount,
+    document_id: str | None = Query(default=None),
+    fact_status: str | None = Query(default=None, alias="status", max_length=20),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     require_seeker(account)
-    statement = select(Fact).where(Fact.account_id == account.id, Fact.deleted_at.is_(None)).order_by(Fact.updated_at.desc()).limit(100)
+    statement = select(Fact).where(Fact.account_id == account.id, Fact.deleted_at.is_(None))
     if document_id:
         statement = statement.where(Fact.document_id == _document(db, account.id, document_id).id)
-    rows = db.scalars(statement).all()
-    return _ok(request, {"items": [_fact_view(db, item) for item in rows], "page": {"next_cursor": None, "has_more": False}})
+    if fact_status:
+        statement = statement.where(Fact.status == fact_status)
+    rows, page = page_rows(db, statement, Fact, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    return _ok(request, {"items": [_fact_view(db, item) for item in rows], "page": page})
 
 
 @router.post("/facts", tags=["facts"], status_code=201)
@@ -2033,10 +2077,23 @@ def _variant_view(db: Session, item: ResumeVariant) -> dict[str, Any]:
 
 
 @router.get("/resumes", tags=["resumes"])
-def list_resume_variants(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def list_resume_variants(
+    request: Request,
+    account: WebAccount,
+    job_pool_item_id: str | None = Query(default=None, max_length=36),
+    variant_status: str | None = Query(default=None, alias="status", max_length=24),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     require_seeker(account)
-    rows = db.scalars(select(ResumeVariant).where(ResumeVariant.account_id == account.id, ResumeVariant.deleted_at.is_(None)).order_by(ResumeVariant.updated_at.desc()).limit(100)).all()
-    return _ok(request, {"items": [_variant_view(db, item) for item in rows], "page": {"next_cursor": None, "has_more": False}})
+    statement = select(ResumeVariant).where(ResumeVariant.account_id == account.id, ResumeVariant.deleted_at.is_(None))
+    if job_pool_item_id:
+        statement = statement.where(ResumeVariant.job_pool_item_id == _pool(db, account.id, job_pool_item_id).id)
+    if variant_status:
+        statement = statement.where(ResumeVariant.status == variant_status)
+    rows, page = page_rows(db, statement, ResumeVariant, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    return _ok(request, {"items": [_variant_view(db, item) for item in rows], "page": page})
 
 
 @router.get("/resumes/{resume_id}", tags=["resumes"])
@@ -2090,26 +2147,52 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
     db.add(export)
     db.flush()
     db.commit()
+    output_dir = settings.export_dir.resolve()
+    output_path = output_dir / f"{export.public_id}.pdf"
+    render_path = output_dir / f".{export.public_id}.pdf.rendering"
+    published_path: Path | None = None
+    attempt: TaskAttempt | None = None
     try:
         attempt = mark_task_running(db, task)
         db.commit()
-        output_path = settings.export_dir / f"{export.public_id}.pdf"
-        render_resume_pdf(version.content, version.layout, output_path, "岗位版简历")
-        export.file_path = str(output_path)
+        render_path.unlink(missing_ok=True)
+        render_resume_pdf(version.content, version.layout, render_path, "岗位版简历")
+        byte_size = render_path.stat().st_size
+        ensure_storage_capacity(db, byte_size)
+        render_path.replace(output_path)
+        published_path = output_path
+        export.file_path = storage_key(output_path, settings.data_dir)
         export.content_hash = sha256_bytes(output_path.read_bytes())
         export.status = "available"
         export.completed_at = now_utc()
+        db.add(
+            StoredFile(
+                account_id=account.id,
+                purpose="resume_pdf",
+                original_filename="purslyx-resume.pdf",
+                media_type="application/pdf",
+                byte_size=byte_size,
+                sha256=export.content_hash,
+                storage_key=storage_key(output_path, settings.data_dir),
+                status="available",
+            )
+        )
         task_result = {"export_id": export.public_id, "file_ready": True}
         finish_task(db, task, None, task_result, attempt=attempt)
         db.commit()
     except Exception as exc:
         db.rollback()
-        fail_task(db, task.id, None, exc, attempt_id=locals().get("attempt").id if locals().get("attempt") else None)
+        render_path.unlink(missing_ok=True)
+        if published_path is not None:
+            published_path.unlink(missing_ok=True)
+        fail_task(db, task.id, None, exc, attempt_id=attempt.id if attempt else None)
         export = db.get(Export, export.id)
         if export:
             export.status = "failed"
-            export.failure_code = "PDF_EXPORT_FAILED"
+            export.failure_code = getattr(exc, "code", "PDF_EXPORT_FAILED")
         db.commit()
+        if isinstance(exc, DomainError):
+            raise exc
         raise DomainError("PDF_EXPORT_FAILED", "PDF 导出失败，请重试", 503, "retry") from exc
     db.refresh(export)
     return _ok(request, {"task": task_view(task), "export": _export_view(export)}, code=202)
@@ -2118,7 +2201,8 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
 def _export_view(item: Export | None) -> dict[str, Any] | None:
     if item is None:
         return None
-    return {"id": item.public_id, "status": item.status, "file_available": bool(item.file_path and Path(item.file_path).is_file()), "content_hash": item.content_hash, "created_at": item.created_at.isoformat(), "completed_at": item.completed_at.isoformat() if item.completed_at else None}
+    file_path = private_path(item.file_path, settings.data_dir) if item.file_path else None
+    return {"id": item.public_id, "status": item.status, "file_available": bool(file_path and file_path.is_file()), "content_hash": item.content_hash, "created_at": item.created_at.isoformat(), "completed_at": item.completed_at.isoformat() if item.completed_at else None}
 
 
 @router.get("/exports/{export_id}", tags=["exports"])
@@ -2132,9 +2216,10 @@ def get_export(request: Request, account: WebAccount, export_id: str = PathParam
 @router.get("/exports/{export_id}/file", tags=["exports"])
 def get_export_file(request: Request, account: WebAccount, export_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     item = db.scalar(select(Export).where(Export.public_id == export_id, Export.account_id == account.id))
-    if item is None or item.status != "available" or not item.file_path or not Path(item.file_path).is_file():
+    file_path = private_path(item.file_path, settings.data_dir) if item and item.file_path else None
+    if item is None or item.status != "available" or file_path is None or not file_path.is_file():
         raise NotFoundError("PDF 尚未生成或已清理")
-    response = FileResponse(item.file_path, filename="purslyx-resume.pdf", media_type="application/pdf")
+    response = FileResponse(file_path, filename="purslyx-resume.pdf", media_type="application/pdf")
     response.headers["Cache-Control"] = "private, no-store"
     return response
 
@@ -2541,15 +2626,31 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
 
 
 @router.get("/job-pool/items", tags=["job-pool"])
-def list_pool_items(request: Request, account: WebAccount, analysis_status: str | None = Query(default=None), platform: str | None = Query(default=None), db: Session = Depends(get_db)) -> JSONResponse:
+def list_pool_items(
+    request: Request,
+    account: WebAccount,
+    analysis_status: str | None = Query(default=None, max_length=32),
+    platform: str | None = Query(default=None, max_length=32),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     require_seeker(account)
-    statement = select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None)).order_by(JobPoolItem.updated_at.desc()).limit(100)
+    statement = select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))
     if analysis_status:
         statement = statement.where(JobPoolItem.analysis_status == analysis_status)
     if platform:
         statement = statement.where(JobPoolItem.platform == platform)
-    rows = db.scalars(statement).all()
-    return _ok(request, {"items": [_pool_view(db, row) for row in rows], "page": {"next_cursor": None, "has_more": False}})
+    if created_from:
+        statement = statement.where(JobPoolItem.created_at >= created_from)
+    if created_to:
+        statement = statement.where(JobPoolItem.created_at < created_to)
+    if created_from and created_to and created_from >= created_to:
+        raise DomainError("POOL_RANGE_INVALID", "岗位时间范围无效", 422)
+    rows, page = page_rows(db, statement, JobPoolItem, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    return _ok(request, {"items": [_pool_view(db, row) for row in rows], "page": page})
 
 
 @router.get("/job-pool/items/{item_id}", tags=["job-pool"])
@@ -2592,12 +2693,35 @@ def create_recruiter_analysis(payload: AnalysisRequest, request: Request, accoun
 
 
 @router.get("/analyses", tags=["analyses"])
-def list_analyses(request: Request, account: WebAccount, context_type: str | None = Query(default=None), db: Session = Depends(get_db)) -> JSONResponse:
-    statement = select(Analysis).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None)).order_by(Analysis.created_at.desc()).limit(100)
+def list_analyses(
+    request: Request,
+    account: WebAccount,
+    context_type: str | None = Query(default=None, max_length=32),
+    analysis_status: str | None = Query(default=None, alias="status", max_length=24),
+    document_id: str | None = Query(default=None, max_length=36),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    statement = select(Analysis).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None))
     if context_type:
         statement = statement.where(Analysis.context_type == context_type)
-    rows = db.scalars(statement).all()
-    return _ok(request, {"items": [_analysis_view(db, row, detail=False) for row in rows], "page": {"next_cursor": None, "has_more": False}})
+    if analysis_status:
+        statement = statement.where(Analysis.status == analysis_status)
+    if document_id:
+        document = _document(db, account.id, document_id)
+        version_ids = select(DocumentVersion.id).where(DocumentVersion.document_id == document.id)
+        statement = statement.where(Analysis.resume_version_id.in_(version_ids) | Analysis.job_version_id.in_(version_ids))
+    if created_from:
+        statement = statement.where(Analysis.created_at >= created_from)
+    if created_to:
+        statement = statement.where(Analysis.created_at < created_to)
+    if created_from and created_to and created_from >= created_to:
+        raise DomainError("ANALYSIS_RANGE_INVALID", "分析时间范围无效", 422)
+    rows, page = page_rows(db, statement, Analysis, cursor=cursor, limit=limit, timestamp_field="created_at")
+    return _ok(request, {"items": [_analysis_view(db, row, detail=False) for row in rows], "page": page})
 
 
 @router.get("/analyses/{analysis_id}", tags=["analyses"])
@@ -2788,10 +2912,20 @@ def start_interview(payload: InterviewStartRequest, request: Request, account: W
 
 
 @router.get("/interviews", tags=["interviews"])
-def list_interviews(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def list_interviews(
+    request: Request,
+    account: WebAccount,
+    interview_status: str | None = Query(default=None, alias="status", max_length=24),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     require_seeker(account)
-    rows = db.scalars(select(Interview).where(Interview.account_id == account.id, Interview.deleted_at.is_(None)).order_by(Interview.updated_at.desc()).limit(100)).all()
-    return _ok(request, {"items": [{"id": row.public_id, "title": row.title, "status": row.status, "revision": row.revision, "updated_at": row.updated_at.isoformat()} for row in rows], "page": {"next_cursor": None, "has_more": False}})
+    statement = select(Interview).where(Interview.account_id == account.id, Interview.deleted_at.is_(None))
+    if interview_status:
+        statement = statement.where(Interview.status == interview_status)
+    rows, page = page_rows(db, statement, Interview, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    return _ok(request, {"items": [{"id": row.public_id, "title": row.title, "status": row.status, "revision": row.revision, "updated_at": row.updated_at.isoformat()} for row in rows], "page": page})
 
 
 @router.get("/interviews/{interview_id}", tags=["interviews"])
@@ -2917,12 +3051,49 @@ class GrantRequest(BaseModel):
 
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    feedback_type: str = Field(min_length=1, max_length=40)
-    content: str = Field(min_length=1, max_length=5000)
+    feedback_type: Literal["issue", "suggestion", "payment_intent", "other"]
+    content: str = Field(default="", max_length=5000)
     rating: int | None = Field(default=None, ge=1, le=5)
-    payment_intent: str | None = Field(default=None, max_length=32)
-    context_type: str | None = Field(default=None, max_length=32)
+    payment_intent: Literal["willing", "depends_on_price", "unwilling", "not_answered"] | None = None
+    context_type: Literal["general", "analysis", "rewrite", "interview", "export"] | None = None
     context_id: str | None = Field(default=None, max_length=36)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_context_payload(cls, value: Any) -> Any:
+        """兼容文档中的嵌套 context，同时把内部存储保持为扁平字段。"""
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        context = data.pop("context", None)
+        if context is not None:
+            if not isinstance(context, dict):
+                raise ValueError("context 必须是对象")
+            context_type = context.get("type")
+            context_id = context.get("resource_id")
+            if "context_type" in data and data["context_type"] != context_type:
+                raise ValueError("context.type 与 context_type 不能冲突")
+            if "context_id" in data and data["context_id"] != context_id:
+                raise ValueError("context.resource_id 与 context_id 不能冲突")
+            data.setdefault("context_type", context_type)
+            data.setdefault("context_id", context_id)
+        if data.get("content") is None:
+            data["content"] = ""
+        return data
+
+    @model_validator(mode="after")
+    def validate_feedback(self) -> "FeedbackRequest":
+        self.content = self.content.strip()
+        if self.feedback_type in {"issue", "suggestion", "other"} and not self.content:
+            raise ValueError("问题、建议和其他反馈必须填写内容")
+        if self.feedback_type == "payment_intent" and self.payment_intent is None:
+            raise ValueError("付费意愿反馈必须选择 payment_intent")
+        if self.context_type in {None, "general"} and self.context_id:
+            raise ValueError("general 反馈不能携带上下文资源")
+        if self.context_type not in {None, "general"} and not self.context_id:
+            raise ValueError("带上下文的反馈必须提供 context_id")
+        return self
 
 
 class AccountStatusRequest(BaseModel):
@@ -2980,24 +3151,21 @@ def list_tasks(
     account: WebAccount,
     task_status: str | None = Query(default=None, alias="status", max_length=24),
     task_type: str | None = Query(default=None, max_length=40),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     """工作台任务中心只返回当前账号的执行摘要，不暴露任务正文。"""
 
-    statement = (
-        select(Task)
-        .where(Task.account_id == account.id, Task.deleted_at.is_(None))
-        .order_by(Task.created_at.desc())
-        .limit(100)
-    )
+    statement = select(Task).where(Task.account_id == account.id, Task.deleted_at.is_(None))
     if task_status:
         statement = statement.where(Task.status == task_status)
     if task_type:
         statement = statement.where(Task.task_type == task_type)
-    rows = db.scalars(statement).all()
+    rows, page = page_rows(db, statement, Task, cursor=cursor, limit=limit, timestamp_field="created_at")
     return _ok(
         request,
-        {"items": [task_view(row) for row in rows], "page": {"next_cursor": None, "has_more": False}},
+        {"items": [task_view(row) for row in rows], "page": page},
     )
 
 
@@ -3041,19 +3209,53 @@ def retry_task(
 
 
 @router.get("/usage", tags=["usage"])
-def get_usage(request: Request, account: WebAccount, feature: str | None = Query(default=None), db: Session = Depends(get_db)) -> JSONResponse:
+def get_usage(
+    request: Request,
+    account: WebAccount,
+    feature: str | None = Query(default=None, max_length=32),
+    entries_cursor: str | None = Query(default=None, max_length=512),
+    entries_limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     require_verified(account)
-    return _ok(request, usage_view(db, account, feature))
+    return _ok(
+        request,
+        usage_view(
+            db,
+            account,
+            feature,
+            entries_cursor=entries_cursor,
+            entries_limit=entries_limit,
+        ),
+    )
+
+
+def _validate_feedback_context(db: Session, account_id: int, context_type: str | None, context_id: str | None) -> None:
+    """反馈上下文只允许引用当前账号仍可见的摘要资源。"""
+
+    if not context_type or context_type == "general":
+        return
+    model_by_type = {
+        "analysis": Analysis,
+        "rewrite": Rewrite,
+        "interview": Interview,
+        "export": Export,
+    }
+    model = model_by_type.get(context_type)
+    if model is None or not context_id:
+        raise DomainError("FEEDBACK_CONTEXT_INVALID", "反馈上下文不合法", 422)
+    row = db.scalar(select(model).where(model.public_id == context_id, model.account_id == account_id))
+    if row is None or (hasattr(row, "deleted_at") and row.deleted_at is not None):
+        raise NotFoundError("反馈上下文不存在")
 
 
 @router.post("/feedback", tags=["feedback"], status_code=201)
 def create_feedback(payload: FeedbackRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
     _write_guard(request, account)
-    key = _idempotency_key(request, required=False)
+    key = _idempotency_key(request)
+    _validate_feedback_context(db, account.id, payload.context_type, payload.context_id)
     normalized = payload.model_dump(mode="json")
     normalized["content"] = payload.content.strip()
-    if not normalized["content"]:
-        raise DomainError("FEEDBACK_CONTENT_EMPTY", "反馈内容不能为空", 422)
     request_digest = payload_hash(normalized)
     if key:
         existing = db.scalar(
@@ -3088,17 +3290,75 @@ def create_feedback(payload: FeedbackRequest, request: Request, account: WebAcco
 
 
 @router.get("/stats/me", tags=["stats"])
-def personal_stats(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def personal_stats(
+    request: Request,
+    account: WebAccount,
+    date: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     require_verified(account)
+    metric_date = date or shanghai_date()
+    try:
+        datetime.strptime(metric_date, "%Y-%m-%d")
+    except ValueError as exc:
+        raise DomainError("STATS_RANGE_INVALID", "统计日期无效", 422) from exc
+    local_start = datetime.strptime(metric_date, "%Y-%m-%d").replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+    day_start = local_start.astimezone(timezone.utc)
+    day_end = (local_start + timedelta(days=1)).astimezone(timezone.utc)
     pool_count = db.scalar(select(func.count(JobPoolItem.id)).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))) or 0
-    analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]))) or 0
+    analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]), Analysis.completed_at >= day_start, Analysis.completed_at < day_end)) or 0
     interview_count = db.scalar(select(func.count(Interview.id)).where(Interview.account_id == account.id, Interview.deleted_at.is_(None))) or 0
-    apply_count = db.scalar(select(func.count(ApplyClick.id)).where(ApplyClick.account_id == account.id)) or 0
+    apply_count = db.scalar(select(func.count(ApplyClick.id)).where(ApplyClick.account_id == account.id, ApplyClick.metric_date == metric_date)) or 0
     adopted_count = db.scalar(select(func.count(RewriteDecision.id)).where(RewriteDecision.account_id == account.id, RewriteDecision.decision.in_(["adopted", "edited"]))) or 0
-    return _ok(request, {"job_pool_items": pool_count, "completed_analyses": analysis_count, "interviews": interview_count, "apply_clicks": apply_count, "adopted_rewrites": adopted_count, "rule_version": "personal-stats-v1"})
+    if account.registration_role == "seeker":
+        metrics = [{"key": "go_to_apply_clicks", "label": "去投递点击数", "value": apply_count, "definition": "Purslyx 成功记录并发起原岗位跳转的次数。"}]
+    else:
+        metrics = [{"key": "candidate_analyses_completed", "label": "候选人分析次数", "value": analysis_count, "definition": "招聘账号在该上海自然日完成的候选人分析次数。"}]
+    return _ok(request, {"date": metric_date, "timezone": "Asia/Shanghai", "registration_role": account.registration_role, "metrics": metrics, "calculated_at": now_utc().isoformat(), "summary": {"job_pool_items": pool_count, "completed_analyses": analysis_count, "interviews": interview_count, "apply_clicks": apply_count, "adopted_rewrites": adopted_count}, "rule_version": "personal-stats-v1"})
 
 
 # ------------------------------------ 管理端 ------------------------------------
+
+
+def _masked_email(value: str | None) -> str | None:
+    """管理列表只展示可识别但不完整的邮箱摘要。"""
+
+    if not value or "@" not in value:
+        return None
+    local, domain = value.split("@", 1)
+    if len(local) <= 1:
+        masked = "*"
+    elif len(local) == 2:
+        masked = f"{local[0]}*"
+    else:
+        masked = f"{local[0]}{'*' * min(5, len(local) - 2)}{local[-1]}"
+    return f"{masked}@{domain}"
+
+
+def _stats_range(date_from: str | None, date_to: str | None, *, max_days: int = 93) -> tuple[str, str, datetime, datetime]:
+    """校验上海自然日范围，并返回 UTC 的半开区间。"""
+
+    today = datetime.strptime(shanghai_date(), "%Y-%m-%d").date()
+    try:
+        start_date = datetime.strptime(date_from, "%Y-%m-%d").date() if date_from else today - timedelta(days=6)
+        end_date = datetime.strptime(date_to, "%Y-%m-%d").date() if date_to else today
+    except ValueError as exc:
+        raise DomainError("STATS_RANGE_INVALID", "统计日期必须是 YYYY-MM-DD", 422) from exc
+    if start_date > end_date or (end_date - start_date).days + 1 > max_days:
+        raise DomainError("STATS_RANGE_INVALID", f"统计范围不能超过 {max_days} 天且起止顺序必须正确", 422)
+    start_local = datetime.combine(start_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai"))
+    end_local = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai"))
+    return start_date.isoformat(), end_date.isoformat(), start_local.astimezone(timezone.utc), end_local.astimezone(timezone.utc)
+
+
+def _role_account_ids(account: Account, db: Session, role: str) -> Any:
+    """构造管理统计用的账号子查询；all 不附加身份条件。"""
+
+    if role == "all":
+        return None
+    if role not in {"seeker", "recruiter"}:
+        raise DomainError("STATS_FILTER_INVALID", "注册身份筛选不合法", 422)
+    return select(Account.id).where(Account.registration_role == role)
 
 
 def _admin_guard(request: Request, account: Account, db: Session, permission: str, *, write: bool = False) -> None:
@@ -3139,20 +3399,24 @@ def admin_users(
     request: Request,
     account: WebAccount,
     search: str | None = Query(default=None, max_length=160),
+    query: str | None = Query(default=None, alias="q", max_length=120),
     registration_role: Literal["seeker", "recruiter"] | None = Query(default=None),
     user_status: Literal["active", "suspended", "pending_verification"] | None = Query(default=None, alias="status"),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     _admin_guard(request, account, db, "admin.users.read")
-    statement = select(Account).order_by(Account.created_at.desc()).limit(200)
-    if search and search.strip():
-        statement = statement.where(Account.email_normalized.ilike(f"%{normalize_email(search)}%"))
+    statement = select(Account)
+    search_value = (query or search or "").strip()
+    if search_value:
+        statement = statement.where(Account.email_normalized.ilike(f"%{normalize_email(search_value)}%"))
     if registration_role:
         statement = statement.where(Account.registration_role == registration_role)
     if user_status:
         statement = statement.where(Account.status == user_status)
-    rows = db.scalars(statement).all()
-    return _ok(request, {"items": [{"id": row.public_id, "email": row.email, "registration_role": row.registration_role, "status": row.status, "email_verified": row.email_verified_at is not None, "created_at": row.created_at.isoformat()} for row in rows], "page": {"next_cursor": None, "has_more": False}})
+    rows, page = page_rows(db, statement, Account, cursor=cursor, limit=limit, timestamp_field="created_at")
+    return _ok(request, {"items": [{"id": row.public_id, "email": row.email, "registration_role": row.registration_role, "status": row.status, "email_verified": row.email_verified_at is not None, "created_at": row.created_at.isoformat()} for row in rows], "page": page})
 
 
 @router.get("/admin/users/{user_id}", tags=["admin"])
@@ -3322,10 +3586,31 @@ def assign_roles(payload: RoleAssignmentRequest, request: Request, account: WebA
 
 
 @router.get("/admin/usage-grants", tags=["admin"])
-def admin_list_grants(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_list_grants(
+    request: Request,
+    account: WebAccount,
+    feature: str | None = Query(default=None, max_length=32),
+    target_account_id: str | None = Query(default=None, alias="account_id", max_length=36),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.usage.grant")
-    rows = db.scalars(select(UsageGrant).order_by(UsageGrant.created_at.desc()).limit(200)).all()
-    return _ok(request, {"items": [{"id": row.public_id, "account_id": db.get(Account, row.account_id).public_id if db.get(Account, row.account_id) else None, "feature": row.feature, "count": row.count, "reason": row.reason, "before_available": row.before_available, "after_available": row.after_available, "created_at": row.created_at.isoformat()} for row in rows]})
+    statement = select(UsageGrant)
+    if feature:
+        statement = statement.where(UsageGrant.feature == feature)
+    if target_account_id:
+        statement = statement.where(UsageGrant.account_id == _account_or_404(db, target_account_id).id)
+    if created_from:
+        statement = statement.where(UsageGrant.created_at >= created_from)
+    if created_to:
+        statement = statement.where(UsageGrant.created_at < created_to)
+    if created_from and created_to and created_from >= created_to:
+        raise DomainError("USAGE_RANGE_INVALID", "用量发放时间范围无效", 422)
+    rows, page = page_rows(db, statement, UsageGrant, cursor=cursor, limit=limit, timestamp_field="created_at")
+    return _ok(request, {"items": [{"id": row.public_id, "account_id": db.get(Account, row.account_id).public_id if db.get(Account, row.account_id) else None, "feature": row.feature, "count": row.count, "reason": row.reason, "before_available": row.before_available, "after_available": row.after_available, "created_at": row.created_at.isoformat()} for row in rows], "page": page})
 
 
 @router.post("/admin/users/{user_id}/usage-grants", tags=["admin"], status_code=201)
@@ -3342,55 +3627,249 @@ def admin_grant(payload: GrantRequest, request: Request, account: WebAccount, us
 
 class FeedbackStatusRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    status: Literal["new", "reviewing", "closed"]
+    status: Literal["new", "reviewed", "closed", "reviewing"]
+    base_revision: int | None = Field(default=None, ge=1)
+    reason: str = Field(default="更新产品反馈状态", min_length=1, max_length=300)
 
 
 class LogExportRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    log_type: Literal["operations", "security", "tasks"]
+    log_type: Literal["operations", "security", "tasks"] | None = None
+    log_category: Literal["admin_operations", "security", "task_runs"] | None = None
+    export_format: Literal["csv", "jsonl"] = "jsonl"
     filters: dict[str, Any] = Field(default_factory=dict)
+    filter: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def normalize_log_type(self) -> "LogExportRequest":
+        if self.log_type is None and self.log_category is None:
+            raise ValueError("需要日志分类")
+        if self.log_type is None:
+            self.log_type = {"admin_operations": "operations", "security": "security", "task_runs": "tasks"}[self.log_category or "security"]
+        if self.filter is not None:
+            self.filters = self.filter
+        return self
 
 
 def _log_permission(log_type: str) -> str:
-    return {
+    permission = {
         "operations": "admin.logs.operations.read",
         "security": "admin.logs.security.read",
         "tasks": "admin.logs.tasks.read",
-    }.get(log_type, "admin.logs.operations.read")
+    }.get(log_type)
+    if permission is None:
+        raise DomainError("LOG_TYPE_INVALID", "日志分类不合法", 422)
+    return permission
 
 
 @router.get("/admin/metrics", tags=["admin"])
-def admin_metrics(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_metrics(
+    request: Request,
+    account: WebAccount,
+    date_from: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    registration_role: Literal["all", "seeker", "recruiter"] = "all",
+    feature: Literal["all", "analysis", "rewrite", "interview", "import"] = "all",
+    granularity: Literal["day"] = "day",
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.stats.read")
-    today = shanghai_date()
+    start_label, end_label, start_at, end_at = _stats_range(date_from, date_to)
+    account_ids = _role_account_ids(account, db, registration_role)
+    task_types = {
+        "analysis": {"analysis"},
+        "rewrite": {"rewrite"},
+        "interview": {"interview_opening", "interview_feedback", "interview_turn", "interview_summary"},
+        "import": {"document_parse"},
+    }.get(feature)
+
+    def scoped(model: Any, *conditions: Any) -> Any:
+        statement = select(model).where(*conditions)
+        if account_ids is not None and hasattr(model, "account_id"):
+            statement = statement.where(model.account_id.in_(account_ids))
+        return statement
+
+    def count_rows(model: Any, *conditions: Any) -> int:
+        statement = select(func.count(model.id)).where(*conditions)
+        if account_ids is not None and hasattr(model, "account_id"):
+            statement = statement.where(model.account_id.in_(account_ids))
+        return int(db.scalar(statement) or 0)
+
+    task_conditions = [Task.created_at >= start_at, Task.created_at < end_at]
+    if task_types is not None:
+        task_conditions.append(Task.task_type.in_(task_types))
+    task_rows = db.scalars(scoped(Task, *task_conditions).order_by(Task.created_at)).all()
+    succeeded = [row for row in task_rows if row.status == "succeeded"]
+    failed = [row for row in task_rows if row.status == "failed"]
+    if feature in {"all", "analysis", "rewrite", "interview", "import"}:
+        usage_statement = select(func.coalesce(func.sum(UsageLedger.amount), 0)).where(
+            UsageLedger.event_type == "settle",
+            UsageLedger.created_at >= start_at,
+            UsageLedger.created_at < end_at,
+        )
+        if account_ids is not None:
+            usage_statement = usage_statement.where(UsageLedger.account_id.in_(account_ids))
+        if feature != "all":
+            usage_statement = usage_statement.where(UsageLedger.feature == ("analysis" if feature == "import" else feature))
+        usage_settled = int(db.scalar(usage_statement) or 0)
+    else:
+        usage_settled = 0
+    click_statement = select(func.count(ApplyClick.id)).where(ApplyClick.metric_date >= start_label, ApplyClick.metric_date <= end_label)
+    if account_ids is not None:
+        click_statement = click_statement.where(ApplyClick.account_id.in_(account_ids))
+    apply_clicks = int(db.scalar(click_statement) or 0) if feature in {"all", "analysis"} else 0
+    rewrite_count = count_rows(RewriteDecision, RewriteDecision.created_at >= start_at, RewriteDecision.created_at < end_at, RewriteDecision.decision.in_(["adopt", "adopted", "edited"])) if feature in {"all", "rewrite"} else 0
+    export_count = count_rows(Export, Export.created_at >= start_at, Export.created_at < end_at) if feature in {"all", "import"} else 0
+    completed_interviews = count_rows(Interview, Interview.updated_at >= start_at, Interview.updated_at < end_at, Interview.status == "completed") if feature in {"all", "interview"} else 0
+    ended_interviews = count_rows(Interview, Interview.updated_at >= start_at, Interview.updated_at < end_at, Interview.status == "ended_early") if feature in {"all", "interview"} else 0
+    feedback_count = count_rows(Feedback, Feedback.created_at >= start_at, Feedback.created_at < end_at)
+    positive_payment_count = count_rows(Feedback, Feedback.created_at >= start_at, Feedback.created_at < end_at, Feedback.payment_intent.in_(["willing", "depends_on_price"]))
+    account_conditions = [Account.created_at >= start_at, Account.created_at < end_at]
+    if account_ids is not None:
+        account_conditions.append(Account.id.in_(account_ids))
+    registered_accounts = int(db.scalar(select(func.count(Account.id)).where(*account_conditions)) or 0)
+    active_conditions = [*account_conditions, Account.status == "active"]
+    active_accounts = int(db.scalar(select(func.count(Account.id)).where(*active_conditions)) or 0)
+
+    def duration_ms(row: Task) -> int | None:
+        if row.started_at is None or row.completed_at is None:
+            return None
+        return max(0, int((row.completed_at - row.started_at).total_seconds() * 1000))
+
+    def p95(values: list[int]) -> int | None:
+        if not values:
+            return None
+        values = sorted(values)
+        return values[min(len(values) - 1, math.ceil(len(values) * 0.95) - 1)]
+
+    def task_metric(rows: list[Task]) -> dict[str, Any]:
+        durations = [value for value in (duration_ms(row) for row in rows if row.status == "succeeded") if value is not None]
+        return {
+            "tasks_succeeded": sum(row.status == "succeeded" for row in rows),
+            "tasks_failed": sum(row.status == "failed" for row in rows),
+            "task_retries": sum(row.retry_count for row in rows),
+            "average_duration_ms": round(sum(durations) / len(durations), 2) if durations else None,
+            "p95_duration_ms": p95(durations),
+            "sample_count": len(durations),
+        }
+
+    series: list[dict[str, Any]] = []
+    current_date = datetime.strptime(start_label, "%Y-%m-%d").date()
+    end_date = datetime.strptime(end_label, "%Y-%m-%d").date()
+    while current_date <= end_date:
+        day_label = current_date.isoformat()
+        day_start = datetime.combine(current_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai")).astimezone(timezone.utc)
+        day_end = day_start + timedelta(days=1)
+        day_rows = [row for row in task_rows if row.created_at >= day_start and row.created_at < day_end]
+        row = task_metric(day_rows)
+        row.update({"date": day_label, "usage_settled": 0, "go_to_apply_clicks": 0})
+        row["usage_settled"] = sum(
+            int(value.amount)
+            for value in db.scalars(
+                select(UsageLedger).where(UsageLedger.event_type == "settle", UsageLedger.created_at >= day_start, UsageLedger.created_at < day_end, *( [UsageLedger.account_id.in_(account_ids)] if account_ids is not None else []), *( [UsageLedger.feature == ("analysis" if feature == "import" else feature)] if feature != "all" else []))
+            ).all()
+        ) if feature in {"all", "analysis", "rewrite", "interview", "import"} else 0
+        click_day = select(func.count(ApplyClick.id)).where(ApplyClick.metric_date == day_label, *( [ApplyClick.account_id.in_(account_ids)] if account_ids is not None else []))
+        row["go_to_apply_clicks"] = int(db.scalar(click_day) or 0) if feature in {"all", "analysis"} else 0
+        series.append(row)
+        current_date += timedelta(days=1)
+
+    totals = {
+        "registered_accounts": registered_accounts,
+        "active_accounts": active_accounts,
+        "tasks_succeeded": len(succeeded),
+        "tasks_failed": len(failed),
+        "task_retries": sum(row.retry_count for row in task_rows),
+        "usage_settled": usage_settled,
+        "go_to_apply_clicks": apply_clicks,
+        "rewrite_adopted_segments": rewrite_count,
+        "resume_exports": export_count,
+        "interviews_completed": completed_interviews,
+        "interviews_ended_early": ended_interviews,
+        "feedback_submitted": feedback_count,
+        "payment_intent_positive": positive_payment_count,
+    }
     return _ok(
         request,
         {
-            "metric_date": today,
-            "accounts": {"total": db.scalar(select(func.count(Account.id))) or 0, "seeker": db.scalar(select(func.count(Account.id)).where(Account.registration_role == "seeker")) or 0, "recruiter": db.scalar(select(func.count(Account.id)).where(Account.registration_role == "recruiter")) or 0},
+            "timezone": "Asia/Shanghai",
+            "date_from": start_label,
+            "date_to": end_label,
+            "registration_role": registration_role,
+            "feature": feature,
+            "granularity": granularity,
+            "rule_version": "daily-metrics-v1",
+            "source_watermark_at": now_utc().isoformat(),
+            "totals": totals,
+            # 兼容最小演示页面的旧字段，同时给正式管理端提供完整口径。
+            "metric_date": end_label,
+            "accounts": {"total": registered_accounts, "active": active_accounts},
             "job_pool_items": db.scalar(select(func.count(JobPoolItem.id)).where(JobPoolItem.deleted_at.is_(None))) or 0,
-            "analyses": db.scalar(select(func.count(Analysis.id)).where(Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]))) or 0,
-            "interviews": db.scalar(select(func.count(Interview.id)).where(Interview.deleted_at.is_(None))) or 0,
-            "apply_clicks_today": db.scalar(select(func.count(ApplyClick.id)).where(ApplyClick.metric_date == today)) or 0,
-            "rule_version": "admin-metrics-v1",
+            "analyses": len([row for row in succeeded if row.task_type == "analysis"]),
+            "interviews": completed_interviews + ended_interviews,
+            "apply_clicks_today": apply_clicks if end_label == shanghai_date() else 0,
+            "series": series,
         },
     )
 
 
 @router.get("/admin/costs", tags=["admin"])
-def admin_costs(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_costs(
+    request: Request,
+    account: WebAccount,
+    date_from: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    registration_role: Literal["all", "seeker", "recruiter"] = "all",
+    feature: Literal["all", "analysis", "rewrite", "interview", "import"] = "all",
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.stats.read")
-    total = db.scalar(select(func.sum(ModelCall.cost_usd)))
-    unknown = db.scalar(select(func.count(ModelCall.id)).where(ModelCall.cost_usd.is_(None))) or 0
-    by_feature = db.execute(select(ModelCall.feature, func.count(ModelCall.id), func.sum(ModelCall.cost_usd)).group_by(ModelCall.feature)).all()
-    return _ok(request, {"known_cost_usd": float(total) if total is not None else None, "unknown_cost_calls": unknown, "by_feature": [{"feature": row[0], "calls": row[1], "cost_usd": float(row[2]) if row[2] is not None else None} for row in by_feature], "rule_version": "costs-v1"})
+    _, _, start_at, end_at = _stats_range(date_from, date_to)
+    account_ids = _role_account_ids(account, db, registration_role)
+    conditions: list[Any] = [ModelCall.created_at >= start_at, ModelCall.created_at < end_at]
+    if account_ids is not None:
+        conditions.append(ModelCall.account_id.in_(account_ids))
+    if feature != "all":
+        conditions.append(ModelCall.feature == ("document_parse" if feature == "import" else feature))
+    calls = db.scalars(select(ModelCall).where(*conditions)).all()
+    known = [row.cost_usd for row in calls if row.cost_usd is not None]
+    successful_result_count = int(db.scalar(select(func.count(Analysis.id)).where(Analysis.status.in_(["available", "succeeded"]), Analysis.completed_at >= start_at, Analysis.completed_at < end_at, *( [Analysis.account_id.in_(account_ids)] if account_ids is not None else []))) or 0)
+    known_total = sum(known)
+    return _ok(request, {"known_cost": f"{known_total:.8f}" if known else None, "known_cost_usd": known_total if known else None, "currency": "USD", "unknown_cost_count": sum(row.cost_usd is None for row in calls), "unknown_cost_calls": sum(row.cost_usd is None for row in calls), "model_call_count": len(calls), "successful_result_count": successful_result_count, "known_cost_per_success": f"{known_total / successful_result_count:.8f}" if known and successful_result_count else None, "by_feature": [{"feature": value, "calls": sum(row.feature == value for row in calls), "cost_usd": sum(row.cost_usd for row in calls if row.feature == value and row.cost_usd is not None) or None} for value in sorted({row.feature for row in calls})], "pricing_watermark_at": now_utc().isoformat(), "rule_version": "costs-v1"})
 
 
 @router.get("/admin/feedback", tags=["admin"])
-def admin_feedback(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_feedback(
+    request: Request,
+    account: WebAccount,
+    feedback_type: str | None = Query(default=None, max_length=40),
+    feedback_status: str | None = Query(default=None, alias="status", max_length=20),
+    payment_intent: str | None = Query(default=None, max_length=32),
+    registration_role: Literal["seeker", "recruiter"] | None = Query(default=None),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.stats.read")
-    rows = db.scalars(select(Feedback).where(Feedback.deleted_at.is_(None)).order_by(Feedback.created_at.desc()).limit(200)).all()
-    return _ok(request, {"items": [{"id": row.public_id, "account_id": db.get(Account, row.account_id).public_id if db.get(Account, row.account_id) else None, "feedback_type": row.feedback_type, "rating": row.rating, "status": row.status, "created_at": row.created_at.isoformat()} for row in rows]})
+    statement = select(Feedback).where(Feedback.deleted_at.is_(None))
+    if feedback_type:
+        statement = statement.where(Feedback.feedback_type == feedback_type)
+    if feedback_status:
+        statement = statement.where(Feedback.status == feedback_status)
+    if payment_intent:
+        statement = statement.where(Feedback.payment_intent == payment_intent)
+    if registration_role:
+        statement = statement.where(Feedback.account_id.in_(select(Account.id).where(Account.registration_role == registration_role)))
+    if created_from:
+        statement = statement.where(Feedback.created_at >= created_from)
+    if created_to:
+        statement = statement.where(Feedback.created_at < created_to)
+    if created_from and created_to and created_from >= created_to:
+        raise DomainError("FEEDBACK_RANGE_INVALID", "反馈时间范围无效", 422)
+    rows, page = page_rows(db, statement, Feedback, cursor=cursor, limit=limit, timestamp_field="created_at")
+    return _ok(request, {"items": [{"id": row.public_id, "account": _masked_email(db.get(Account, row.account_id).email if db.get(Account, row.account_id) else None), "account_id": db.get(Account, row.account_id).public_id if db.get(Account, row.account_id) else None, "feedback_type": row.feedback_type, "rating": row.rating, "payment_intent": row.payment_intent, "content_preview": row.content[:160], "context_type": row.context_type, "status": row.status, "revision": row.revision, "created_at": row.created_at.isoformat()} for row in rows], "page": page})
 
 
 @router.get("/admin/feedback/{feedback_id}", tags=["admin"])
@@ -3405,90 +3884,352 @@ def admin_feedback_detail(request: Request, account: WebAccount, feedback_id: st
 @router.put("/admin/feedback/{feedback_id}", tags=["admin"])
 def admin_update_feedback(payload: FeedbackStatusRequest, request: Request, account: WebAccount, feedback_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.stats.read", write=True)
+    key = _idempotency_key(request)
     item = db.scalar(select(Feedback).where(Feedback.public_id == feedback_id, Feedback.deleted_at.is_(None)))
     if item is None:
         raise NotFoundError("反馈不存在")
+    if payload.base_revision is not None and payload.base_revision != item.revision:
+        raise DomainError("FEEDBACK_STATUS_CONFLICT", "反馈状态已变化，请刷新后重试", 409, "refresh")
+    normalized_status = "reviewed" if payload.status == "reviewing" else payload.status
+    if item.status == "closed" and normalized_status != "closed":
+        raise DomainError("FEEDBACK_STATUS_CONFLICT", "已关闭反馈不能重新打开", 409)
+    request_digest = payload_hash({"feedback_id": feedback_id, **payload.model_dump(mode="json"), "status": normalized_status})
+    existing_audit = db.scalar(select(AuditEvent).where(AuditEvent.operator_account_id == account.id, AuditEvent.action == "feedback.status.update", AuditEvent.idempotency_key == key)) if key else None
+    if existing_audit is not None:
+        if (existing_audit.after_value or {}).get("request_hash") != request_digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的反馈状态变更不同", 409)
+        return _ok(request, {"id": item.public_id, "status": item.status, "revision": item.revision})
     before = {"status": item.status}
-    item.status = payload.status
-    _admin_audit(db, account, "feedback.status.update", None, request, "更新产品反馈状态", before, {"status": item.status})
+    item.status = normalized_status
+    item.revision += 1
+    item.reviewed_by_account_id = account.id
+    item.reviewed_at = now_utc()
+    _admin_audit(db, account, "feedback.status.update", None, request, payload.reason, before, {"status": item.status, "revision": item.revision, "request_hash": request_digest}, key)
     db.commit()
-    return _ok(request, {"id": item.public_id, "status": item.status})
+    return _ok(request, {"id": item.public_id, "status": item.status, "revision": item.revision})
 
 
-def _log_items(db: Session, log_type: str) -> list[dict[str, Any]]:
+def _log_items(
+    db: Session,
+    log_type: str,
+    *,
+    created_from: datetime | None = None,
+    created_to: datetime | None = None,
+    account_id: str | None = None,
+    operator_id: str | None = None,
+    target_id: str | None = None,
+    target_type: str | None = None,
+    result: str | None = None,
+    request_id: str | None = None,
+    action: str | None = None,
+    event_type: str | None = None,
+    task_type: str | None = None,
+    task_status: str | None = None,
+    retry_count_min: int | None = None,
+    cursor: str | None = None,
+    limit: int = 20,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """按分类读取脱敏日志摘要；任何日志列表都不返回请求正文。"""
+
     if log_type == "operations":
-        rows = db.scalars(select(AuditEvent).order_by(AuditEvent.created_at.desc()).limit(200)).all()
-        return [{"id": row.public_id, "action": row.action, "outcome": row.outcome, "reason": row.reason, "target_account_id": db.get(Account, row.target_account_id).public_id if row.target_account_id and db.get(Account, row.target_account_id) else None, "created_at": row.created_at.isoformat()} for row in rows]
-    if log_type == "security":
-        rows = db.scalars(select(SecurityEvent).order_by(SecurityEvent.created_at.desc()).limit(200)).all()
-        return [{"id": row.public_id, "event_type": row.event_type, "outcome": row.outcome, "reason_code": row.reason_code, "account_id": db.get(Account, row.account_id).public_id if row.account_id and db.get(Account, row.account_id) else None, "created_at": row.created_at.isoformat()} for row in rows]
-    rows = db.scalars(select(Task).order_by(Task.created_at.desc()).limit(200)).all()
-    return [{"id": row.public_id, "task_type": row.task_type, "status": row.status, "failure": row.failure, "retry_count": row.retry_count, "created_at": row.created_at.isoformat(), "completed_at": row.completed_at.isoformat() if row.completed_at else None} for row in rows]
+        model = AuditEvent
+    elif log_type == "security":
+        model = SecurityEvent
+    elif log_type == "tasks":
+        model = Task
+    else:
+        raise DomainError("LOG_TYPE_INVALID", "日志分类不合法", 422)
+    effective_to = created_to or now_utc()
+    effective_from = created_from or effective_to - timedelta(hours=24)
+    if effective_from.tzinfo is None:
+        effective_from = effective_from.replace(tzinfo=timezone.utc)
+    if effective_to.tzinfo is None:
+        effective_to = effective_to.replace(tzinfo=timezone.utc)
+    if effective_from >= effective_to or effective_to - effective_from > timedelta(days=31):
+        raise DomainError("LOG_RANGE_INVALID", "日志导出或查询范围不能超过 31 天且起止顺序必须正确", 422)
+    statement = select(model)
+    statement = statement.where(model.created_at >= effective_from, model.created_at < effective_to)
+    if account_id:
+        target = db.scalar(select(Account.id).where(Account.public_id == account_id))
+        if target is None:
+            statement = statement.where(False)
+        elif log_type == "operations":
+            statement = statement.where((AuditEvent.operator_account_id == target) | (AuditEvent.target_account_id == target))
+        else:
+            statement = statement.where(model.account_id == target)
+    if operator_id:
+        operator = db.scalar(select(Account.id).where(Account.public_id == operator_id))
+        if operator is None or log_type != "operations":
+            statement = statement.where(False)
+        else:
+            statement = statement.where(AuditEvent.operator_account_id == operator)
+    if target_id:
+        target_account = db.scalar(select(Account.id).where(Account.public_id == target_id))
+        if target_account is None or log_type != "operations":
+            statement = statement.where(False)
+        else:
+            statement = statement.where(AuditEvent.target_account_id == target_account)
+    if target_type:
+        if target_type != "account" or log_type != "operations":
+            statement = statement.where(False)
+    if result:
+        if log_type in {"operations", "security"} and result not in {"succeeded", "denied", "failed"}:
+            raise DomainError("LOG_FILTER_INVALID", "日志结果筛选不合法", 422)
+        if log_type == "tasks" and result not in {"queued", "running", "retry_wait", "needs_input", "succeeded", "failed", "cancelled"}:
+            raise DomainError("LOG_FILTER_INVALID", "任务状态筛选不合法", 422)
+        if log_type == "operations":
+            statement = statement.where(AuditEvent.outcome == result)
+        elif log_type == "security":
+            statement = statement.where(SecurityEvent.outcome == result)
+        else:
+            statement = statement.where(Task.status == result)
+    if request_id:
+        if log_type == "operations":
+            statement = statement.where(AuditEvent.request_id == request_id)
+        elif log_type == "security":
+            statement = statement.where(SecurityEvent.request_id == request_id)
+    if action and log_type == "operations":
+        statement = statement.where(AuditEvent.action == action)
+    if event_type and log_type == "security":
+        statement = statement.where(SecurityEvent.event_type == event_type)
+    if task_type and log_type == "tasks":
+        statement = statement.where(Task.task_type == task_type)
+    if task_status and log_type == "tasks":
+        statement = statement.where(Task.status == task_status)
+    if retry_count_min is not None and log_type == "tasks":
+        statement = statement.where(Task.retry_count >= retry_count_min)
+    rows, page = page_rows(db, statement, model, cursor=cursor, limit=limit, timestamp_field="created_at")
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if log_type == "operations":
+            target_account = db.get(Account, row.target_account_id) if row.target_account_id else None
+            items.append({"id": row.public_id, "category": "operations", "action": row.action, "outcome": row.outcome, "reason": row.reason, "target_account": _masked_email(target_account.email if target_account else None), "target_account_id": target_account.public_id if target_account else None, "request_id": row.request_id, "created_at": row.created_at.isoformat()})
+        elif log_type == "security":
+            event_account = db.get(Account, row.account_id) if row.account_id else None
+            items.append({"id": row.public_id, "category": "security", "event_type": row.event_type, "outcome": row.outcome, "reason_code": row.reason_code, "account": _masked_email(event_account.email if event_account else None), "account_id": event_account.public_id if event_account else None, "request_id": row.request_id, "client_type": row.client_type, "created_at": row.created_at.isoformat()})
+        else:
+            failure = row.failure or {}
+            items.append({"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "retry_count": row.retry_count, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None})
+    return items, page
 
 
 @router.get("/admin/logs/operations", tags=["logs"])
-def admin_operation_logs(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_operation_logs(
+    request: Request,
+    account: WebAccount,
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    account_id: str | None = Query(default=None, max_length=36),
+    operator_id: str | None = Query(default=None, max_length=36),
+    target_id: str | None = Query(default=None, max_length=36),
+    target_type: str | None = Query(default=None, max_length=40),
+    result: str | None = Query(default=None, max_length=24),
+    request_id: str | None = Query(default=None, max_length=64),
+    action: str | None = Query(default=None, max_length=100),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.logs.operations.read")
-    return _ok(request, {"items": _log_items(db, "operations")})
+    items, page = _log_items(db, "operations", created_from=created_from, created_to=created_to, account_id=account_id, operator_id=operator_id, target_id=target_id, target_type=target_type, result=result, request_id=request_id, action=action, cursor=cursor, limit=limit)
+    return _ok(request, {"items": items, "page": page})
 
 
 @router.get("/admin/logs/security", tags=["logs"])
-def admin_security_logs(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_security_logs(
+    request: Request,
+    account: WebAccount,
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    account_id: str | None = Query(default=None, max_length=36),
+    result: str | None = Query(default=None, max_length=24),
+    request_id: str | None = Query(default=None, max_length=64),
+    event_type: str | None = Query(default=None, max_length=80),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.logs.security.read")
-    return _ok(request, {"items": _log_items(db, "security")})
+    items, page = _log_items(db, "security", created_from=created_from, created_to=created_to, account_id=account_id, result=result, request_id=request_id, event_type=event_type, cursor=cursor, limit=limit)
+    return _ok(request, {"items": items, "page": page})
 
 
 @router.get("/admin/logs/tasks", tags=["logs"])
-def admin_task_logs(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def admin_task_logs(
+    request: Request,
+    account: WebAccount,
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    account_id: str | None = Query(default=None, max_length=36),
+    result: str | None = Query(default=None, max_length=24),
+    request_id: str | None = Query(default=None, max_length=64),
+    task_type: str | None = Query(default=None, max_length=40),
+    task_status: str | None = Query(default=None, max_length=24),
+    retry_count_min: int | None = Query(default=None, ge=0),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
     _admin_guard(request, account, db, "admin.logs.tasks.read")
-    return _ok(request, {"items": _log_items(db, "tasks")})
+    items, page = _log_items(db, "tasks", created_from=created_from, created_to=created_to, account_id=account_id, result=result, request_id=request_id, task_type=task_type, task_status=task_status, retry_count_min=retry_count_min, cursor=cursor, limit=limit)
+    return _ok(request, {"items": items, "page": page})
 
 
 @router.get("/admin/logs/{log_type}/{log_id}", tags=["logs"])
 def admin_log_detail(request: Request, account: WebAccount, log_type: str, log_id: str, db: Session = Depends(get_db)) -> JSONResponse:
+    if log_type not in {"operations", "security", "tasks"}:
+        raise DomainError("LOG_TYPE_INVALID", "日志分类不合法", 422)
     _admin_guard(request, account, db, _log_permission(log_type))
     if log_type == "operations":
         row = db.scalar(select(AuditEvent).where(AuditEvent.public_id == log_id))
-        value = {"id": row.public_id, "action": row.action, "outcome": row.outcome, "reason": row.reason, "before": row.before_value, "after": row.after_value, "created_at": row.created_at.isoformat()} if row else None
+        operator = db.get(Account, row.operator_account_id) if row and row.operator_account_id else None
+        target = db.get(Account, row.target_account_id) if row and row.target_account_id else None
+        value = {"id": row.public_id, "category": "operations", "operator": {"id": operator.public_id, "email_masked": _masked_email(operator.email)} if operator else None, "target": {"type": "account", "id": target.public_id, "email_masked": _masked_email(target.email)} if target else None, "action": row.action, "result": row.outcome, "reason": row.reason, "before": row.before_value, "after": row.after_value, "request_id": row.request_id, "created_at": row.created_at.isoformat()} if row else None
     elif log_type == "security":
         row = db.scalar(select(SecurityEvent).where(SecurityEvent.public_id == log_id))
-        value = {"id": row.public_id, "event_type": row.event_type, "outcome": row.outcome, "reason_code": row.reason_code, "created_at": row.created_at.isoformat()} if row else None
+        event_account = db.get(Account, row.account_id) if row and row.account_id else None
+        value = {"id": row.public_id, "category": "security", "event_type": row.event_type, "result": row.outcome, "reason_code": row.reason_code, "account": {"id": event_account.public_id, "email_masked": _masked_email(event_account.email)} if event_account else None, "client_type": row.client_type, "request_id": row.request_id, "created_at": row.created_at.isoformat()} if row else None
     else:
         row = db.scalar(select(Task).where(Task.public_id == log_id))
-        value = task_view(row) if row else None
+        if row:
+            failure = row.failure or {}
+            calls = db.scalars(select(ModelCall).where(ModelCall.task_id == row.id).order_by(ModelCall.created_at)).all()
+            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": call.cost_usd, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id"}) else None}
+        else:
+            value = None
     if value is None:
         raise NotFoundError("日志不存在")
     return _ok(request, value)
+
+
+def _escape_csv_formula(value: Any) -> str:
+    """防止导出的 CSV 被电子表格当成公式执行。"""
+
+    text_value = "" if value is None else str(value)
+    return f"'{text_value}" if text_value.startswith(("=", "+", "-", "@")) else text_value
 
 
 @router.post("/admin/log-exports", tags=["logs"], status_code=201)
 def create_log_export(payload: LogExportRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.logs.export", write=True)
     key = _idempotency_key(request)
-    request_digest = payload_hash(payload.model_dump(mode="json"))
+    normalized_payload = payload.model_dump(mode="json")
+    request_digest = payload_hash(normalized_payload)
     if key:
-        existing = db.scalar(
-            select(LogExport).where(
-                LogExport.account_id == account.id,
-                LogExport.idempotency_key == key,
-            )
-        )
+        existing = db.scalar(select(LogExport).where(LogExport.account_id == account.id, LogExport.idempotency_key == key))
         if existing is not None:
             if existing.request_hash != request_digest:
                 raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的日志导出不同", 409)
-            return _ok(
-                request,
-                {"id": existing.public_id, "status": existing.status, "created_at": existing.created_at.isoformat()},
-            )
-    rows = _log_items(db, payload.log_type)
-    output_path = settings.export_dir / f"log-{secrets.token_hex(12)}.json"
+            return _ok(request, {"id": existing.public_id, "status": existing.status, "format": existing.filters.get("export_format", "jsonl"), "created_at": existing.created_at.isoformat()})
+
+    filters = dict(payload.filters or {})
+
+    def optional_datetime(name: str) -> datetime | None:
+        value = filters.get(name)
+        if value in (None, ""):
+            return None
+        if not isinstance(value, str):
+            raise DomainError("LOG_RANGE_INVALID", f"{name} 必须是 ISO 时间", 422)
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise DomainError("LOG_RANGE_INVALID", f"{name} 必须是 ISO 时间", 422) from exc
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    created_from = optional_datetime("created_from")
+    created_to = optional_datetime("created_to")
+    if created_from and created_to and (created_from >= created_to or created_to - created_from > timedelta(days=31)):
+        raise DomainError("LOG_RANGE_INVALID", "日志导出范围不能超过 31 天且起止顺序必须正确", 422)
+    log_type = payload.log_type or "operations"
+    _admin_guard(request, account, db, _log_permission(log_type), write=True)
+    list_kwargs = {
+        "created_from": created_from,
+        "created_to": created_to,
+        "account_id": filters.get("account_id"),
+        "result": filters.get("result"),
+        "request_id": filters.get("request_id"),
+        "action": filters.get("action"),
+        "event_type": filters.get("event_type"),
+        "task_type": filters.get("task_type"),
+        "task_status": filters.get("task_status"),
+        "retry_count_min": filters.get("retry_count_min"),
+    }
+    rows: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        chunk, page = _log_items(db, log_type, **list_kwargs, cursor=cursor, limit=100)
+        rows.extend(chunk)
+        if len(rows) > 100_000:
+            raise DomainError("LOG_RANGE_INVALID", "导出结果超过 100,000 行，请缩小范围", 422)
+        if not page.get("has_more"):
+            break
+        cursor = page.get("next_cursor")
+        if not cursor:
+            break
+    for row in rows:
+        row.pop("category", None)
+
+    output_format = payload.export_format
+    output_suffix = "csv" if output_format == "csv" else "jsonl"
+    output_path = settings.export_dir.resolve() / f"log-{secrets.token_hex(12)}.{output_suffix}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
-    item = LogExport(account_id=account.id, log_type=payload.log_type, filters=payload.filters, status="available", file_path=str(output_path), expires_at=now_utc() + timedelta(days=1), idempotency_key=key, request_hash=request_digest)
-    db.add(item)
-    _admin_audit(db, account, "logs.export", None, request, "创建日志导出", after={"log_type": payload.log_type})
+    temporary_path = output_path.with_name(f".{output_path.name}.tmp")
+    published_path: Path | None = None
+    try:
+        if output_format == "csv":
+            columns = sorted({key_name for row in rows for key_name in row}) or ["id"]
+            buffer = io.StringIO(newline="")
+            writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
+            writer.writeheader()
+            for row in rows:
+                writer.writerow({key_name: _escape_csv_formula(row.get(key_name)) for key_name in columns})
+            temporary_path.write_text("\ufeff" + buffer.getvalue(), encoding="utf-8")
+        else:
+            temporary_path.write_text("".join(json.dumps({"schema_version": "log-export-v1", **row}, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
+        byte_size = temporary_path.stat().st_size
+        ensure_storage_capacity(db, byte_size)
+        temporary_path.replace(output_path)
+        published_path = output_path
+    except Exception:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    stored_filters = {**filters, "export_format": output_format, "row_count": len(rows)}
+    try:
+        item = LogExport(account_id=account.id, log_type=log_type, filters=stored_filters, status="downloadable", file_path=storage_key(output_path, settings.data_dir), expires_at=now_utc() + timedelta(days=1), idempotency_key=key, request_hash=request_digest)
+        db.add(item)
+        db.add(
+            StoredFile(
+                account_id=account.id,
+                purpose="log_export",
+                original_filename=f"purslyx-logs.{output_format}",
+                media_type="text/csv" if output_format == "csv" else "application/x-ndjson",
+                byte_size=byte_size,
+                sha256=sha256_bytes(output_path.read_bytes()),
+                storage_key=storage_key(output_path, settings.data_dir),
+                status="available",
+            )
+        )
+        _admin_audit(db, account, "logs.export", None, request, "创建日志导出", after={"log_type": log_type, "format": output_format, "row_count": len(rows)}, idempotency_key=key)
+        db.commit()
+    except Exception:
+        db.rollback()
+        if published_path is not None:
+            published_path.unlink(missing_ok=True)
+        raise
+    return _ok(request, {"id": item.public_id, "status": item.status, "format": output_format, "row_count": len(rows), "created_at": item.created_at.isoformat()}, code=201)
+
+
+def _expire_log_export(db: Session, item: LogExport) -> None:
+    item.status = "expired"
+    if item.file_path:
+        db.query(StoredFile).filter(
+            StoredFile.account_id == item.account_id,
+            StoredFile.purpose == "log_export",
+            StoredFile.storage_key == item.file_path,
+            StoredFile.status == "available",
+            StoredFile.deleted_at.is_(None),
+        ).update({StoredFile.status: "deleted", StoredFile.deleted_at: now_utc()}, synchronize_session=False)
     db.commit()
-    return _ok(request, {"id": item.public_id, "status": item.status, "created_at": item.created_at.isoformat()}, code=201)
 
 
 @router.get("/admin/log-exports/{export_id}", tags=["logs"])
@@ -3497,15 +4238,40 @@ def get_log_export(request: Request, account: WebAccount, export_id: str = PathP
     item = db.scalar(select(LogExport).where(LogExport.public_id == export_id, LogExport.account_id == account.id))
     if item is None:
         raise NotFoundError("日志导出不存在")
-    return _ok(request, {"id": item.public_id, "log_type": item.log_type, "status": item.status, "expires_at": item.expires_at.isoformat() if item.expires_at else None})
+    _admin_guard(request, account, db, _log_permission(item.log_type))
+    if item.expires_at and item.expires_at <= now_utc():
+        _expire_log_export(db, item)
+        raise DomainError("LOG_EXPORT_EXPIRED", "日志导出已过期", 410)
+    return _ok(request, {"id": item.public_id, "log_type": item.log_type, "status": item.status, "format": item.filters.get("export_format", "jsonl"), "row_count": item.filters.get("row_count"), "filters": {key: value for key, value in item.filters.items() if key not in {"row_count", "export_format"}}, "expires_at": item.expires_at.isoformat() if item.expires_at else None})
 
 
 @router.get("/admin/log-exports/{export_id}/file", tags=["logs"])
 def get_log_export_file(request: Request, account: WebAccount, export_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _admin_guard(request, account, db, "admin.logs.export")
     item = db.scalar(select(LogExport).where(LogExport.public_id == export_id, LogExport.account_id == account.id))
-    if item is None or item.status != "available" or not item.file_path or not Path(item.file_path).is_file():
+    if item is None:
         raise NotFoundError("日志导出不存在或已过期")
-    response = FileResponse(item.file_path, filename="purslyx-logs.json", media_type="application/json")
+    _admin_guard(request, account, db, _log_permission(item.log_type))
+    if item.expires_at and item.expires_at <= now_utc():
+        _expire_log_export(db, item)
+        raise DomainError("LOG_EXPORT_EXPIRED", "日志导出已过期", 410)
+    file_path = private_path(item.file_path, settings.data_dir) if item.file_path else None
+    if item.status not in {"available", "downloadable"} or file_path is None or not file_path.is_file():
+        raise DomainError("LOG_EXPORT_NOT_READY", "日志导出尚未可下载", 409, "wait")
+    stored = db.scalar(
+        select(StoredFile).where(
+            StoredFile.account_id == account.id,
+            StoredFile.purpose == "log_export",
+            StoredFile.storage_key == item.file_path,
+            StoredFile.status == "available",
+            StoredFile.deleted_at.is_(None),
+        )
+    )
+    if stored is not None and not private_path(stored.storage_key, settings.data_dir).is_file():
+        raise DomainError("LOG_EXPORT_NOT_READY", "日志导出尚未可下载", 409, "wait")
+    _admin_audit(db, account, "logs.download", None, request, "下载日志导出", after={"export_id": item.public_id})
+    db.commit()
+    output_format = item.filters.get("export_format", "jsonl")
+    response = FileResponse(file_path, filename=f"purslyx-logs.{output_format}", media_type="text/csv" if output_format == "csv" else "application/x-ndjson")
     response.headers["Cache-Control"] = "private, no-store"
     return response
