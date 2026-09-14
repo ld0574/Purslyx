@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _bool(name: str, default: bool) -> bool:
@@ -30,9 +31,35 @@ class Settings:
     )
     auto_verify_local: bool = field(default_factory=lambda: _bool("PURSLYX_AUTO_VERIFY_LOCAL", False))
     session_days: int = field(default_factory=lambda: int(os.getenv("PURSLYX_SESSION_DAYS", "7")))
+    verification_token_hours: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_VERIFICATION_TOKEN_HOURS", "24"))
+    )
+    password_reset_minutes: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_PASSWORD_RESET_MINUTES", "30"))
+    )
+    account_recovery_minutes: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_ACCOUNT_RECOVERY_MINUTES", "30"))
+    )
+    browser_auth_code_minutes: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_BROWSER_AUTH_CODE_MINUTES", "1"))
+    )
     browser_session_hours: int = field(
         default_factory=lambda: int(os.getenv("PURSLYX_BROWSER_SESSION_HOURS", "4"))
     )
+    site_budget_usd: str = field(default_factory=lambda: os.getenv("PURSLYX_SITE_BUDGET_USD", "30.00"))
+    model_concurrency_limit: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_MODEL_CONCURRENCY_LIMIT", "5"))
+    )
+    account_running_task_limit: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_ACCOUNT_RUNNING_TASK_LIMIT", "1"))
+    )
+    account_pending_task_limit: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_ACCOUNT_PENDING_TASK_LIMIT", "3"))
+    )
+    storage_limit_bytes: int = field(
+        default_factory=lambda: int(os.getenv("PURSLYX_STORAGE_LIMIT_BYTES", str(2 * 1024 * 1024 * 1024)))
+    )
+    cookie_secure: bool = field(default_factory=lambda: _bool("PURSLYX_COOKIE_SECURE", False))
     token_secret: str = field(default_factory=lambda: os.getenv("PURSLYX_TOKEN_SECRET", ""))
     product_origin: str = field(
         default_factory=lambda: os.getenv("PURSLYX_PRODUCT_ORIGIN", "http://127.0.0.1:8001")
@@ -41,6 +68,12 @@ class Settings:
         default_factory=lambda: os.getenv(
             "PURSLYX_ALLOWED_ORIGINS",
             "http://127.0.0.1:8001,http://localhost:8001,http://127.0.0.1:8000,http://localhost:8000",
+        )
+    )
+    allowed_browser_origins: str = field(
+        default_factory=lambda: os.getenv(
+            "PURSLYX_ALLOWED_BROWSER_ORIGINS",
+            "https://www.zhipin.com,https://zhipin.com,https://www.liepin.com,https://liepin.com",
         )
     )
     model_provider: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_PROVIDER", "local"))
@@ -70,6 +103,8 @@ class Settings:
             raise RuntimeError("禁止使用 SQLite；请将 DATABASE_URL 配置为 PostgreSQL URL。")
         if scheme not in {"postgres", "postgresql"} and not scheme.startswith("postgresql+"):
             raise RuntimeError("DATABASE_URL 必须是 PostgreSQL URL，不能使用本地文件数据库。")
+        if urlparse(value).hostname != "10.10.10.201":
+            raise RuntimeError("DATABASE_URL 必须指向本地开发环境文件中的 201 PostgreSQL。")
         return value
 
     def require_runtime_secrets(self) -> None:
@@ -83,6 +118,12 @@ class Settings:
         """返回经过清理的 CORS 来源列表。"""
 
         return [item.strip() for item in self.allowed_origins.split(",") if item.strip()]
+
+    @property
+    def browser_origins(self) -> list[str]:
+        """返回允许浏览器脚本发起跨源请求的固定来源。"""
+
+        return [item.strip() for item in self.allowed_browser_origins.split(",") if item.strip()]
 
     @property
     def file_dir(self) -> Path:

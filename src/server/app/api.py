@@ -22,7 +22,8 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, Header, Path as PathParam, Query, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -64,6 +65,7 @@ from .models import (
     OneTimeToken,
     Preference,
     PreferenceVersion,
+    RateLimitBucket,
     ResumeVariant,
     ResumeVariantVersion,
     Rewrite,
@@ -171,6 +173,95 @@ def _email_valid(value: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]{1,128}@[\w.-]{1,200}", value.strip()))
 
 
+def _is_allowed_origin(value: str, allowed: list[str]) -> bool:
+    """只接受精确配置的 scheme + host + port，不接受带路径的伪来源。"""
+
+    parsed = urlparse(value)
+    return (
+        value in allowed
+        and parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and parsed.path in {"", "/"}
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def _request_origin(request: Request) -> str:
+    """返回规范化的请求来源；限频键不能使用未验证的客户端自报头。"""
+
+    origin = request.headers.get("Origin", "").strip()
+    if origin:
+        return origin[:512]
+    return "no-origin"
+
+
+def _rate_limit_key(request: Request, bucket: str, *, subject: str | None = None) -> str:
+    client_host = request.client.host if request.client else "unknown"
+    value = f"{bucket}:{client_host}:{_request_origin(request)}"
+    if subject:
+        value += f":{normalize_email(subject)[:254]}"
+    # 数据库字段有固定长度；摘要也避免把邮箱直接写入限频表。
+    return f"{bucket}:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+
+def _rate_limit(
+    db: Session,
+    request: Request,
+    bucket: str,
+    *,
+    limit: int,
+    subject: str | None = None,
+    window_seconds: int = 60,
+) -> None:
+    """用 PostgreSQL 原子 upsert 做跨进程限频，并返回可靠的 Retry-After。"""
+
+    if limit < 1 or window_seconds < 1:
+        raise RuntimeError("rate limit configuration must be positive")
+    now = now_utc()
+    window_start = now - timedelta(seconds=window_seconds)
+    key = _rate_limit_key(request, bucket, subject=subject)
+    statement = (
+        pg_insert(RateLimitBucket)
+        .values(
+            bucket_key=key,
+            window_started_at=now,
+            hit_count=1,
+            updated_at=now,
+        )
+        .on_conflict_do_update(
+            index_elements=[RateLimitBucket.bucket_key],
+            set_={
+                "window_started_at": case(
+                    (RateLimitBucket.window_started_at < window_start, now),
+                    else_=RateLimitBucket.window_started_at,
+                ),
+                "hit_count": case(
+                    (RateLimitBucket.window_started_at < window_start, 1),
+                    else_=RateLimitBucket.hit_count + 1,
+                ),
+                "updated_at": now,
+            },
+        )
+        .returning(RateLimitBucket.window_started_at, RateLimitBucket.hit_count)
+    )
+    window_began, hit_count = db.execute(statement).one()
+    # 限频命中必须在业务处理前单独提交，否则业务异常会把命中记录一并回滚。
+    db.commit()
+    if hit_count > limit:
+        elapsed = max(0, int((now - window_began).total_seconds()))
+        retry_after = max(1, window_seconds - elapsed)
+        raise DomainError(
+            "RATE_LIMITED",
+            "请求过于频繁，请稍后再试",
+            429,
+            "retry_later",
+            retryable=True,
+            retry_after=retry_after,
+        )
+
+
 def _token_response(raw_token: str, csrf_token: str | None = None) -> dict[str, str]:
     result = {"access_token": raw_token, "token_type": "bearer"}
     if csrf_token:
@@ -192,14 +283,28 @@ def _create_web_session(db: Session, account: Account) -> tuple[WebSession, str,
     return session, raw_token, csrf_token
 
 
-def _create_one_time_token(db: Session, account_id: int, token_type: str, days: int = 1) -> str:
+def _create_one_time_token(db: Session, account_id: int, token_type: str) -> str:
+    ttl = {
+        "verify_email": timedelta(hours=settings.verification_token_hours),
+        "reset_password": timedelta(minutes=settings.password_reset_minutes),
+        "recover_account": timedelta(minutes=settings.account_recovery_minutes),
+    }.get(token_type)
+    if ttl is None:
+        raise RuntimeError(f"unsupported one-time token type: {token_type}")
+    # 新令牌替换同账号同类型的旧令牌，避免多个仍有效的邮件链接并存。
+    db.query(OneTimeToken).filter(
+        OneTimeToken.account_id == account_id,
+        OneTimeToken.token_type == token_type,
+        OneTimeToken.consumed_at.is_(None),
+        OneTimeToken.revoked_at.is_(None),
+    ).update({OneTimeToken.revoked_at: now_utc()}, synchronize_session=False)
     raw = issue_secret()
     db.add(
         OneTimeToken(
             account_id=account_id,
             token_hash=hash_secret(raw),
             token_type=token_type,
-            expires_at=now_utc() + timedelta(days=days),
+            expires_at=now_utc() + ttl,
         )
     )
     return raw
@@ -506,16 +611,25 @@ class ExportRequest(BaseModel):
 # ------------------------------ 用户与浏览器授权 ------------------------------
 
 
-@router.post("/auth/register", tags=["auth"], status_code=201)
+@router.post("/auth/register", tags=["auth"], status_code=202)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     """注册时固定身份；身份后续不能通过接口切换。"""
 
     email = payload.email.strip()
     normalized = normalize_email(email)
+    _rate_limit(db, request, "auth.register", limit=5, subject=email)
     if not _email_valid(email):
         raise DomainError("AUTH_EMAIL_INVALID", "请输入有效邮箱", 422)
-    if db.scalar(select(Account).where(Account.email_normalized == normalized)) is not None:
-        raise DomainError("AUTH_EMAIL_EXISTS", "该邮箱已经注册", 409)
+    existing = db.scalar(select(Account).where(Account.email_normalized == normalized))
+    if existing is not None:
+        data: dict[str, Any] = {
+            "status": "verification_requested",
+            "message": "如果该邮箱可以注册，我们会发送验证邮件。",
+        }
+        if existing.email_verified_at is None and settings.debug:
+            data["verification_token"] = _create_one_time_token(db, existing.id, "verify_email")
+            db.commit()
+        return _ok(request, data, code=202)
     account = Account(
         email=email,
         email_normalized=normalized,
@@ -526,28 +640,31 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     )
     db.add(account)
     db.flush()
-    verification_token = _create_one_time_token(db, account.id, "verify_email")
+    verification_token = None
+    if account.email_verified_at is None:
+        verification_token = _create_one_time_token(db, account.id, "verify_email")
     grants = grant_trial_if_needed(db, account) if settings.auto_verify_local else []
     db.commit()
     data: dict[str, Any] = {
-        "account": public_account(db, account),
-        "verification_required": account.email_verified_at is None,
+        "status": "verification_requested",
+        "message": "如果该邮箱可以注册，我们会发送验证邮件。",
     }
     # 只在本地 debug 返回一次性 token，线上由邮件服务发送，避免 token 进入业务日志。
-    if settings.debug:
+    if settings.debug and verification_token:
         data["verification_token"] = verification_token
-    if grants:
-        data["trial_grants"] = [{"feature": item.feature, "count": item.count} for item in grants]
-    return _ok(request, data, code=201)
+    # 本地自动验证仍然发放试用次数，但不把账号投影带入公开注册响应。
+    _ = grants
+    return _ok(request, data, code=202)
 
 
 @router.post("/auth/verify-email", tags=["auth"])
 def verify_email(payload: TokenRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    _rate_limit(db, request, "auth.verify_email", limit=10, subject=payload.token)
     token = db.scalar(
         select(OneTimeToken).where(
             OneTimeToken.token_hash == hash_secret(payload.token),
             OneTimeToken.token_type == "verify_email",
-        )
+        ).with_for_update()
     )
     if token is None or token.revoked_at or token.expires_at <= now_utc():
         raise DomainError("AUTH_TOKEN_INVALID_OR_EXPIRED", "验证链接无效或已过期", 410)
@@ -576,21 +693,25 @@ def verify_email(payload: TokenRequest, request: Request, db: Session = Depends(
 def resend_verification(payload: RecoveryRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     """返回中性文案；debug 环境附带 token 便于本机演示。"""
 
+    _rate_limit(db, request, "auth.resend_verification", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，验证邮件将发送到注册邮箱。"}
-    if account and account.email_verified_at is None and settings.debug:
-        data["verification_token"] = _create_one_time_token(db, account.id, "verify_email")
+    if account and account.email_verified_at is None:
+        token = _create_one_time_token(db, account.id, "verify_email")
+        if settings.debug:
+            data["verification_token"] = token
         db.commit()
-    return _ok(request, data)
+    return _ok(request, {"status": "verification_requested", **data}, code=202)
 
 
 @router.post("/auth/login", tags=["auth"])
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    _rate_limit(db, request, "auth.login", limit=10, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     if account is None or not verify_password(account.password_hash, payload.password):
         db.add(SecurityEvent(event_type="login", outcome="failed", reason_code="invalid_credentials", client_type="web"))
         db.commit()
-        raise DomainError("AUTH_CREDENTIALS_INVALID", "邮箱或密码不正确", 401)
+        raise DomainError("AUTH_INVALID_CREDENTIALS", "邮箱或密码不正确", 401)
     if account.status == "suspended":
         raise DomainError("AUTH_ACCOUNT_SUSPENDED", "账号已暂停", 403)
     if account.email_verified_at is None:
@@ -601,37 +722,48 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     db.add(SecurityEvent(account_id=account.id, event_type="web_session_issued", outcome="succeeded", client_type="web"))
     db.commit()
     response = _ok(request, {"account": public_account(db, account), **_token_response(raw, csrf)})
-    response.set_cookie("purslyx_session", raw, httponly=True, samesite="lax", secure=False, max_age=settings.session_days * 86400)
+    response.set_cookie(
+        "purslyx_session",
+        raw,
+        httponly=True,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        max_age=settings.session_days * 86400,
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 
 
 @router.post("/auth/logout", tags=["auth"])
-def logout(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def logout(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> Response:
     require_csrf(request, account)
     session: WebSession | None = getattr(request.state, "web_session", None)
     if session:
         session.revoked_at = now_utc()
         db.add(SecurityEvent(account_id=account.id, event_type="web_session_revoked", outcome="succeeded", client_type="web"))
     db.commit()
-    response = _ok(request, {"logged_out": True})
+    response = _no_content(request)
     response.delete_cookie("purslyx_session")
     return response
 
 
 @router.post("/auth/forgot-password", tags=["auth"])
 def forgot_password(payload: RecoveryRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    _rate_limit(db, request, "auth.forgot_password", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，重置邮件将发送到注册邮箱。"}
-    if account and settings.debug:
-        data["reset_token"] = _create_one_time_token(db, account.id, "reset_password")
+    if account:
+        token = _create_one_time_token(db, account.id, "reset_password")
+        if settings.debug:
+            data["reset_token"] = token
         db.commit()
-    return _ok(request, data)
+    return _ok(request, {"status": "reset_requested", **data}, code=202)
 
 
 @router.post("/auth/reset-password", tags=["auth"])
 def reset_password(payload: PasswordResetRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
-    token = db.scalar(select(OneTimeToken).where(OneTimeToken.token_hash == hash_secret(payload.token), OneTimeToken.token_type == "reset_password"))
+    _rate_limit(db, request, "auth.reset_password", limit=10, subject=payload.token)
+    token = db.scalar(select(OneTimeToken).where(OneTimeToken.token_hash == hash_secret(payload.token), OneTimeToken.token_type == "reset_password").with_for_update())
     if token is None or token.consumed_at or token.revoked_at or token.expires_at <= now_utc():
         raise DomainError("AUTH_TOKEN_INVALID_OR_EXPIRED", "重置链接无效或已过期", 410)
     account = db.get(Account, token.account_id)
@@ -642,33 +774,41 @@ def reset_password(payload: PasswordResetRequest, request: Request, db: Session 
     db.query(WebSession).filter(WebSession.account_id == account.id, WebSession.revoked_at.is_(None)).update({WebSession.revoked_at: now_utc()})
     db.add(SecurityEvent(account_id=account.id, event_type="password_reset", outcome="succeeded", client_type="web"))
     db.commit()
-    return _ok(request, {"reset": True})
+    return _no_content(request)
 
 
 @router.post("/auth/request-account-recovery", tags=["auth"])
 def request_account_recovery(payload: RecoveryRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    _rate_limit(db, request, "auth.request_account_recovery", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，将发送账号恢复说明。"}
-    if account and account.status == "suspended" and settings.debug:
-        data["recovery_token"] = _create_one_time_token(db, account.id, "recover_account")
+    if account and account.status == "suspended":
+        token = _create_one_time_token(db, account.id, "recover_account")
+        if settings.debug:
+            data["recovery_token"] = token
         db.commit()
-    return _ok(request, data)
+    return _ok(request, {"status": "recovery_requested", **data}, code=202)
 
 
 @router.post("/auth/recover-account", tags=["auth"])
 def recover_account(payload: TokenRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
-    token = db.scalar(select(OneTimeToken).where(OneTimeToken.token_hash == hash_secret(payload.token), OneTimeToken.token_type == "recover_account"))
-    if token is None or token.consumed_at or token.revoked_at or token.expires_at <= now_utc():
+    _rate_limit(db, request, "auth.recover_account", limit=10, subject=payload.token)
+    token = db.scalar(select(OneTimeToken).where(OneTimeToken.token_hash == hash_secret(payload.token), OneTimeToken.token_type == "recover_account").with_for_update())
+    if token is None or token.revoked_at or token.expires_at <= now_utc():
         raise DomainError("AUTH_TOKEN_INVALID_OR_EXPIRED", "恢复链接无效或已过期", 410)
     account = db.get(Account, token.account_id)
     if account is None:
+        raise DomainError("AUTH_TOKEN_INVALID_OR_EXPIRED", "恢复链接无效或已过期", 410)
+    if token.consumed_at:
+        return _no_content(request)
+    if account.status != "suspended":
         raise DomainError("AUTH_TOKEN_INVALID_OR_EXPIRED", "恢复链接无效或已过期", 410)
     token.consumed_at = now_utc()
     account.status = "active"
     account.revision += 1
     db.add(SecurityEvent(account_id=account.id, event_type="account_recovered", outcome="succeeded", client_type="web"))
     db.commit()
-    return _ok(request, {"account": public_account(db, account)})
+    return _no_content(request)
 
 
 @router.get("/me", tags=["auth"])
@@ -680,20 +820,36 @@ def me(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> 
 def create_browser_code(payload: BrowserCodeRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
     _write_guard(request, account)
     require_seeker(account)
-    if not payload.origin.startswith("https://") and not payload.origin.startswith("http://localhost"):
+    if not _is_allowed_origin(payload.origin, settings.browser_origins):
         raise DomainError("BROWSER_ORIGIN_INVALID", "浏览器来源不在允许范围内", 422)
     raw = issue_secret()
-    expires_at = now_utc() + timedelta(minutes=10)
+    expires_at = now_utc() + timedelta(minutes=settings.browser_auth_code_minutes)
     db.add(BrowserAuthCode(account_id=account.id, code_hash=hash_secret(raw), origin=payload.origin, nonce=payload.nonce, expires_at=expires_at))
     db.commit()
-    return _ok(request, {"code": raw, "expires_at": expires_at.isoformat(), "origin": payload.origin})
+    return _ok(
+        request,
+        {
+            "authorization_code": raw,
+            # 保留旧脚本字段，迁移期间新客户端应使用 authorization_code。
+            "code": raw,
+            "nonce": payload.nonce,
+            "expires_at": expires_at.isoformat(),
+        },
+        code=201,
+    )
 
 
 @router.post("/browser-auth/exchange", tags=["browser-auth"])
 def exchange_browser_code(payload: BrowserExchangeRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    _rate_limit(db, request, "auth.browser_exchange", limit=10)
+    request_origin = request.headers.get("Origin", "").strip()
+    if request_origin and request_origin != payload.origin:
+        raise DomainError("BROWSER_ORIGIN_INVALID", "浏览器来源不匹配", 403)
+    if not _is_allowed_origin(payload.origin, settings.browser_origins) or not payload.nonce:
+        raise DomainError("BROWSER_ORIGIN_INVALID", "浏览器来源或 nonce 不合法", 403)
     raw_code = payload.authorization_code or payload.code or ""
-    code = db.scalar(select(BrowserAuthCode).where(BrowserAuthCode.code_hash == hash_secret(raw_code)))
-    if code is None or code.consumed_at or code.expires_at <= now_utc() or code.origin != payload.origin or (payload.nonce is not None and code.nonce != payload.nonce):
+    code = db.scalar(select(BrowserAuthCode).where(BrowserAuthCode.code_hash == hash_secret(raw_code)).with_for_update())
+    if code is None or code.consumed_at or code.expires_at <= now_utc() or code.origin != payload.origin or code.nonce != payload.nonce:
         raise DomainError("BROWSER_CODE_INVALID", "浏览器授权码无效或已过期", 401)
     account = db.get(Account, code.account_id)
     if account is None or account.status != "active" or account.email_verified_at is None:
@@ -704,7 +860,7 @@ def exchange_browser_code(payload: BrowserExchangeRequest, request: Request, db:
     db.add(BrowserSession(account_id=account.id, token_hash=hash_secret(raw), expires_at=expires_at))
     db.add(SecurityEvent(account_id=account.id, event_type="browser_session_issued", outcome="succeeded", client_type="browser"))
     db.commit()
-    return _ok(request, {"browser_token": raw, "token_type": "Bearer", "scope": ["job_drafts.create", "job_drafts.read_own", "browser_session.revoke_self"], "scope_version": 1, "expires_at": expires_at.isoformat()})
+    return _ok(request, {"browser_token": raw, "token_type": "Bearer", "scope": ["job_drafts.create", "job_drafts.read_own", "browser_session.revoke_self"], "scope_version": 1, "expires_at": expires_at.isoformat()}, code=201)
 
 
 @router.delete("/browser-auth/session", tags=["browser-auth"])
@@ -714,7 +870,7 @@ def delete_browser_session(request: Request, account: BrowserAccount, db: Sessio
         session.revoked_at = now_utc()
         db.add(SecurityEvent(account_id=account.id, event_type="browser_session_revoked", outcome="succeeded", client_type="browser"))
     db.commit()
-    return _ok(request, {"revoked": True})
+    return _no_content(request)
 
 
 # ------------------------------------ 简历 ------------------------------------
@@ -2952,8 +3108,30 @@ def _admin_guard(request: Request, account: Account, db: Session, permission: st
         require_csrf(request, account)
 
 
-def _admin_audit(db: Session, operator: Account, action: str, target: Account | None, request: Request, reason: str | None = None, before: dict[str, Any] | None = None, after: dict[str, Any] | None = None) -> None:
-    db.add(AuditEvent(operator_account_id=operator.id, target_account_id=target.id if target else None, action=action, outcome="succeeded", reason=reason, before_value=before, after_value=after, request_id=request.headers.get("X-Request-ID")))
+def _admin_audit(
+    db: Session,
+    operator: Account,
+    action: str,
+    target: Account | None,
+    request: Request,
+    reason: str | None = None,
+    before: dict[str, Any] | None = None,
+    after: dict[str, Any] | None = None,
+    idempotency_key: str | None = None,
+) -> None:
+    db.add(
+        AuditEvent(
+            operator_account_id=operator.id,
+            target_account_id=target.id if target else None,
+            action=action,
+            outcome="succeeded",
+            reason=reason,
+            before_value=before,
+            after_value=after,
+            request_id=request.headers.get("X-Request-ID"),
+            idempotency_key=idempotency_key,
+        )
+    )
 
 
 @router.get("/admin/users", tags=["admin"])
@@ -2987,15 +3165,57 @@ def admin_user_detail(request: Request, account: WebAccount, user_id: str = Path
 @router.put("/admin/users/{user_id}/status", tags=["admin"])
 def admin_update_status(payload: AccountStatusRequest, request: Request, account: WebAccount, user_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.users.manage_status", write=True)
+    key = _idempotency_key(request)
     target = _account_or_404(db, user_id)
     if target.id == account.id and payload.status == "suspended":
         raise DomainError("ADMIN_SELF_LOCKOUT", "不能暂停当前正在使用的管理员账号", 409)
     if payload.base_revision is not None and payload.base_revision != target.revision:
         raise DomainError("ADMIN_USER_REVISION_CONFLICT", "用户状态已变化，请刷新后重试", 409, "refresh")
+    request_digest = payload_hash({"user_id": user_id, **payload.model_dump(mode="json")})
+    if key:
+        previous = db.scalar(
+            select(AuditEvent).where(
+                AuditEvent.operator_account_id == account.id,
+                AuditEvent.action == "user.status.update",
+                AuditEvent.target_account_id == target.id,
+                AuditEvent.idempotency_key == key,
+            )
+        )
+        if previous is not None:
+            if (previous.after_value or {}).get("request_hash") != request_digest:
+                raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的用户状态变更不同", 409)
+            return _ok(request, {"account": public_account(db, target)})
     before = {"status": target.status}
     target.status = payload.status
     target.revision += 1
-    _admin_audit(db, account, "user.status.update", target, request, payload.reason, before, {"status": target.status})
+    _admin_audit(
+        db,
+        account,
+        "user.status.update",
+        target,
+        request,
+        payload.reason,
+        before,
+        {"status": target.status, "request_hash": request_digest},
+        key,
+    )
+    if target.status == "suspended":
+        revoked_at = now_utc()
+        db.query(WebSession).filter(WebSession.account_id == target.id, WebSession.revoked_at.is_(None)).update(
+            {WebSession.revoked_at: revoked_at}, synchronize_session=False
+        )
+        db.query(BrowserSession).filter(
+            BrowserSession.account_id == target.id, BrowserSession.revoked_at.is_(None)
+        ).update({BrowserSession.revoked_at: revoked_at}, synchronize_session=False)
+        db.add(
+            SecurityEvent(
+                account_id=target.id,
+                event_type="all_sessions_revoked",
+                outcome="succeeded",
+                reason_code="account_suspended",
+                client_type="admin",
+            )
+        )
     db.commit()
     return _ok(request, {"account": public_account(db, target)})
 

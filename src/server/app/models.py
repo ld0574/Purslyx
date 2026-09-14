@@ -105,6 +105,18 @@ class BrowserSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
+class RateLimitBucket(Base):
+    """基于 PostgreSQL 的限频桶；避免多进程部署时只在内存中限频。"""
+
+    __tablename__ = "rate_limit_buckets"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    bucket_key: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    window_started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    hit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
 class AdminPermission(Base):
     __tablename__ = "admin_permissions"
 
@@ -439,6 +451,9 @@ class Feedback(TimestampMixin, Base):
     context_type: Mapped[str | None] = mapped_column(String(32))
     context_id: Mapped[str | None] = mapped_column(String(36))
     status: Mapped[str] = mapped_column(String(20), default="new", nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    reviewed_by_account_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
     request_hash: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -492,6 +507,7 @@ class AuditEvent(Base):
     before_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     after_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     request_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 

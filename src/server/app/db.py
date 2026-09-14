@@ -86,6 +86,7 @@ def _upgrade_early_demo_schema() -> None:
             "browser_job_drafts": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
             "interview_answers": ("request_hash", "VARCHAR(64)"),
             "log_exports": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
+            "admin_audit_events": ("idempotency_key", "VARCHAR(128)"),
         }
         for table_name, column_values in idempotency_columns.items():
             if table_name not in inspector.get_table_names():
@@ -93,6 +94,22 @@ def _upgrade_early_demo_schema() -> None:
             columns = {item["name"] for item in inspector.get_columns(table_name)}
             for index in range(0, len(column_values), 2):
                 column_name, column_type = column_values[index : index + 2]
+                if column_name not in columns:
+                    connection.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
+        additive_columns = {
+            # 201 上的早期演示库可能已经有这些表，但还没有本轮审计字段。
+            "accounts": (("revision", "INTEGER DEFAULT 1"),),
+            "product_feedback": (
+                ("revision", "INTEGER DEFAULT 1"),
+                ("reviewed_by_account_id", "INTEGER"),
+                ("reviewed_at", "TIMESTAMPTZ"),
+            ),
+        }
+        for table_name, column_values in additive_columns.items():
+            if table_name not in inspector.get_table_names():
+                continue
+            columns = {item["name"] for item in inspector.get_columns(table_name)}
+            for column_name, column_type in column_values:
                 if column_name not in columns:
                     connection.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
         if "resume_variant_versions" in inspector.get_table_names():
@@ -107,33 +124,32 @@ def _upgrade_early_demo_schema() -> None:
                 connection.execute(text("ALTER TABLE documents ADD COLUMN idempotency_key VARCHAR(128)"))
             if "request_hash" not in document_columns:
                 connection.execute(text("ALTER TABLE documents ADD COLUMN request_hash VARCHAR(64)"))
-        if "apply_click_events" not in inspector.get_table_names():
-            return
-        columns = {item["name"] for item in inspector.get_columns("apply_click_events")}
-        if "source_url_hash" not in columns:
-            connection.execute(text("ALTER TABLE apply_click_events ADD COLUMN source_url_hash VARCHAR(64)"))
-            if "target_url" in columns:
+        if "apply_click_events" in inspector.get_table_names():
+            columns = {item["name"] for item in inspector.get_columns("apply_click_events")}
+            if "source_url_hash" not in columns:
+                connection.execute(text("ALTER TABLE apply_click_events ADD COLUMN source_url_hash VARCHAR(64)"))
+                if "target_url" in columns:
+                    connection.execute(
+                        text(
+                            "UPDATE apply_click_events "
+                            "SET source_url_hash = md5(COALESCE(target_url, '')) "
+                            "WHERE source_url_hash IS NULL"
+                        )
+                    )
+                else:
+                    connection.execute(
+                        text("UPDATE apply_click_events SET source_url_hash = md5(public_id) WHERE source_url_hash IS NULL")
+                    )
+                connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN source_url_hash SET NOT NULL"))
+            if "metric_date" not in columns:
+                connection.execute(text("ALTER TABLE apply_click_events ADD COLUMN metric_date VARCHAR(10)"))
                 connection.execute(
                     text(
-                        "UPDATE apply_click_events "
-                        "SET source_url_hash = md5(COALESCE(target_url, '')) "
-                        "WHERE source_url_hash IS NULL"
+                        "UPDATE apply_click_events SET metric_date = "
+                        "to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') "
+                        "WHERE metric_date IS NULL"
                     )
                 )
-            else:
-                connection.execute(
-                    text("UPDATE apply_click_events SET source_url_hash = md5(public_id) WHERE source_url_hash IS NULL")
-                )
-            connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN source_url_hash SET NOT NULL"))
-        if "metric_date" not in columns:
-            connection.execute(text("ALTER TABLE apply_click_events ADD COLUMN metric_date VARCHAR(10)"))
-            connection.execute(
-                text(
-                    "UPDATE apply_click_events SET metric_date = "
-                    "to_char(created_at AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') "
-                    "WHERE metric_date IS NULL"
-                )
-            )
-            connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN metric_date SET NOT NULL"))
-        if "target_url" in columns:
-            connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN target_url DROP NOT NULL"))
+                connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN metric_date SET NOT NULL"))
+            if "target_url" in columns:
+                connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN target_url DROP NOT NULL"))

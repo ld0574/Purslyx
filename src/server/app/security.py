@@ -14,6 +14,7 @@ from fastapi import Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .config import settings
 from .db import get_db
 from .errors import DomainError, NotFoundError
 from .models import Account, AccountRole, AdminPermission, AdminRole, BrowserSession, RolePermission, WebSession
@@ -110,6 +111,9 @@ def require_csrf(request: Request, account: Account) -> None:
     session: WebSession | None = getattr(request.state, "web_session", None)
     if session is None:
         return
+    origin = request.headers.get("Origin", "").strip()
+    if origin and origin not in settings.origins:
+        raise DomainError("CSRF_ORIGIN_INVALID", "请求来源不在允许范围内", 403, "refresh")
     supplied = request.headers.get("X-CSRF-Token") or request.query_params.get("csrf_token")
     if not supplied or not compare_secret(supplied, session.csrf_token_hash):
         raise DomainError("CSRF_INVALID", "请求校验已失效，请刷新页面后重试", 403, "refresh")

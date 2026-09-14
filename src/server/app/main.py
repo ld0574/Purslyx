@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import secrets
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -73,7 +74,7 @@ def _meta(request: Request) -> dict[str, str]:
     """为所有响应生成轻量元信息，便于演示时追踪一次请求。"""
 
     request_id = request.headers.get("X-Request-ID", "").strip()
-    if not request_id or len(request_id) > 64:
+    if not request_id or len(request_id) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", request_id):
         request_id = secrets.token_hex(12)
     request.state.request_id = request_id
     return {"request_id": request_id, "server_time": utcnow().isoformat()}
@@ -88,16 +89,27 @@ def _ok(request: Request, data: Any, *, code: int = status.HTTP_200_OK) -> JSONR
 
 
 def _error(request: Request, error: DomainError) -> JSONResponse:
+    meta = _meta(request)
+    error_body: dict[str, Any] = {
+        "code": error.code,
+        "message": error.message,
+        "request_id": meta["request_id"],
+        "retryable": error.retryable,
+    }
+    if error.action:
+        error_body["action"] = error.action
+    if error.fields:
+        error_body["fields"] = error.fields
+    headers = {
+        "X-Request-ID": meta["request_id"],
+        "Cache-Control": "private, no-store",
+    }
+    if error.retry_after is not None:
+        headers["Retry-After"] = str(error.retry_after)
     return JSONResponse(
         status_code=error.status_code,
-        content={
-            "error": {
-                "code": error.code,
-                "message": error.message,
-                **({"action": error.action} if error.action else {}),
-            },
-            "meta": _meta(request),
-        },
+        content={"error": error_body, "meta": meta},
+        headers=headers,
     )
 
 
@@ -194,8 +206,8 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.origins,
-    allow_credentials=False,
+    allow_origins=sorted(set(settings.origins + settings.browser_origins)),
+    allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-CSRF-Token", "Idempotency-Key"],
 )
@@ -209,7 +221,20 @@ async def domain_error_handler(request: Request, exc: DomainError) -> JSONRespon
 
 @app.exception_handler(RequestValidationError)
 async def validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
-    return _error(request, DomainError("REQUEST_INVALID", "请求参数不符合接口约定", 422))
+    fields: list[dict[str, str]] = []
+    for item in exc.errors()[:20]:
+        location = [str(value) for value in item.get("loc", ()) if value != "body"]
+        fields.append(
+            {
+                "field": ".".join(location) or "$",
+                "code": str(item.get("type", "invalid")),
+                "message": "字段不符合接口约定",
+            }
+        )
+    return _error(
+        request,
+        DomainError("REQUEST_INVALID", "请求参数不符合接口约定", 422, fields=fields),
+    )
 
 
 @app.get("/", include_in_schema=False)

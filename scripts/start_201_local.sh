@@ -1,26 +1,32 @@
 #!/usr/bin/env bash
 
-# 使用本地开发环境文件启动 Purslyx。该文件只读取密码，不修改或输出密码。
+# 使用本地开发环境文件启动 Purslyx。该文件只读取连接信息，不修改或输出密码。
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 local_env_file="${PURSLYX_LOCAL_ENV_FILE:-$project_dir/docs/02-technical/deployment/本地开发环境.md}"
 
-if [[ ! -f "$local_env_file" && -z "${PGPASSWORD:-}" ]]; then
+if [[ ! -f "$local_env_file" ]]; then
   echo "找不到本地开发环境文件：$local_env_file" >&2
   exit 1
 fi
 
-postgres_password="${PGPASSWORD:-}"
-if [[ -z "$postgres_password" ]]; then
-  postgres_password="$(awk '/^postgresql:/{in_postgres=1; next} in_postgres && /^密码:/{sub(/^密码:/, ""); print; exit}' "$local_env_file")"
+postgres_endpoint="$(awk -F: '/^postgresql:/{print $2 ":" $3; exit}' "$local_env_file")"
+postgres_host="${postgres_endpoint%:*}"
+postgres_port="${postgres_endpoint##*:}"
+postgres_user="$(awk -F: '/^用户名:/{sub(/^[^:]*:/, ""); print; exit}' "$local_env_file")"
+postgres_database="$(awk -F: '/^数据库:/{sub(/^[^:]*:/, ""); print; exit}' "$local_env_file")"
+postgres_password="$(awk -F: '/^postgresql:/{in_postgres=1; next} in_postgres && /^密码:/{sub(/^[^:]*:/, ""); print; exit}' "$local_env_file")"
+if [[ -z "$postgres_host" || -z "$postgres_port" || -z "$postgres_user" || -z "$postgres_database" || -z "$postgres_password" ]]; then
+  echo "本地开发环境文件中缺少完整 PostgreSQL 连接信息" >&2
+  exit 1
 fi
-if [[ -z "$postgres_password" ]]; then
-  echo "本地开发环境文件中没有 PostgreSQL 密码" >&2
+if [[ "$postgres_host" != "10.10.10.201" ]]; then
+  echo "本地开发环境文件中的 PostgreSQL 必须是 201 环境" >&2
   exit 1
 fi
 
-expected_database_url="postgresql+psycopg://purslyx@10.10.10.201:5432/purslyx"
+expected_database_url="postgresql+psycopg://${postgres_user}@${postgres_host}:${postgres_port}/${postgres_database}"
 database_url="${DATABASE_URL:-$expected_database_url}"
 if [[ "$database_url" != "$expected_database_url" ]]; then
   echo "DATABASE_URL 必须固定为本地开发环境文件中的 201 PostgreSQL" >&2

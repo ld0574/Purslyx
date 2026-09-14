@@ -24,3 +24,13 @@ def test_missing_database_url_is_rejected() -> None:
         assert "DATABASE_URL" in str(exc)
     else:
         raise AssertionError("missing DATABASE_URL must be rejected")
+
+
+def test_other_postgres_host_is_rejected() -> None:
+    configured = Settings(database_url="postgresql+psycopg://u:p@10.10.10.202:5432/purslyx")
+    try:
+        configured.require_postgres_url()
+    except RuntimeError as exc:
+        assert "201" in str(exc)
+    else:
+        raise AssertionError("the demo must stay on the 201 PostgreSQL host")

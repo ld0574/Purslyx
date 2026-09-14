@@ -88,14 +88,12 @@ def register_and_login(client: httpx.Client, email: str) -> tuple[dict[str, Any]
         client,
         "POST",
         "/api/v1/auth/register",
-        expected=(201,),
+        expected=(202,),
         json={"email": email, "password": PASSWORD, "registration_role": "seeker"},
     )
     registration = data_of(body)
-    if not registration.get("account", {}).get("email_verified"):
-        verification_token = registration.get("verification_token")
-        if not verification_token:
-            raise RuntimeError("账号未验证；请用本地演示配置开启 PURSLYX_AUTO_VERIFY_LOCAL，或开启 debug 邮件令牌")
+    verification_token = registration.get("verification_token")
+    if verification_token:
         call(client, "POST", "/api/v1/auth/verify-email", expected=(200,), json={"token": verification_token})
 
     _, body = call(
@@ -462,16 +460,16 @@ def main() -> None:
             client,
             "POST",
             "/api/v1/auth/browser-codes",
-            expected=(200,),
+            expected=(201,),
             headers={**web_headers, "Idempotency-Key": f"browser-code-{suffix}"},
             json={"origin": "https://www.zhipin.com", "nonce": browser_nonce},
         )
-        browser_code = data_of(browser_code_body)["code"]
+        browser_code = data_of(browser_code_body)["authorization_code"]
         _, exchange_body = call(
             client,
             "POST",
             "/api/v1/browser-auth/exchange",
-            expected=(200,),
+            expected=(201,),
             json={"code": browser_code, "origin": "https://www.zhipin.com", "nonce": browser_nonce},
         )
         browser_token = data_of(exchange_body)["browser_token"]
