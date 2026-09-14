@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Purslyx 篡改猴高保真产品稿</title>
+  <style>
+    :root{
+      --brand:#1264E8;--brand-deep:#0D50BF;--brand-bg:#EAF5FF;
+      --opportunity:#FFD438;--opportunity-bg:#FFF7CD;--opportunity-ink:#735500;
+      --success:#39CEA0;--success-bg:#DEF8EA;--success-ink:#176A4C;
+      --attention:#FF8A3D;--attention-bg:#FFF0E6;--attention-ink:#964016;
+      --ink:#18364B;--muted:#526C7D;--line:#D9E8EF;--surface:#FFFFFF;
+      --canvas:#EFF4F7;--boss:#00BEBD;--liepin:#E85C3E;--chrome:#102D42;
+      --shadow:0 20px 55px rgba(16,45,66,.18);
+    }
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color:var(--ink);background:var(--canvas)}
+    button,a{font:inherit}button{cursor:pointer}a{color:inherit;text-decoration:none}
+    .icon{width:18px;height:18px;display:inline-block;vertical-align:middle;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+    .review-bar{height:58px;background:var(--chrome);color:#fff;display:flex;align-items:center;gap:18px;padding:0 22px;position:sticky;top:0;z-index:50;box-shadow:0 4px 16px rgba(16,45,66,.25)}
+    .review-title{display:flex;align-items:center;gap:10px;min-width:250px}.review-title img{width:32px;height:32px;border-radius:9px}.review-title strong{font-size:14px}.review-title small{display:block;color:#A8C0CF;font-size:10px;margin-top:2px;letter-spacing:.7px}
+    .review-control{display:flex;align-items:center;gap:5px}.review-label{font-size:10px;color:#91ABBB;letter-spacing:.8px;margin-right:3px}.review-button{border:1px solid #466276;background:transparent;color:#C8D8E2;border-radius:8px;padding:7px 11px;font-size:12px;white-space:nowrap}.review-button:hover{border-color:#8CA6B6;color:#fff}.review-button.active{background:#fff;color:var(--chrome);border-color:#fff}.review-link{margin-left:auto;color:#BBD0DC;font-size:11px;white-space:nowrap}.review-link:hover{color:#fff}
+    .browser-stage{padding:24px;min-height:calc(100vh - 58px);display:grid;place-items:center;background:radial-gradient(circle at 50% 0,#F8FBFD 0,#EDF3F6 58%,#E5EDF1 100%)}
+    .browser{width:min(1420px,100%);height:calc(100vh - 106px);min-height:760px;background:#fff;border:1px solid #C9D6DD;border-radius:16px;overflow:hidden;box-shadow:var(--shadow);display:flex;flex-direction:column}
+    .window-bar{height:40px;background:#EDF2F5;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #D3DEE4}.traffic{display:flex;gap:7px}.traffic i{width:11px;height:11px;border-radius:50%;display:block}.traffic i:nth-child(1){background:#FF6B5F}.traffic i:nth-child(2){background:#FFC34C}.traffic i:nth-child(3){background:#3DCB6D}.window-title{margin:auto;color:#677E8D;font-size:11px}.window-menu{color:#7D93A1;letter-spacing:2px}
+    .tab-bar{height:44px;background:#F5F8FA;display:flex;align-items:flex-end;padding:0 12px;gap:8px;border-bottom:1px solid #D9E3E8}.browser-tab{height:35px;width:250px;border-radius:10px 10px 0 0;background:#fff;display:flex;align-items:center;gap:8px;padding:0 12px;color:#3C5667;font-size:11px;border:1px solid #D9E3E8;border-bottom-color:#fff}.site-dot{width:16px;height:16px;border-radius:5px;background:var(--boss);color:#fff;display:grid;place-items:center;font-size:9px;font-weight:800}.new-tab{height:30px;width:30px;border:0;background:transparent;color:#718897;font-size:20px}
+    .address-bar{height:50px;background:#fff;display:flex;align-items:center;gap:12px;padding:0 15px;border-bottom:1px solid #DDE7EC}.browser-nav{display:flex;gap:12px;color:#738996}.browser-nav .icon{width:16px}.address{height:34px;flex:1;background:#EFF4F6;border-radius:18px;display:flex;align-items:center;gap:8px;padding:0 13px;color:#5D7483;font-size:11px}.address .icon{width:14px}.script-indicator{display:flex;align-items:center;gap:7px;color:var(--success-ink);font-size:11px;font-weight:650}.script-indicator i{width:8px;height:8px;background:var(--success);border-radius:50%;box-shadow:0 0 0 4px var(--success-bg)}
+    .webpage{position:relative;flex:1;min-height:0;overflow:auto;background:#F5F7F8}.site-header{height:64px;background:#fff;display:flex;align-items:center;padding:0 max(24px,calc((100% - 1160px)/2));gap:32px;border-bottom:1px solid #EBF0F2;position:sticky;top:0;z-index:5}.site-brand{font-size:22px;font-weight:800;color:var(--boss);letter-spacing:-1px}.site-nav{display:flex;gap:25px;color:#526C7D;font-size:13px}.site-nav span:first-child{color:var(--ink);font-weight:650}.site-search{margin-left:auto;width:260px;height:36px;border:1px solid #D9E4E9;border-radius:8px;display:flex;align-items:center;padding:0 11px;color:#8296A2;font-size:11px}.site-user{width:32px;height:32px;border-radius:50%;background:#E8F0F4;display:grid;place-items:center;color:#648091;font-size:11px}
+    .job-wrap{width:min(1160px,calc(100% - 48px));margin:22px auto 64px;display:grid;grid-template-columns:minmax(0,1fr) 286px;gap:18px}.job-main,.job-side{background:#fff;border:1px solid #E6ECEF;border-radius:9px}.job-hero{padding:28px 30px 24px;border-bottom:1px solid #EEF2F4;display:flex;gap:16px}.job-hero-copy{flex:1}.job-title-row{display:flex;align-items:center;gap:12px}.job-title-row h1{font-size:25px;margin:0;letter-spacing:-.4px}.job-title-row .salary{margin-left:auto;color:#F05A3A;font-size:22px;font-weight:700}.company{font-size:14px;margin:12px 0 14px;color:#345164}.job-chips{display:flex;gap:8px;flex-wrap:wrap}.job-chip{font-size:11px;background:#F1F5F7;color:#526C7D;border-radius:5px;padding:5px 8px}.company-logo{width:66px;height:66px;border-radius:13px;background:linear-gradient(145deg,#E9F5FF,#CBE3F8);color:var(--brand);display:grid;place-items:center;font-size:23px;font-weight:800}.job-body{padding:25px 30px}.job-body h2{font-size:17px;margin:0 0 15px}.job-body p,.job-body li{font-size:13px;line-height:1.85;color:#405D6F}.job-body ul{padding-left:20px;margin:0 0 25px}.divider{height:1px;background:#EEF2F4;margin:22px 0}.recruiter{display:flex;align-items:center;gap:12px}.recruiter-avatar{width:46px;height:46px;border-radius:50%;background:#FFE9D6;display:grid;place-items:center;color:#A65021;font-weight:700}.recruiter strong{font-size:13px}.recruiter small{display:block;color:#78909E;margin-top:4px}.chat-button{width:100%;height:42px;border:0;background:var(--boss);color:#fff;border-radius:7px;font-weight:650;margin-top:16px}.side-card{padding:19px;border-bottom:1px solid #EEF2F4}.side-card:last-child{border-bottom:0}.side-card h3{font-size:14px;margin:0 0 12px}.side-card p{font-size:11px;color:#78909E;line-height:1.7;margin:0}.side-job{padding:12px 0;border-top:1px solid #EEF2F4}.side-job:first-of-type{border-top:0}.side-job strong{font-size:12px}.side-job small{display:block;color:#748A98;margin-top:5px}.side-job em{font-style:normal;color:#F05A3A;font-size:11px}
+    .capture-panel{position:absolute;right:max(28px,calc((100% - 1280px)/2));top:88px;width:368px;background:#fff;border:1px solid #CFE0E9;border-radius:16px;box-shadow:0 22px 65px rgba(24,54,75,.24);z-index:20;overflow:hidden}.panel-head{padding:17px 18px 15px;display:flex;align-items:center;gap:11px;border-bottom:1px solid #E6EEF2}.panel-logo{width:39px;height:39px;border-radius:11px;object-fit:cover}.panel-brand strong{font-size:15px;display:block}.panel-brand small{font-size:10px;color:#718897;letter-spacing:.5px}.panel-status-dot{margin-left:auto;width:9px;height:9px;border-radius:50%;background:var(--success);box-shadow:0 0 0 5px var(--success-bg)}.panel-body{padding:18px}.connection{display:flex;align-items:center;gap:10px;border-radius:10px;padding:11px 12px;background:var(--success-bg);color:var(--success-ink)}.connection .icon{width:17px}.connection-copy strong{display:block;font-size:12px}.connection-copy small{display:block;font-size:10px;margin-top:3px;color:#397A63}.state-hero{text-align:center;padding:18px 8px 12px}.state-symbol{width:68px;height:68px;border-radius:20px;margin:0 auto 14px;display:grid;place-items:center}.state-symbol .icon{width:30px;height:30px}.state-symbol.complete{background:var(--success-bg);color:var(--success-ink)}.state-symbol.working{background:var(--brand-bg);color:var(--brand)}.state-symbol.warning{background:var(--attention-bg);color:var(--attention-ink)}.state-symbol.pending{background:var(--opportunity-bg);color:var(--opportunity-ink)}.spin{animation:spin 1s linear infinite}.state-hero h2{font-size:18px;margin:0 0 7px}.state-hero p{font-size:11px;color:var(--muted);line-height:1.65;margin:0 auto;max-width:286px}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin:12px 0 15px}.step{height:5px;background:#DFE9EE;border-radius:5px;overflow:hidden}.step.done{background:var(--success)}.step.active{background:linear-gradient(90deg,var(--brand) 55%,#DFE9EE 55%);animation:pulse 1.2s ease-in-out infinite}.job-preview{border:1px solid #DFE9EE;border-radius:11px;padding:13px;margin-top:12px}.job-preview-top{display:flex;align-items:flex-start;gap:10px}.mini-logo{width:35px;height:35px;border-radius:9px;background:var(--brand-bg);color:var(--brand);display:grid;place-items:center;font-size:12px;font-weight:750}.job-preview h3{font-size:13px;margin:1px 0 4px}.job-preview p{font-size:10px;color:var(--muted);margin:0}.preview-meta{display:flex;gap:6px;flex-wrap:wrap;margin-top:11px}.preview-meta span{font-size:9px;background:#F1F5F7;color:#617A89;padding:4px 6px;border-radius:5px}.privacy-note{display:flex;gap:9px;padding:11px 12px;background:var(--opportunity-bg);color:var(--opportunity-ink);border-radius:10px;margin-top:12px;font-size:10px;line-height:1.55}.privacy-note .icon{width:16px;min-width:16px}.panel-actions{display:grid;gap:8px;margin-top:14px}.primary,.secondary{min-height:40px;border-radius:9px;font-size:12px;font-weight:650;display:flex;align-items:center;justify-content:center;gap:7px}.primary{border:1px solid var(--brand);background:var(--brand);color:#fff;box-shadow:0 7px 16px rgba(18,100,232,.2)}.primary:hover{background:var(--brand-deep)}.secondary{border:1px solid var(--line);background:#fff;color:var(--ink)}.text-action{border:0;background:transparent;color:var(--brand);font-size:11px;padding:5px}.panel-foot{padding:10px 18px;background:#F7FAFC;color:#76909F;font-size:9px;display:flex;align-items:center;justify-content:space-between}.panel-foot span{display:flex;align-items:center;gap:5px}.panel-foot .icon{width:12px}.success-toast{position:absolute;right:calc(max(28px,calc((100% - 1280px)/2)) + 390px);top:88px;z-index:30;width:335px;background:#fff;border:1px solid #CDE7DB;border-left:4px solid var(--success);border-radius:11px;box-shadow:0 15px 38px rgba(24,54,75,.2);padding:14px 16px;display:flex;gap:11px;align-items:flex-start;animation:toast-in .3s ease}.success-toast .toast-icon{width:29px;height:29px;border-radius:9px;background:var(--success-bg);color:var(--success-ink);display:grid;place-items:center;flex:none}.success-toast strong{font-size:12px}.success-toast p{font-size:10px;color:var(--muted);margin:4px 0 0;line-height:1.55}
+    .confirm-layer{position:fixed;inset:58px 0 0;background:rgba(16,45,66,.64);z-index:80;display:grid;place-items:center;padding:24px;backdrop-filter:blur(4px)}.confirm-dialog{width:min(720px,100%);background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 28px 80px rgba(16,45,66,.35)}.confirm-head{padding:20px 22px 16px;display:flex;align-items:flex-start;border-bottom:1px solid var(--line)}.confirm-head h2{font-size:20px;margin:0}.confirm-head p{font-size:11px;color:var(--muted);margin:6px 0 0}.close{margin-left:auto;width:34px;height:34px;border:1px solid var(--line);background:#fff;border-radius:9px;color:var(--muted)}.confirm-body{padding:20px 22px}.confirm-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.field{border:1px solid var(--line);border-radius:10px;padding:11px 12px}.field label{font-size:9px;color:var(--muted);display:block;margin-bottom:5px}.field strong{font-size:12px}.field.wide{grid-column:1/-1}.usage-confirm{display:flex;gap:10px;align-items:center;padding:13px;background:var(--opportunity-bg);color:var(--opportunity-ink);border-radius:10px;margin-top:14px}.usage-confirm .icon{min-width:18px}.usage-confirm strong{font-size:11px}.usage-confirm small{display:block;font-size:9px;margin-top:3px}.confirm-actions{display:flex;justify-content:flex-end;gap:9px;padding:14px 22px;border-top:1px solid var(--line)}
+    .hide{display:none!important}
+    @keyframes spin{to{transform:rotate(360deg)}}@keyframes pulse{50%{opacity:.5}}@keyframes toast-in{from{opacity:0;transform:translateY(-8px)}}
+    @media(max-width:980px){.review-title{min-width:max-content}.review-label,.review-link{display:none}.review-bar{overflow:auto}.browser-stage{padding:12px}.browser{height:calc(100vh - 82px);min-height:700px}.job-wrap{grid-template-columns:1fr}.job-side{display:none}.capture-panel{right:20px}.site-nav{display:none}}
+    @media(max-width:680px){.review-title small{display:none}.review-bar{gap:9px;padding:0 10px}.review-button{padding:6px 8px;font-size:10px}.browser-stage{padding:0}.browser{border-radius:0;border:0;width:100%;height:calc(100vh - 58px);min-height:720px}.window-bar,.tab-bar{display:none}.address-bar{height:45px}.address{font-size:9px}.script-indicator span{display:none}.site-header{height:54px;padding:0 15px}.site-search{display:none}.job-wrap{width:calc(100% - 20px);margin:10px auto}.job-hero{padding:18px}.job-title-row{display:block}.job-title-row h1{font-size:20px}.job-title-row .salary{display:block;margin-top:8px}.company-logo{display:none}.job-body{padding:18px}.capture-panel{position:fixed;left:10px;right:10px;top:auto;bottom:10px;width:auto;max-height:70vh;overflow:auto}.success-toast{left:10px;right:10px;top:68px;width:auto}.confirm-layer{top:58px;padding:10px;align-items:end}.confirm-dialog{border-radius:16px 16px 0 0}.confirm-grid{grid-template-columns:1fr}.field.wide{grid-column:auto}}
+    @media(prefers-reduced-motion:reduce){*{animation:none!important}}
+  </style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute"><defs>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-forward" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5M18 9a7 7 0 0 0-12-2l-2 4m2 4a7 7 0 0 0 12 2l2-4"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  <symbol id="i-cloud" viewBox="0 0 24 24"><path d="M7 18h10a4 4 0 0 0 .5-8A6 6 0 0 0 6 8a5 5 0 0 0 1 10Z"/><path d="m9 13 2 2 4-4"/></symbol>
+  <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M7 12h10"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19Z"/><path d="M12 9v4m0 3v.1"/></symbol>
+  <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M19 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h6"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6Z"/><path d="m9 12 2 2 4-5"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+</defs></svg>
+
+<header class="review-bar">
+  <div class="review-title"><img src="../../00-overview/logo.png" alt=""><div><strong>篡改猴高保真产品稿</strong><small>BROWSER SIDE · 2026.09</small></div></div>
+  <div class="review-control" aria-label="平台"><span class="review-label">平台</span><button class="review-button active" data-platform="boss">BOSS</button><button class="review-button" data-platform="liepin">猎聘</button></div>
+  <div class="review-control" aria-label="运行状态"><span class="review-label">状态</span><button class="review-button active" data-state="complete">完成</button><button class="review-button" data-state="loggedout">未登录</button><button class="review-button" data-state="syncing">同步中</button><button class="review-button" data-state="extracting">抓取中</button><button class="review-button" data-state="unsupported">不支持</button><button class="review-button" data-state="error">失败</button></div>
+  <a class="review-link" href="高保真产品稿.html">返回 Web 产品稿 →</a>
+</header>
+
+<main class="browser-stage">
+  <section class="browser" aria-label="招聘平台岗位详情页演示">
+    <div class="window-bar"><div class="traffic"><i></i><i></i><i></i></div><div class="window-title">Google Chrome · Purslyx 浏览器侧演示</div><div class="window-menu">•••</div></div>
+    <div class="tab-bar"><div class="browser-tab"><span class="site-dot" id="tab-dot">B</span><span id="tab-title">中高级前端工程师 - BOSS直聘</span></div><button class="new-tab" aria-label="新标签页">＋</button></div>
+    <div class="address-bar">
+      <div class="browser-nav"><svg class="icon"><use href="#i-back"/></svg><svg class="icon"><use href="#i-forward"/></svg><svg class="icon"><use href="#i-refresh"/></svg></div>
+      <div class="address"><svg class="icon"><use href="#i-lock"/></svg><span id="address-text">www.zhipin.com/job_detail/8f2c7a.html</span></div>
+      <div class="script-indicator"><i></i><span>Purslyx 已启用</span></div>
+    </div>
+    <div class="webpage">
+      <div class="site-header"><div class="site-brand" id="site-brand">BOSS直聘</div><div class="site-nav"><span>首页</span><span>职位</span><span>公司</span><span>校园</span></div><div class="site-search">搜索职位、公司</div><div class="site-user">林</div></div>
+      <div class="job-wrap">
+        <article class="job-main">
+          <div class="job-hero"><div class="job-hero-copy"><div class="job-title-row"><h1 id="job-title">中高级前端工程师</h1><span class="salary" id="job-salary">20–30K</span></div><div class="company" id="job-company">云杉科技 · 杭州</div><div class="job-chips" id="job-chips"><span class="job-chip">3–5年</span><span class="job-chip">本科</span><span class="job-chip">混合办公</span></div></div><div class="company-logo" id="company-logo">云杉</div></div>
+          <div class="job-body"><h2>职位描述</h2><ul id="job-description"><li>负责核心业务的 Web 前端架构与功能交付，参与产品方案讨论。</li><li>使用 Vue、TypeScript 完成复杂交互，持续改善性能与可维护性。</li><li>建立组件规范与质量保障流程，推动跨团队协作。</li><li>关注用户反馈，用数据验证改进效果。</li></ul><div class="divider"></div><h2>任职要求</h2><p>熟悉现代前端工程体系，有独立负责项目的经验；能够清楚分析问题并推动落地；具备良好的沟通和业务理解能力。</p></div>
+        </article>
+        <aside class="job-side"><div class="side-card"><h3>招聘者</h3><div class="recruiter"><div class="recruiter-avatar">陈</div><div><strong>陈女士 · 招聘经理</strong><small>刚刚活跃</small></div></div><button class="chat-button">立即沟通</button></div><div class="side-card"><h3>相似职位</h3><div class="side-job"><strong>前端开发工程师</strong><small>知行教育 · 杭州</small><em>18–25K</em></div><div class="side-job"><strong>资深 Web 工程师</strong><small>泊舟科技 · 杭州</small><em>25–35K</em></div></div></aside>
+      </div>
+      <div class="success-toast hide" id="success-toast" role="status"><div class="toast-icon"><svg class="icon"><use href="#i-check"/></svg></div><div><strong>岗位信息获取完成</strong><p>已安全保存为待确认草稿，打开 Purslyx 即可检查并决定是否入池。</p></div></div>
+      <aside class="capture-panel" id="capture-panel" aria-live="polite"></aside>
+    </div>
+  </section>
+</main>
+<div id="dialog-root"></div>
+
+<script>
+(() => {
+  const state = {platform:'boss',status:'complete',dialog:false,timers:[]};
+  const platformData = {
+    boss:{name:'BOSS直聘',mark:'B',url:'www.zhipin.com/job_detail/8f2c7a.html',title:'中高级前端工程师',company:'云杉科技',city:'杭州',salary:'20–30K',logo:'云杉',chips:['3–5年','本科','混合办公'],color:'#00BEBD',jobs:['负责核心业务的 Web 前端架构与功能交付，参与产品方案讨论。','使用 Vue、TypeScript 完成复杂交互，持续改善性能与可维护性。','建立组件规范与质量保障流程，推动跨团队协作。','关注用户反馈，用数据验证改进效果。']},
+    liepin:{name:'猎聘',mark:'猎',url:'www.liepin.com/job/1968427715.shtml',title:'高级产品经理',company:'青岚智能',city:'上海',salary:'25–40K·14薪',logo:'青岚',chips:['5–10年','本科','现场办公'],color:'#E85C3E',jobs:['负责企业智能产品的规划、需求分析与版本交付。','结合客户访谈和数据反馈，持续验证方案价值。','协同研发、设计和运营团队推进项目上线。','沉淀行业解决方案与产品方法。']}
+  };
+  const $ = (selector,root=document) => root.querySelector(selector);
+  const icon = name => `<svg class="icon"><use href="#i-${name}"/></svg>`;
+  const clearTimers = () => {state.timers.forEach(clearTimeout);state.timers=[]};
+  const view = {
+    complete:{connection:'ok',symbol:'complete',icon:'check',title:'岗位信息获取完成',desc:'已上传为待确认草稿。自动抓取本身不入池，也不会消耗分析次数。',steps:['done','done','done']},
+    loggedout:{connection:'off',symbol:'pending',icon:'lock',title:'登录后自动继续',desc:'当前 JD 已暂存在本机。登录 Purslyx 后会自动同步状态并继续上传。',steps:['done','','']},
+    syncing:{connection:'work',symbol:'working',icon:'refresh',title:'正在同步登录状态',desc:'正在确认你的 Purslyx 会话，不会读取招聘平台账号、密码或 Cookie。',steps:['active','','']},
+    extracting:{connection:'ok',symbol:'working',icon:'scan',title:'正在获取当前岗位',desc:'已识别岗位详情页，正在整理标题、正文、地点、方式与薪资原文。',steps:['done','active','']},
+    unsupported:{connection:'ok',symbol:'warning',icon:'alert',title:'这不是支持的岗位详情页',desc:'只会在 BOSS 直聘或猎聘的 JD 详情页自动运行。可打开具体岗位，或到 Purslyx 手动粘贴。',steps:['','','']},
+    error:{connection:'ok',symbol:'warning',icon:'alert',title:'这次没有获取完整',desc:'页面结构可能已经变化，当前草稿仍保留。你可以重试或到 Purslyx 手动粘贴。',steps:['done','active','']}
+  };
+  function connectionMarkup(type){
+    if(type==='ok') return `<div class="connection">${icon('cloud')}<div class="connection-copy"><strong>已连接 Purslyx · 林舟</strong><small>登录状态已自动同步</small></div></div>`;
+    if(type==='work') return `<div class="connection" style="background:var(--brand-bg);color:var(--brand)">${icon('refresh')}<div class="connection-copy"><strong>正在连接 Purslyx</strong><small style="color:#4274A8">校验短期浏览器会话</small></div></div>`;
+    return `<div class="connection" style="background:var(--opportunity-bg);color:var(--opportunity-ink)">${icon('lock')}<div class="connection-copy"><strong>尚未登录 Purslyx</strong><small style="color:#826D24">草稿会在本机短暂保留</small></div></div>`;
+  }
+  function actionMarkup(status){
+    if(status==='complete') return `<button class="primary" data-action="confirm">打开 Purslyx 确认入池 ${icon('external')}</button><button class="secondary" data-action="demo">重新演示自动获取</button>`;
+    if(status==='loggedout') return `<button class="primary" data-action="login">登录 Purslyx 并继续 ${icon('external')}</button><button class="text-action" data-action="manual">改为手动粘贴</button>`;
+    if(status==='error') return `<button class="primary" data-action="demo">重新获取当前岗位</button><button class="secondary" data-action="manual">打开 Purslyx 手动粘贴</button>`;
+    if(status==='unsupported') return `<button class="primary" data-action="supported">打开一个示例岗位</button><button class="secondary" data-action="manual">到 Purslyx 手动粘贴</button>`;
+    return `<button class="secondary" disabled>自动处理中，请稍候…</button>`;
+  }
+  function renderPanel(){
+    const data=platformData[state.platform],v=view[state.status];
+    $('#capture-panel').innerHTML=`<div class="panel-head"><img class="panel-logo" src="../../00-overview/logo.png" alt="Purslyx"><div class="panel-brand"><strong>Purslyx</strong><small>岗位助手 · ${data.name}</small></div><span class="panel-status-dot" style="background:${v.connection==='off'?'var(--opportunity)':v.connection==='work'?'var(--brand)':'var(--success)'}"></span></div><div class="panel-body">${connectionMarkup(v.connection)}<div class="state-hero"><div class="state-symbol ${v.symbol}">${icon(v.icon)}</div><h2>${v.title}</h2><p>${v.desc}</p></div><div class="steps" aria-label="识别页面、获取字段、上传草稿">${v.steps.map(x=>`<span class="step ${x}"></span>`).join('')}</div>${['complete','extracting','error','loggedout'].includes(state.status)?`<div class="job-preview"><div class="job-preview-top"><div class="mini-logo">${data.logo}</div><div><h3>${data.title}</h3><p>${data.company} · ${data.city} · ${data.salary}</p></div></div><div class="preview-meta"><span>标题已识别</span><span>正文已识别</span><span>来源链接已保存</span></div></div>`:''}<div class="privacy-note">${icon('shield')}<span>${state.status==='complete'?'等待你确认前，这条岗位不会进入匹配池，也不会扣除分析次数。':'只处理当前打开的 JD，不后台爬取、不批量收集、不代填或自动投递。'}</span></div><div class="panel-actions">${actionMarkup(state.status)}</div></div><div class="panel-foot"><span>${icon('shield')}受限浏览器会话</span><span>草稿自动去重 · 24 小时过期</span></div>`;
+    const rotating=$('.state-symbol .icon');if(['syncing'].includes(state.status)&&rotating)rotating.classList.add('spin');
+    $('#success-toast').classList.toggle('hide',state.status!=='complete');
+    document.querySelectorAll('[data-state]').forEach(b=>b.classList.toggle('active',b.dataset.state===state.status));
+  }
+  function renderPlatform(){
+    const d=platformData[state.platform];
+    $('#tab-dot').textContent=d.mark;$('#tab-dot').style.background=d.color;$('#tab-title').textContent=`${d.title} - ${d.name}`;$('#address-text').textContent=d.url;$('#site-brand').textContent=d.name;$('#site-brand').style.color=d.color;$('#job-title').textContent=d.title;$('#job-salary').textContent=d.salary;$('#job-company').textContent=`${d.company} · ${d.city}`;$('#company-logo').textContent=d.logo;$('#job-chips').innerHTML=d.chips.map(x=>`<span class="job-chip">${x}</span>`).join('');$('#job-description').innerHTML=d.jobs.map(x=>`<li>${x}</li>`).join('');$('.chat-button').style.background=d.color;
+    document.querySelectorAll('[data-platform]').forEach(b=>b.classList.toggle('active',b.dataset.platform===state.platform));renderPanel();
+  }
+  function setStatus(status){clearTimers();state.status=status;renderPanel()}
+  function demo(fromLogin=false){
+    clearTimers();state.status=fromLogin?'syncing':'syncing';renderPanel();
+    state.timers.push(setTimeout(()=>{state.status='extracting';renderPanel()},850));
+    state.timers.push(setTimeout(()=>{state.status='complete';renderPanel()},2200));
+  }
+  function openConfirm(){
+    const d=platformData[state.platform];state.dialog=true;
+    $('#dialog-root').innerHTML=`<div class="confirm-layer"><section class="confirm-dialog"><div class="confirm-head"><div><h2>确认岗位并加入匹配池</h2><p>浏览器自动获取的内容已保存为待确认草稿，请检查后再决定是否分析。</p></div><button class="close" data-close aria-label="关闭">${icon('x')}</button></div><div class="confirm-body"><div class="confirm-grid"><div class="field"><label>岗位</label><strong>${d.title}</strong></div><div class="field"><label>公司</label><strong>${d.company}</strong></div><div class="field"><label>地点与方式</label><strong>${d.city} · ${d.chips[2]}</strong></div><div class="field"><label>薪资原文</label><strong>${d.salary}</strong></div><div class="field wide"><label>来源</label><strong>${d.name} · 当前岗位详情</strong></div></div><div class="usage-confirm">${icon('clock')}<div><strong>保存并分析将使用 1 次分析机会，当前剩余 14 次</strong><small>只保存岗位不会使用次数；确认后才会加入私有匹配池。</small></div></div></div><div class="confirm-actions"><button class="secondary" data-close>继续检查</button><button class="secondary" data-action="save-only">只保存岗位</button><button class="primary" data-action="finish">保存并分析</button></div></section></div>`;
+  }
+  function closeConfirm(){state.dialog=false;$('#dialog-root').innerHTML=''}
+  document.addEventListener('click',event=>{
+    const platform=event.target.closest('[data-platform]');if(platform){state.platform=platform.dataset.platform;renderPlatform();return}
+    const stateButton=event.target.closest('[data-state]');if(stateButton){setStatus(stateButton.dataset.state);return}
+    if(event.target.closest('[data-close]')){closeConfirm();return}
+    const action=event.target.closest('[data-action]')?.dataset.action;
+    if(action==='demo'||action==='login')demo(action==='login');
+    if(action==='confirm')openConfirm();
+    if(action==='supported'){state.status='extracting';renderPanel();state.timers.push(setTimeout(()=>{state.status='complete';renderPanel()},1300))}
+    if(action==='manual')window.alert('演示：将打开 Purslyx 的手动粘贴页面，当前草稿仍会保留。');
+    if(action==='save-only'||action==='finish'){closeConfirm();window.alert(action==='finish'?'演示：岗位已入池，分析任务已开始。':'演示：岗位已保存，未使用分析次数。')}
+  });
+  renderPlatform();
+})();
+</script>
+</body>
+</html>
