@@ -359,13 +359,24 @@ def create_task(
             )
         return existing, reservation, True
 
+    frozen_refs = [
+        {
+            "resource_type": resource_type,
+            "resource_id": resource_public_id,
+            "version_no": version_no,
+        }
+        for resource_type, resource_public_id, version_no, _ in input_refs or []
+    ]
+    stored_input = dict(input_data)
+    # 任务详情只需要版本引用，不把正文复制进任务日志；这是断线恢复和审计的最小快照。
+    stored_input.setdefault("input_versions", frozen_refs)
     task = Task(
         account_id=account.id,
         task_type=task_type,
         status="queued",
         current_step="queued",
         progress={"completed": 0, "total": 1},
-        input_data=input_data,
+        input_data=stored_input,
         idempotency_key=idempotency_key,
         request_hash=request_digest,
     )

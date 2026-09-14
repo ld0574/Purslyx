@@ -266,6 +266,29 @@
       .feedback-box ul { margin: 7px 0 0 17px; padding: 0; }
       .summary-box { padding: 17px; border-radius: 13px; background: var(--brand-soft); }
       .summary-box p { margin-top: 9px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+      .task-list, .admin-list, .fact-list, .rewrite-list { display: grid; gap: 9px; }
+      .task-row, .admin-row, .fact-row, .rewrite-row { display: flex; justify-content: space-between; gap: 14px; align-items: flex-start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: #fbfdff; }
+      .task-row strong, .admin-row strong, .fact-row strong, .rewrite-row strong { display: block; font-size: 13px; }
+      .task-row small, .admin-row small, .fact-row small, .rewrite-row small { display: block; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .task-row .item-actions, .admin-row .item-actions, .fact-row .item-actions, .rewrite-row .item-actions { flex: 0 0 auto; }
+      .progress-track { height: 6px; margin-top: 10px; overflow: hidden; border-radius: 99px; background: #eaf0f4; }
+      .progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
+      .admin-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
+      .admin-tab.active { color: #fff; background: var(--brand); }
+      .admin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+      .admin-stat { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
+      .admin-stat strong { display: block; margin-top: 9px; font-size: 25px; }
+      .admin-stat span { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; }
+      .permission-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: 12px; }
+      .permission-option { display: flex; gap: 7px; align-items: flex-start; padding: 9px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); font-size: 11px; line-height: 1.4; }
+      .permission-option input { margin-top: 2px; accent-color: var(--brand); }
+      .editor-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 18px; }
+      .rewrite-compare { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 12px; }
+      .compare-pane { min-height: 112px; padding: 13px; border-radius: 11px; white-space: pre-wrap; font-size: 12px; line-height: 1.65; }
+      .compare-pane.original { background: #f5f9fb; }
+      .compare-pane.suggested { background: var(--success-soft); }
+      .compare-pane h4 { margin-bottom: 7px; font-size: 11px; }
+      .compare-pane p { color: var(--muted); }
       .footer-note { margin-top: 38px; color: var(--muted); font-size: 11px; line-height: 1.6; text-align: center; }
       .toast { position: fixed; right: 24px; bottom: 24px; z-index: 30; max-width: 350px; padding: 13px 15px; border: 1px solid #b9e9d5; border-radius: 11px; color: #176a4c; background: #f2fff9; box-shadow: var(--shadow); font-size: 12px; font-weight: 700; }
 
@@ -305,6 +328,8 @@
         .condition-row > p { grid-column: 1 / -1; }
         .metric-grid, .balance-grid { grid-template-columns: 1fr 1fr; }
         .interview-layout { grid-template-columns: 1fr; }
+        .admin-grid, .editor-grid, .rewrite-compare, .permission-grid { grid-template-columns: 1fr; }
+        .task-row, .admin-row, .fact-row, .rewrite-row { flex-direction: column; }
         .identity-grid, .form-row { grid-template-columns: 1fr; }
         .auth-layout { min-height: 0; }
         .auth-story { padding-top: 4px; }
@@ -363,8 +388,18 @@
             selectedAnalysis: null,
             selectedInterview: null,
             selectedVariant: null,
+            selectedRewrite: null,
+            selectedTask: null,
+            selectedTaskEtag: "",
+            rewriteSource: null,
+            rewriteSegmentKeys: [],
+            recruiterSubjectId: "",
+            adminLogType: "operations",
+            selectedRole: null,
+            selectedLog: null,
             lastExport: null,
-            data: { documents: [], preferences: [], pool: [], analyses: [], interviews: [], variants: [], usage: null, stats: null },
+            lastLogExport: null,
+            data: { documents: [], preferences: [], facts: [], pool: [], analyses: [], interviews: [], variants: [], tasks: [], usage: null, stats: null, admin: { metrics: null, users: [], roles: [], grants: [], costs: null, feedback: [], logs: { operations: [], security: [], tasks: [] } } },
           },
         };
 
@@ -389,7 +424,7 @@
           state.session = { token: "", csrf: "", account: null };
           saveSession();
           state.workspace.loaded = false;
-          state.workspace.data = { documents: [], preferences: [], pool: [], analyses: [], interviews: [], variants: [], usage: null, stats: null };
+          state.workspace.data = { documents: [], preferences: [], facts: [], pool: [], analyses: [], interviews: [], variants: [], tasks: [], usage: null, stats: null, admin: { metrics: null, users: [], roles: [], grants: [], costs: null, feedback: [], logs: { operations: [], security: [], tasks: [] } } };
         }
 
         function esc(value) {
@@ -466,7 +501,7 @@
           }
         }
 
-        async function request(path, options = {}) {
+        function requestInit(options = {}) {
           const method = String(options.method || "GET").toUpperCase();
           const headers = { Accept: "application/json", ...(options.headers || {}) };
           const formal = Boolean(options.formal);
@@ -478,18 +513,29 @@
             headers["Content-Type"] = "application/json";
             init.body = JSON.stringify(options.body);
           }
-          const response = await fetch(path, init);
+          return init;
+        }
+
+        async function requestDetailed(path, options = {}) {
+          const response = await fetch(path, requestInit(options));
           let payload = null;
           try {
-            payload = await response.json();
+            const text = await response.text();
+            payload = text ? JSON.parse(text) : null;
           } catch (_) {
             payload = null;
           }
+          if (response.status === 304) return { response, data: null };
           if (!response.ok) {
             const error = payload && payload.error ? payload.error : {};
             throw new ApiError(response.status, error.code || "REQUEST_FAILED", error.message || `请求失败（${response.status}）`, error.action);
           }
-          return payload && Object.prototype.hasOwnProperty.call(payload, "data") ? payload.data : payload;
+          return { response, data: payload && Object.prototype.hasOwnProperty.call(payload, "data") ? payload.data : payload };
+        }
+
+        async function request(path, options = {}) {
+          const result = await requestDetailed(path, options);
+          return result.data;
         }
 
         async function loadHealth() {
@@ -619,13 +665,21 @@
           const nav = seeker
             ? [["dashboard", "工作台", "总览"], ["resume", "简历与期望", "资料"], ["pool", "匹配池", "岗位"], ["variants", "岗位版简历", "成品"], ["interview", "面试练习", "复盘"], ["usage", "用量", "次数"], ["stats", "统计", "反馈"]]
             : [["dashboard", "工作台", "总览"], ["resume", "候选人资料", "资料"], ["usage", "用量", "次数"], ["stats", "统计", "反馈"]];
-          return `<div class="workspace-layout"><aside class="sidebar"><div class="side-brand"><span class="brand-mark">P</span><div>Purslyx<small>${seeker ? "求职工作台" : "招聘工作台"}</small></div></div><nav class="side-nav">${nav.map((item) => `<button class="nav-button ${state.workspace.page === item[0] ? "active" : ""}" data-page="${item[0]}"><span>${item[1]}</span><small>${item[2]}</small></button>`).join("")}</nav><div class="side-note"><strong>今天只做下一步</strong><p>页面是业务入口，结论仍回到已确认资料、冻结版本和可解释规则。</p></div></aside><main class="workspace-content">${workspaceContent()}</main></div>`;
+          const permissions = new Set(account.admin_permissions || []);
+          const adminNav = [];
+          if (permissions.has("admin.stats.read")) adminNav.push(["admin-metrics", "站点概况", "管理"]);
+          if (permissions.has("admin.users.read")) adminNav.push(["admin-users", "用户管理", "管理"]);
+          if (permissions.has("admin.roles.manage")) adminNav.push(["admin-roles", "角色权限", "管理"]);
+          if (permissions.has("admin.usage.grant")) adminNav.push(["admin-usage", "次数管理", "管理"]);
+          if (permissions.has("admin.logs.operations.read") || permissions.has("admin.logs.security.read") || permissions.has("admin.logs.tasks.read")) adminNav.push(["admin-logs", "日志管理", "管理"]);
+          const allNav = adminNav.length ? [...nav, ["admin-separator", "管理端", ""], ...adminNav] : nav;
+          return `<div class="workspace-layout"><aside class="sidebar"><div class="side-brand"><span class="brand-mark">P</span><div>Purslyx<small>${seeker ? "求职工作台" : "招聘工作台"}</small></div></div><nav class="side-nav">${allNav.map((item) => item[0] === "admin-separator" ? `<div class="eyebrow" style="padding:12px 12px 3px;color:var(--muted)">${item[1]}</div>` : `<button class="nav-button ${state.workspace.page === item[0] ? "active" : ""}" data-page="${item[0]}"><span>${item[1]}</span><small>${item[2]}</small></button>`).join("")}</nav><div class="side-note"><strong>今天只做下一步</strong><p>页面是业务入口，结论仍回到已确认资料、冻结版本和可解释规则。</p></div></aside><main class="workspace-content">${workspaceContent()}</main></div>`;
         }
 
         function workspaceContent() {
           if (state.workspace.loading && !state.workspace.loaded) return `<div class="empty" style="min-height:260px"><div><i class="spinner" style="display:inline-block"></i><p style="margin-top:12px">正在从 201 PostgreSQL 读取工作台…</p></div></div>`;
           const page = state.workspace.page;
-          const content = page === "dashboard" ? dashboardPage() : page === "resume" ? resumePage() : page === "pool" ? poolPage() : page === "report" ? formalReportPage() : page === "variants" ? variantsPage() : page === "interview" ? interviewPage() : page === "usage" ? usagePage() : statsPage();
+          const content = page === "dashboard" ? dashboardPage() : page === "resume" ? resumePage() : page === "pool" ? poolPage() : page === "report" ? formalReportPage() : page === "rewrite" ? rewritePage() : page === "variants" ? variantsPage() : page === "interview" ? interviewPage() : page === "tasks" ? tasksPage() : page === "usage" ? usagePage() : page === "stats" ? statsPage() : page === "admin-metrics" ? adminMetricsPage() : page === "admin-users" ? adminUsersPage() : page === "admin-roles" ? adminRolesPage() : page === "admin-usage" ? adminUsagePage() : page === "admin-logs" ? adminLogsPage() : dashboardPage();
           return `${state.workspace.error ? `<div class="callout attention" style="margin-bottom:18px">${esc(state.workspace.error)}</div>` : ""}${content}`;
         }
 
@@ -637,25 +691,36 @@
           const data = state.workspace.data;
           const stats = data.stats || {};
           const account = state.session.account || {};
-          return `${heading(account.registration_role === "seeker" ? "SEEKER WORKSPACE" : "RECRUITER WORKSPACE", "工作台", "这里保留最近输入、当前报告和下一步动作；刷新页面仍从数据库恢复。", `<button class="button outline small" data-action="refresh">刷新数据</button>`)}<div class="metric-grid"><div class="metric-card"><div class="eyebrow">资料</div><strong>${esc(String(data.documents.length))}</strong><span>已导入资料</span></div><div class="metric-card"><div class="eyebrow">分析</div><strong>${esc(String(stats.completed_analyses ?? data.analyses.length))}</strong><span>已完成报告</span></div><div class="metric-card"><div class="eyebrow">面试</div><strong>${esc(String(stats.interviews ?? data.interviews.length))}</strong><span>练习会话</span></div><div class="metric-card"><div class="eyebrow">去投递</div><strong>${esc(String(stats.apply_clicks ?? 0))}</strong><span>点击记录，不等于已投递</span></div></div><div class="content-grid"><section class="card"><div class="card-head"><div><h3>继续下一步</h3><p>从当前账号的真实状态进入，不另造一套演示数据。</p></div></div><div class="card-body"><div class="card-list">${account.registration_role === "seeker" ? `<div class="list-row"><div><strong>补齐简历与岗位期望</strong><small>先确认输入，后续分析才有稳定版本。</small></div><button class="button soft small" data-page="resume">去准备</button></div><div class="list-row"><div><strong>保存岗位并生成报告</strong><small>选择一条期望，确认消耗 1 次分析机会。</small></div><button class="button soft small" data-page="pool">去匹配</button></div><div class="list-row"><div><strong>恢复面试练习</strong><small>已开始的会话可以从当前题目继续。</small></div><button class="button soft small" data-page="interview">去面试</button></div>` : `<div class="list-row"><div><strong>导入候选人资料</strong><small>岗位和候选人简历确认后，再发起单人分析。</small></div><button class="button soft small" data-page="resume">去准备</button></div>`}</div></div></section><section class="card"><div class="card-head"><div><h3>最近分析</h3><p>报告只读本账号拥有的输入版本。</p></div></div><div class="card-body">${data.analyses.length ? `<div class="card-list">${data.analyses.slice(0, 4).map((item) => `<div class="list-row"><div><strong>${esc(item.job_category || "岗位分析")}</strong><small>${esc(labelStatus(item.status))} · ${esc(number(item.ability_score))} 分 · ${esc(date(item.completed_at))}</small></div><button class="button link-button" data-action="open-analysis" data-id="${esc(item.id)}">查看</button></div>`).join("")}</div>` : `<div class="empty"><div><strong>还没有报告</strong><p>从“简历与期望”开始，准备一份可复核的输入。</p></div></div>`}</div></section></div>`;
+          const tasks = data.tasks || [];
+          const adminReady = (account.admin_permissions || []).length > 0;
+          return `${heading(account.registration_role === "seeker" ? "SEEKER WORKSPACE" : "RECRUITER WORKSPACE", "工作台", "这里保留最近输入、当前报告和下一步动作；刷新页面仍从数据库恢复。", `<button class="button outline small" data-action="refresh">刷新数据</button>`)}<div class="metric-grid"><div class="metric-card"><div class="eyebrow">资料</div><strong>${esc(String(data.documents.length))}</strong><span>已导入资料</span></div><div class="metric-card"><div class="eyebrow">分析</div><strong>${esc(String(stats.completed_analyses ?? data.analyses.length))}</strong><span>已完成报告</span></div><div class="metric-card"><div class="eyebrow">面试</div><strong>${esc(String(stats.interviews ?? data.interviews.length))}</strong><span>练习会话</span></div><div class="metric-card"><div class="eyebrow">去投递</div><strong>${esc(String(stats.apply_clicks ?? 0))}</strong><span>点击记录，不等于已投递</span></div></div><div class="content-grid"><section class="card"><div class="card-head"><div><h3>继续下一步</h3><p>从当前账号的真实状态进入，不另造一套演示数据。</p></div></div><div class="card-body"><div class="card-list">${account.registration_role === "seeker" ? `<div class="list-row"><div><strong>补齐简历与岗位期望</strong><small>先确认输入，后续分析才有稳定版本。</small></div><button class="button soft small" data-page="resume">去准备</button></div><div class="list-row"><div><strong>保存岗位并生成报告</strong><small>选择一条期望，确认消耗 1 次分析机会。</small></div><button class="button soft small" data-page="pool">去匹配</button></div><div class="list-row"><div><strong>恢复面试练习</strong><small>已开始的会话可以从当前题目继续。</small></div><button class="button soft small" data-page="interview">去面试</button></div>` : `<div class="list-row"><div><strong>导入候选人资料</strong><small>岗位和候选人简历确认后，再发起单人分析。</small></div><button class="button soft small" data-page="resume">去准备</button></div>`}</div></div></section><section class="card"><div class="card-head"><div><h3>最近分析</h3><p>报告只读本账号拥有的输入版本。</p></div></div><div class="card-body">${data.analyses.length ? `<div class="card-list">${data.analyses.slice(0, 4).map((item) => `<div class="list-row"><div><strong>${esc(item.job_category || "岗位分析")}</strong><small>${esc(labelStatus(item.status))} · ${esc(number(item.ability_score))} 分 · ${esc(date(item.completed_at))}</small></div><button class="button link-button" data-action="open-analysis" data-id="${esc(item.id)}">查看</button></div>`).join("")}</div>` : `<div class="empty"><div><strong>还没有报告</strong><p>从“简历与期望”开始，准备一份可复核的输入。</p></div></div>`}</div></section></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>最近任务</h3><p>排队、失败和可恢复输入都保留在原任务里；轮询不会产生新的任务。</p></div><div class="item-actions"><button class="button outline small" data-page="tasks">查看全部</button></div></div><div class="card-body">${tasks.length ? `<div class="task-list">${tasks.slice(0, 4).map(taskRow).join("")}</div>` : `<div class="empty"><div><strong>暂无任务</strong><p>发起解析、分析、改写、面试或 PDF 导出后，这里会显示状态。</p></div></div>`}</div></section>${adminReady ? `<div class="callout opportunity" style="margin-top:18px">当前账号拥有后台权限。管理端菜单已按权限显示，操作仍会在服务端逐次复核。</div>` : ""}`;
+        }
+
+        function taskRow(item) {
+          const progress = Number(item.progress?.display_percent);
+          const width = Number.isFinite(progress) ? Math.max(0, Math.min(progress, 100)) : 0;
+          const retry = item.retryable ? `<button class="button outline small" data-action="retry-task" data-id="${esc(item.id)}">重试</button>` : "";
+          return `<article class="task-row"><div style="min-width:0;flex:1"><strong>${esc(item.task_type || "任务")}</strong><small>${esc(labelStatus(item.status))} · ${esc(item.current_step || "等待调度")} · ${esc(date(item.updated_at))}</small>${Number.isFinite(progress) && item.status !== "succeeded" ? `<div class="progress-track"><i style="width:${width}%"></i></div>` : ""}${item.failure ? `<small style="color:#964016">${esc(item.failure.message || item.failure.code || "执行失败")}</small>` : ""}</div><div class="item-actions">${retry}<button class="button link-button small" data-action="open-task" data-id="${esc(item.id)}">查看</button></div></article>`;
         }
 
         function resumePage() {
           const seeker = state.session.account?.registration_role === "seeker";
           const documents = state.workspace.data.documents.filter((item) => seeker ? item.document_type === "resume" : ["resume", "job_description"].includes(item.document_type));
           const preferences = state.workspace.data.preferences;
-          return `${heading(seeker ? "RESUME" : "CANDIDATE MATERIALS", seeker ? "简历与岗位期望" : "候选人资料", seeker ? "把简历和每条岗位期望分别确认；分析时只引用本次选中的版本。" : "岗位描述和候选人简历分别确认，再创建一份单人分析。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="two-col"><section class="card"><div class="card-head"><div><h3>${seeker ? "我的确认资料" : "导入资料"}</h3><p>${seeker ? "当前页面的最小可用入口是粘贴文字；文件导入接口已保留。" : "招聘身份可分别导入岗位描述与候选人简历。"}</p></div></div><div class="card-body"><form id="formal-document-form" class="form-card">${!seeker ? `<div class="field-group"><label for="formal-document-type">资料类型</label><select id="formal-document-type" class="select" name="document_type"><option value="resume">候选人简历</option><option value="job_description">岗位 JD</option></select></div>` : `<input type="hidden" name="document_type" value="resume" />`}<div class="field-group"><label for="formal-document-title">名称</label><input id="formal-document-title" class="field" name="title" value="${seeker ? "我的确认简历" : "候选人资料"}" required /></div><div class="field-group"><label for="formal-document-text">正文</label><textarea id="formal-document-text" class="textarea" name="text" placeholder="粘贴文字内容……" required>${seeker ? esc(DEFAULT_RESUME) : ""}</textarea></div><div class="form-foot"><span class="micro">提交后会先生成草稿，再用当前 revision 确认版本。</span><button class="button primary small" type="submit">导入并确认</button></div></form><div style="margin-top:16px">${documents.length ? documents.map((item) => documentItem(item)).join("") : `<div class="empty"><div><strong>还没有资料</strong><p>从右侧表单粘贴一份文字资料，完成后会出现 version 1。</p></div></div>`}</div></div></section>${seeker ? `<section class="card"><div class="card-head"><div><h3>岗位期望</h3><p>未填写不等于不限；每组条件独立保存为版本。</p></div></div><div class="card-body"><form id="preference-form" class="form-card"><div class="field-group"><label for="preference-title">期望岗位</label><input id="preference-title" class="field" name="job_title" value="前端工程师" required /></div><div class="form-row"><div class="field-group"><label for="preference-location">期望地点</label><input id="preference-location" class="field" name="location" value="杭州" required /></div><div class="field-group"><label for="preference-mode">办公方式</label><select id="preference-mode" class="select" name="work_mode"><option value="onsite">现场办公</option><option value="hybrid">混合办公</option><option value="remote">远程</option></select></div></div><div class="form-row"><div class="field-group"><label for="preference-min">月薪下限（K）</label><input id="preference-min" class="field" name="min_salary" inputmode="decimal" value="18" required /></div><div class="field-group"><label for="preference-max">月薪上限（K）</label><input id="preference-max" class="field" name="max_salary" inputmode="decimal" value="28" required /></div></div><div class="form-foot"><span class="micro">示例按税前月薪 CNY 保存。</span><button class="button primary small" type="submit">保存这条期望</button></div></form><div style="margin-top:16px">${preferences.length ? preferences.map((item) => preferenceItem(item)).join("") : `<div class="empty"><div><strong>还没有岗位期望</strong><p>保存后，匹配池会要求明确选择一条。</p></div></div>`}</div></div></section>` : recruiterAnalysisSection(documents)}</div>`;
+          return `${heading(seeker ? "RESUME" : "CANDIDATE MATERIALS", seeker ? "简历与岗位期望" : "候选人资料", seeker ? "把简历和每条岗位期望分别确认；分析时只引用本次选中的版本。" : "岗位描述和候选人简历分别确认，再创建一份单人分析。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="two-col"><section class="card"><div class="card-head"><div><h3>${seeker ? "我的确认资料" : "导入资料"}</h3><p>${seeker ? "当前页面的最小可用入口是粘贴文字；文件导入接口已保留。" : "招聘身份可分别导入岗位描述与候选人简历。"}</p></div></div><div class="card-body"><form id="formal-document-form" class="form-card">${!seeker ? `<div class="field-group"><label for="formal-document-type">资料类型</label><select id="formal-document-type" class="select" name="document_type"><option value="resume">候选人简历</option><option value="job_description">岗位 JD</option></select></div>` : `<input type="hidden" name="document_type" value="resume" />`}<div class="field-group"><label for="formal-document-title">名称</label><input id="formal-document-title" class="field" name="title" value="${seeker ? "我的确认简历" : "候选人资料"}" required /></div><div class="field-group"><label for="formal-document-text">正文</label><textarea id="formal-document-text" class="textarea" name="text" placeholder="粘贴文字内容……" required>${seeker ? esc(DEFAULT_RESUME) : ""}</textarea></div><div class="form-foot"><span class="micro">提交后会先生成草稿，再用当前 revision 确认版本。</span><button class="button primary small" type="submit">导入并确认</button></div></form><div style="margin-top:16px">${documents.length ? documents.map((item) => documentItem(item)).join("") : `<div class="empty"><div><strong>还没有资料</strong><p>从右侧表单粘贴一份文字资料，完成后会出现 version 1。</p></div></div>`}</div></div></section>${seeker ? `<section class="card"><div class="card-head"><div><h3>岗位期望</h3><p>未填写不等于不限；每组条件独立保存为版本。</p></div></div><div class="card-body"><form id="preference-form" class="form-card"><div class="field-group"><label for="preference-title">期望岗位</label><input id="preference-title" class="field" name="job_title" value="前端工程师" required /></div><div class="form-row"><div class="field-group"><label for="preference-location">期望地点</label><input id="preference-location" class="field" name="location" value="杭州" required /></div><div class="field-group"><label for="preference-mode">办公方式</label><select id="preference-mode" class="select" name="work_mode"><option value="onsite">现场办公</option><option value="hybrid">混合办公</option><option value="remote">远程</option></select></div></div><div class="form-row"><div class="field-group"><label for="preference-min">月薪下限（K）</label><input id="preference-min" class="field" name="min_salary" inputmode="decimal" value="18" required /></div><div class="field-group"><label for="preference-max">月薪上限（K）</label><input id="preference-max" class="field" name="max_salary" inputmode="decimal" value="28" required /></div></div><div class="form-foot"><span class="micro">示例按税前月薪 CNY 保存。</span><button class="button primary small" type="submit">保存这条期望</button></div></form><div style="margin-top:16px">${preferences.length ? preferences.map((item) => preferenceItem(item)).join("") : `<div class="empty"><div><strong>还没有岗位期望</strong><p>保存后，匹配池会要求明确选择一条。</p></div></div>`}</div></div></section>` : `${recruiterAnalysisSection(documents)}${recruiterPreferenceSection(documents)}`}</div>`;
         }
 
         function documentItem(item) {
           const version = item.latest_version;
-          return `<article class="document-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>${esc(item.document_type === "job_description" ? "岗位 JD" : "简历")}</span><span>revision ${esc(item.revision)}</span><span>${version ? `version ${esc(version.version_no)}` : "待确认版本"}</span></div>${version ? `<div class="micro" style="margin-top:9px">冻结版本：${esc(version.id)}</div>` : ""}</article>`;
+          return `<article class="document-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>${esc(item.document_type === "job_description" ? "岗位 JD" : "简历")}</span><span>revision ${esc(item.revision)}</span><span>${version ? `version ${esc(version.version_no)}` : "待确认版本"}</span></div>${version ? `<div class="micro" style="margin-top:9px">冻结版本：${esc(version.id)}</div>` : ""}<div class="item-actions" style="margin-top:11px"><button class="button outline small" data-action="delete-document" data-id="${esc(item.id)}">删除前查看影响</button></div></article>`;
         }
 
         function preferenceItem(item) {
           const content = item.version?.content || {};
           const location = content.locations?.values?.join("、") || labelStatus(content.locations?.status);
-          const salary = content.salary?.status === "specified" ? `${content.salary.min}–${content.salary.max}K` : labelStatus(content.salary?.status);
+          const minK = Number(content.salary?.min) / 1000;
+          const maxK = Number(content.salary?.max) / 1000;
+          const salary = content.salary?.status === "specified" && Number.isFinite(minK) && Number.isFinite(maxK) ? `${minK}–${maxK}K` : labelStatus(content.salary?.status);
           return `<article class="document-item"><div class="item-title"><strong>${esc(item.display_name)}</strong>${item.is_default ? `<span class="tag success">默认</span>` : ""}</div><div class="item-meta"><span>${esc(content.job_title?.value || "未知岗位")}</span><span>${esc(location)}</span><span>${esc(salary)}</span></div><div class="micro" style="margin-top:9px">期望版本 v${esc(item.version?.version_no || "—")} · ${esc(item.version?.id || "—")}</div></article>`;
         }
 
@@ -670,12 +735,13 @@
           const resumes = data.documents.filter((item) => item.document_type === "resume" && item.latest_version);
           const preferences = data.preferences.filter((item) => item.version);
           const selected = state.workspace.selectedPool;
-          return `${heading("MATCH POOL", "匹配池", "岗位先保存，选定一条岗位期望并确认消耗后，才生成岗位独立的匹配报告。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${selected ? `<section class="card pool-detail"><div class="card-head"><div><h3>${esc(selected.job_title || "岗位详情")}</h3><p>${esc(selected.company_name || "未标注公司")} · ${esc(labelStatus(selected.analysis_status))}</p></div><button class="button link-button small" data-action="close-pool">收起</button></div><pre>${esc(json(selected.job_content || selected.job_fields || {}))}</pre>${selected.latest_analysis ? `<div class="item-actions"><button class="button primary small" data-action="open-analysis" data-id="${esc(selected.latest_analysis.id)}">打开完整报告</button></div>` : ""}</section>` : ""}<div class="content-grid"><section class="card"><div class="card-head"><div><h3>保存一份手动岗位</h3><p>浏览器草稿也会落到同一岗位池契约；这里用文字输入完成明天的稳定演示。</p></div><span class="tag opportunity">可选分析</span></div><div class="card-body"><form id="pool-form" class="form-card"><div class="field-group"><label for="pool-title">岗位名称</label><input id="pool-title" class="field" name="job_title" value="前端开发工程师" required /></div><div class="field-group"><label for="pool-company">公司</label><input id="pool-company" class="field" name="company_name" value="示例科技" /></div><div class="field-group"><label for="pool-text">岗位 JD</label><textarea id="pool-text" class="textarea" name="job_text" required>${esc(DEFAULT_JOB)}</textarea></div><div class="field-group"><label for="pool-resume">本次使用的简历版本</label><select id="pool-resume" class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先去简历页确认版本</option>`}</select></div><div class="field-group"><label for="pool-preference">本次使用的岗位期望版本</label><select id="pool-preference" class="select" name="preference_version_id" ${preferences.length ? "" : "disabled"}>${preferences.map((item) => `<option value="${esc(item.version.id)}">${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("") || `<option>请先去简历页保存期望</option>`}</select></div><label class="micro" style="display:flex;gap:8px;align-items:flex-start;margin-top:14px"><input type="checkbox" name="start_now" checked style="margin-top:3px" /> 保存后立即生成报告（确认消耗 1 次分析机会）</label><div class="form-foot"><span class="micro">只保存岗位不会扣次；分析需要简历、期望和余额齐备。</span><button class="button primary small" type="submit">保存岗位</button></div></form></div></section><section class="card"><div class="card-head"><div><h3>岗位列表</h3><p>每个岗位拥有自己的报告和输入版本。</p></div></div><div class="card-body">${data.pool.length ? data.pool.map((item) => poolItem(item)).join("") : `<div class="empty"><div><strong>匹配池还是空的</strong><p>准备好简历和期望后，在左侧保存第一份岗位。</p></div></div>`}</div></section></div>`;
+          const selectedActions = selected ? `<section class="card pool-detail"><div class="card-head"><div><h3>${esc(selected.job_title || "岗位详情")}</h3><p>${esc(selected.company_name || "未标注公司")} · ${esc(labelStatus(selected.analysis_status))}</p></div><button class="button link-button small" data-action="close-pool">收起</button></div>${selected.source_url ? `<div class="callout opportunity">原岗位链接已由服务端校验；点击“去投递”只记录跳转意向，不代表平台已投递。</div><div class="item-actions" style="margin-top:12px"><button class="button primary small" data-action="go-apply" data-id="${esc(selected.id)}" data-token="${esc(selected.apply_action?.click_token || "")}">去投递</button></div>` : `<div class="callout">这是手动岗位，暂时没有可跳转的原平台链接。</div>`}<pre>${esc(json(selected.job_content || selected.job_fields || {}))}</pre>${selected.latest_analysis ? `<div class="item-actions"><button class="button primary small" data-action="open-analysis" data-id="${esc(selected.latest_analysis.id)}">打开完整报告</button></div>` : ""}</section>` : "";
+          return `${heading("MATCH POOL", "匹配池", "岗位先保存，选定一条岗位期望并确认消耗后，才生成岗位独立的匹配报告。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${selectedActions}<div class="content-grid"><section class="card"><div class="card-head"><div><h3>保存一份手动岗位</h3><p>浏览器草稿也会落到同一岗位池契约；这里用文字输入完成明天的稳定演示。</p></div><span class="tag opportunity">可选分析</span></div><div class="card-body"><form id="pool-form" class="form-card"><div class="field-group"><label for="pool-title">岗位名称</label><input id="pool-title" class="field" name="job_title" value="前端开发工程师" required /></div><div class="field-group"><label for="pool-company">公司</label><input id="pool-company" class="field" name="company_name" value="示例科技" /></div><div class="field-group"><label for="pool-text">岗位 JD</label><textarea id="pool-text" class="textarea" name="job_text" required>${esc(DEFAULT_JOB)}</textarea></div><div class="field-group"><label for="pool-resume">本次使用的简历版本</label><select id="pool-resume" class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先去简历页确认版本</option>`}</select></div><div class="field-group"><label for="pool-preference">本次使用的岗位期望版本</label><select id="pool-preference" class="select" name="preference_version_id" ${preferences.length ? "" : "disabled"}>${preferences.map((item) => `<option value="${esc(item.version.id)}">${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("") || `<option>请先去简历页保存期望</option>`}</select></div><label class="micro" style="display:flex;gap:8px;align-items:flex-start;margin-top:14px"><input type="checkbox" name="start_now" checked style="margin-top:3px" /> 保存后立即生成报告（确认消耗 1 次分析机会）</label><div class="form-foot"><span class="micro">只保存岗位不会扣次；分析需要简历、期望和余额齐备。</span><button class="button primary small" type="submit">保存岗位</button></div></form></div></section><section class="card"><div class="card-head"><div><h3>岗位列表</h3><p>每个岗位拥有自己的报告和输入版本。</p></div></div><div class="card-body">${data.pool.length ? data.pool.map((item) => poolItem(item)).join("") : `<div class="empty"><div><strong>匹配池还是空的</strong><p>准备好简历和期望后，在左侧保存第一份岗位。</p></div></div>`}</div></section></div>`;
         }
 
         function poolItem(item) {
           const latest = item.latest_analysis;
-          return `<article class="pool-item"><div class="item-title"><strong>${esc(item.job_title || "未命名岗位")}</strong><span class="tag ${statusClass(item.analysis_status)}">${esc(labelStatus(item.analysis_status))}</span></div><div class="item-meta"><span>${esc(item.company_name || "未标注公司")}</span><span>${latest ? `综合分 ${esc(number(latest.ability_score))}` : "尚无报告"}</span><span>${esc(date(item.updated_at))}</span></div><div class="item-actions"><button class="button soft small" data-action="open-pool" data-id="${esc(item.id)}">查看岗位</button>${latest ? `<button class="button outline small" data-action="open-analysis" data-id="${esc(latest.id)}">完整报告</button>` : ""}</div></article>`;
+          return `<article class="pool-item"><div class="item-title"><strong>${esc(item.job_title || "未命名岗位")}</strong><span class="tag ${statusClass(item.analysis_status)}">${esc(labelStatus(item.analysis_status))}</span></div><div class="item-meta"><span>${esc(item.company_name || "未标注公司")}</span><span>${latest ? `综合分 ${esc(number(latest.ability_score))}` : "尚无报告"}</span><span>${esc(date(item.updated_at))}</span></div><div class="item-actions"><button class="button soft small" data-action="open-pool" data-id="${esc(item.id)}">查看岗位</button>${latest ? `<button class="button outline small" data-action="open-analysis" data-id="${esc(latest.id)}">完整报告</button>` : ""}<button class="button link-button small" data-action="delete-pool" data-id="${esc(item.id)}">删除</button></div></article>`;
         }
 
         function formalReportPage() {
@@ -686,7 +752,7 @@
           const advice = report.overall_advice || {};
           const pool = state.workspace.selectedPool || findPoolForAnalysis(analysis.id);
           const resumeId = analysis.input_versions?.find((item) => item && item.type === "resume")?.id;
-          return `${heading("MATCH REPORT", "匹配报告", "结果绑定到本次分析的简历版本、岗位版本和规则版本；未知信息仍保持未知。", `<button class="button outline small" data-page="dashboard">回到工作台</button>`)}<section class="card"><div class="report-top"><div class="score-block" style="--score:${Math.max(0, Math.min(Number.isFinite(score) ? score : 0, 100))}"><div class="score-copy"><strong>${Number.isFinite(score) ? esc(number(score)) : "—"}</strong><span>能力综合分</span></div></div><div class="report-summary"><span class="tag ${statusClass(advice.status)}">${esc(labelStatus(advice.status))}</span><h3>${esc(advice.text || "报告已生成")}</h3><p>${esc((advice.next_steps || []).join(" ") || "请结合证据和条件对照做人工判断。")}</p><div class="report-metrics"><div class="metric-pill"><strong>${esc(percent(analysis.evidence_coverage ?? report.evidence_coverage))}</strong><span>证据覆盖率</span></div><div class="metric-pill"><strong>${esc(analysis.job_category || report.job_category || "general")}</strong><span>岗位类别</span></div><div class="metric-pill"><strong>${esc(analysis.scoring_rule_version || report.scoring_rule_version || "ability-v0.1")}</strong><span>评分规则</span></div></div><div class="item-actions">${pool && resumeId ? `<button class="button primary small" data-action="create-variant">制作岗位版简历</button><button class="button soft small" data-action="start-interview">开始面试练习</button>` : ""}</div></div></div><div class="report-grid"><div class="report-card"><h3>能力维度与逐条依据</h3>${(report.dimensions || []).map((item) => demoDimension(item)).join("") || `<div class="empty">暂无维度数据</div>`}</div><div class="report-card"><h3>岗位条件对照</h3><div style="margin-top:8px">${(report.conditions || []).map((item) => `<div class="condition-row"><strong>${esc({ job_title: "岗位方向", location: "地点", work_mode: "办公方式", salary: "薪资" }[item.condition] || item.condition)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.explanation)}</p></div>`).join("") || `<div class="empty">没有条件数据</div>`}</div></div><div class="report-card full"><h3>输入版本与可追溯信息</h3><div class="version-strip">${(analysis.input_versions || []).filter(Boolean).map((item) => `<span class="version-chip">${esc(item.type)} · ${esc(item.id)}</span>`).join("")}<span class="version-chip">analysis · ${esc(analysis.id)}</span></div><details class="raw-report"><summary>展开完整报告 JSON</summary><pre>${esc(json(analysis))}</pre></details></div></div></section>`;
+          return `${heading("MATCH REPORT", "匹配报告", "结果绑定到本次分析的简历版本、岗位版本和规则版本；未知信息仍保持未知。", `<button class="button outline small" data-page="dashboard">回到工作台</button>`)}<section class="card"><div class="report-top"><div class="score-block" style="--score:${Math.max(0, Math.min(Number.isFinite(score) ? score : 0, 100))}"><div class="score-copy"><strong>${Number.isFinite(score) ? esc(number(score)) : "—"}</strong><span>能力综合分</span></div></div><div class="report-summary"><span class="tag ${statusClass(advice.status)}">${esc(labelStatus(advice.status))}</span><h3>${esc(advice.text || "报告已生成")}</h3><p>${esc((advice.next_steps || []).join(" ") || "请结合证据和条件对照做人工判断。")}</p><div class="report-metrics"><div class="metric-pill"><strong>${esc(percent(analysis.evidence_coverage ?? report.evidence_coverage))}</strong><span>证据覆盖率</span></div><div class="metric-pill"><strong>${esc(analysis.job_category || report.job_category || "general")}</strong><span>岗位类别</span></div><div class="metric-pill"><strong>${esc(analysis.scoring_rule_version || report.scoring_rule_version || "ability-v0.1")}</strong><span>评分规则</span></div></div><div class="item-actions">${pool && resumeId ? `<button class="button primary small" data-action="create-variant">制作岗位版简历</button><button class="button soft small" data-action="open-rewrite">补充事实与改写</button><button class="button soft small" data-action="start-interview">开始面试练习</button>` : ""}</div></div></div><div class="report-grid"><div class="report-card"><h3>能力维度与逐条依据</h3>${(report.dimensions || []).map((item) => demoDimension(item)).join("") || `<div class="empty">暂无维度数据</div>`}</div><div class="report-card"><h3>岗位条件对照</h3><div style="margin-top:8px">${(report.conditions || []).map((item) => `<div class="condition-row"><strong>${esc({ job_title: "岗位方向", location: "地点", work_mode: "办公方式", salary: "薪资" }[item.condition] || item.condition)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.explanation)}</p></div>`).join("") || `<div class="empty">没有条件数据</div>`}</div></div><div class="report-card full"><h3>输入版本与可追溯信息</h3><div class="version-strip">${(analysis.input_versions || []).filter(Boolean).map((item) => `<span class="version-chip">${esc(item.type)} · ${esc(item.id)}</span>`).join("")}<span class="version-chip">analysis · ${esc(analysis.id)}</span></div><div class="item-actions" style="margin-top:13px"><button class="button link-button small" data-action="delete-analysis" data-id="${esc(analysis.id)}">删除这份报告（先查看影响）</button></div><details class="raw-report"><summary>展开完整报告 JSON</summary><pre>${esc(json(analysis))}</pre></details></div></div></section>`;
         }
 
         function findPoolForAnalysis(analysisId) {
@@ -726,6 +792,110 @@
         function statsPage() {
           const stats = state.workspace.data.stats || {};
           return `${heading("PERSONAL STATS", "统计与反馈", "去投递点击只表示 Purslyx 发起过一次跳转，不代表外部平台已经收到简历。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="metric-grid"><div class="metric-card"><div class="eyebrow">岗位</div><strong>${esc(String(stats.job_pool_items ?? 0))}</strong><span>匹配池岗位</span></div><div class="metric-card"><div class="eyebrow">报告</div><strong>${esc(String(stats.completed_analyses ?? 0))}</strong><span>完成分析</span></div><div class="metric-card"><div class="eyebrow">采用</div><strong>${esc(String(stats.adopted_rewrites ?? 0))}</strong><span>已采用改写</span></div><div class="metric-card"><div class="eyebrow">点击</div><strong>${esc(String(stats.apply_clicks ?? 0))}</strong><span>去投递点击</span></div></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>给 Purslyx 一句话反馈</h3><p>反馈和使用统计分开记录，帮助判断产品下一步。</p></div></div><div class="card-body"><form id="feedback-form" class="form-card"><div class="form-row"><div class="field-group"><label>评分</label><select class="select" name="rating"><option value="5">5 · 很有帮助</option><option value="4">4 · 有帮助</option><option value="3">3 · 一般</option><option value="2">2 · 需要改进</option><option value="1">1 · 不符合预期</option></select></div><div class="field-group"><label>反馈类型</label><select class="select" name="feedback_type"><option value="experience">使用体验</option><option value="accuracy">分析依据</option><option value="workflow">流程建议</option></select></div></div><div class="field-group"><label>内容</label><textarea class="textarea" name="content" style="min-height:110px" placeholder="哪一步最有帮助？还有哪里需要更清楚？" required></textarea></div><div class="form-foot"><span class="micro">反馈不会改变已经生成的报告分数。</span><button class="button primary small" type="submit">提交反馈</button></div></form></div></section>`;
+        }
+
+        function taskTypeLabel(value) {
+          return { document_parse: "资料解析", analysis: "岗位分析", rewrite: "简历改写", resume_export: "PDF 导出", interview_opening: "面试开场", interview_feedback: "面试反馈" }[value] || value || "任务";
+        }
+
+        function accountStatusLabel(value) {
+          return { active: "正常", suspended: "已暂停", pending_verification: "待验证" }[value] || value || "未知";
+        }
+
+        function taskDetail(item) {
+          if (!item) return "";
+          const refs = (item.input_versions || []).map((ref) => `<span class="version-chip">${esc(ref.resource_type)} · ${esc(ref.resource_id)}${ref.version_no ? ` · v${esc(ref.version_no)}` : ""}</span>`).join("");
+          return `<section class="card pool-detail"><div class="card-head"><div><div class="eyebrow">TASK DETAIL</div><h3>${esc(taskTypeLabel(item.task_type))}</h3><p>${esc(item.id)} · ${esc(labelStatus(item.status))} · ${esc(item.current_step || "等待调度")}</p></div><button class="button link-button small" data-action="close-task">收起</button></div><div class="item-meta"><span>重试 ${esc(String(item.retry_count || 0))} 次</span><span>更新时间 ${esc(date(item.updated_at))}</span>${item.usage_reservation ? `<span>预留 ${esc(String(item.usage_reservation.count))} ${esc(item.usage_reservation.feature)}</span>` : ""}</div>${item.failure ? `<div class="callout attention">${esc(item.failure.message || item.failure.code || "任务失败")}</div>` : ""}${refs ? `<div class="version-strip">${refs}</div>` : `<div class="micro" style="margin-top:14px">该任务没有可展示的输入版本引用。</div>`}${item.result ? `<details class="raw-report"><summary>查看结果摘要</summary><pre>${esc(json(item.result))}</pre></details>` : ""}${item.required_actions?.length ? `<div class="callout opportunity">${esc(item.required_actions.map((action) => action.label || action.code || "需要下一步").join("；"))}</div>` : ""}</section>`;
+        }
+
+        function tasksPage() {
+          const tasks = state.workspace.data.tasks || [];
+          const selected = state.workspace.selectedTask;
+          const counts = tasks.reduce((result, item) => { result[item.status] = (result[item.status] || 0) + 1; return result; }, {});
+          return `${heading("TASK CENTER", "任务中心", "每个任务都保留状态、进度、输入版本引用和可恢复动作；任务详情不复制简历或岗位正文。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${selected ? taskDetail(selected) : ""}<section class="card"><div class="card-head"><div><h3>最近任务</h3><p>${esc(String(tasks.length))} 条记录 · 排队 ${esc(String(counts.queued || 0))} · 失败 ${esc(String(counts.failed || 0))} · 已完成 ${esc(String(counts.succeeded || 0))}</p></div></div><div class="card-body">${tasks.length ? `<div class="task-list">${tasks.map(taskRow).join("")}</div>` : `<div class="empty"><div><strong>暂无任务</strong><p>发起分析、改写、面试或 PDF 导出后，任务会显示在这里。</p></div></div>`}</div></section>`;
+        }
+
+        function recruiterPreferenceSection(documents) {
+          const candidates = documents.filter((item) => item.document_type === "resume" && item.subject_type === "candidate_resume" && item.latest_version);
+          const selectedId = state.workspace.recruiterSubjectId || candidates[0]?.id || "";
+          const existing = state.workspace.data.preferences.find((item) => item.subject_document_id === selectedId);
+          const content = existing?.version?.content || {};
+          const locations = content.locations?.values?.join("、") || "杭州";
+          const salary = content.salary || {};
+          if (!candidates.length) return `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>候选人岗位期望（可选）</h3><p>先导入候选人简历，才能把明确的期望挂到该候选人名下。</p></div></div><div class="card-body"><div class="empty"><div><strong>还没有候选人简历</strong><p>这一步不是分析前置条件；有明确需求时再补充即可。</p></div></div></div></section>`;
+          state.workspace.recruiterSubjectId = selectedId;
+          return `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>候选人岗位期望（可选）</h3><p>只保存候选人明确提供的条件；每个候选人单独成组，不和其他资料串值。</p></div><span class="tag neutral">可选</span></div><div class="card-body"><form id="recruiter-preference-form" class="form-card"><div class="field-group"><label for="recruiter-preference-subject">候选人简历</label><select id="recruiter-preference-subject" class="select" name="subject_document_id" data-recruiter-subject>${candidates.map((item) => `<option value="${esc(item.id)}" ${item.id === selectedId ? "selected" : ""}>${esc(item.title)} · ${esc(item.latest_version.id.slice(0, 8))}</option>`).join("")}</select></div><div class="field-group"><label for="recruiter-preference-title">期望岗位</label><input id="recruiter-preference-title" class="field" name="job_title" value="${esc(content.job_title?.value || "前端工程师")}" required /></div><div class="form-row"><div class="field-group"><label>期望地点</label><input class="field" name="location" value="${esc(locations)}" required /></div><div class="field-group"><label>办公方式</label><select class="select" name="work_mode"><option value="onsite" ${content.work_mode?.value === "onsite" ? "selected" : ""}>现场办公</option><option value="hybrid" ${content.work_mode?.value === "hybrid" ? "selected" : ""}>混合办公</option><option value="remote" ${content.work_mode?.value === "remote" ? "selected" : ""}>远程</option></select></div></div><div class="form-row"><div class="field-group"><label>月薪下限（K）</label><input class="field" name="min_salary" inputmode="decimal" value="${esc(salary.min ? Number(salary.min) / 1000 : 18)}" required /></div><div class="field-group"><label>月薪上限（K）</label><input class="field" name="max_salary" inputmode="decimal" value="${esc(salary.max ? Number(salary.max) / 1000 : 28)}" required /></div></div><div class="form-foot"><span class="micro">候选人期望不影响求职者匹配池。</span><button class="button primary small" type="submit">保存候选人期望</button></div></form></div></section>`;
+        }
+
+        function resumeSegments(source) {
+          return (source?.content?.sections || []).flatMap((section) => (section.segments || []).map((segment) => ({ ...segment, section_title: section.title || section.section_key })));
+        }
+
+        function rewriteSegmentItem(item) {
+          const decision = item.current_decision || "未决定";
+          const editId = `rewrite-edit-${item.id}`;
+          return `<article class="rewrite-row"><div style="min-width:0;flex:1"><div class="item-title"><strong>${esc(item.source_segment_key)}</strong><span class="tag ${decision === "adopt" ? "success" : decision === "keep_original" ? "neutral" : "opportunity"}">${esc(decision === "adopt" ? "已采用" : decision === "keep_original" ? "保留原文" : decision)}</span></div><div class="rewrite-compare"><div class="compare-pane original"><h4>原文</h4><p>${esc(item.original_text)}</p></div><div class="compare-pane suggested"><h4>建议</h4><p>${esc(item.suggested_text || "暂无建议")}</p></div></div><div class="field-group" style="margin-top:12px"><label for="${esc(editId)}">编辑后采用（可选）</label><textarea id="${esc(editId)}" class="textarea" style="min-height:88px">${esc(item.suggested_text || item.original_text || "")}</textarea></div><div class="item-actions"><button class="button primary small" data-action="decide-rewrite" data-decision="adopt" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">采用建议</button><button class="button soft small" data-action="decide-rewrite" data-decision="edited" data-edit-id="${esc(editId)}" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">采用编辑</button><button class="button outline small" data-action="decide-rewrite" data-decision="keep_original" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">保留原文</button></div>${item.evidence?.length ? `<div class="evidence">依据：${esc(item.evidence.map((evidence) => evidence.quote).join("；"))}</div>` : `<div class="evidence missing">当前建议没有额外事实依据，采用前请人工核对。</div>`}</div></article>`;
+        }
+
+        function rewritePage() {
+          const analysis = state.workspace.selectedAnalysis;
+          const source = state.workspace.rewriteSource;
+          if (!analysis || !source) return `${heading("REWRITE", "事实与改写", "从一份已完成的匹配报告开始。", `<button class="button outline small" data-page="report">回到报告</button>`)}<div class="empty"><div><strong>还没有准备好的简历版本</strong><p>请从匹配报告进入改写。</p></div></div>`;
+          const segments = resumeSegments(source.version);
+          const selectedKeys = new Set(state.workspace.rewriteSegmentKeys || []);
+          const facts = state.workspace.data.facts || [];
+          const rewrite = state.workspace.selectedRewrite;
+          return `${heading("FACTS & REWRITE", "事实与逐段改写", "先补充可核对事实，再选择需要改写的简历段落；每段都可以单独采用、编辑采用或保留原文。", `<button class="button outline small" data-page="report">回到报告</button>`)}<div class="callout opportunity">本次改写固定引用简历版本 ${esc(source.version.id)}；任务和日志只保留版本引用，不复制正文。</div><div class="editor-grid"><section class="card"><div class="card-head"><div><h3>选择简历段落</h3><p>当前版本共 ${esc(String(segments.length))} 个可用段落。</p></div></div><div class="card-body"><div class="fact-list">${segments.map((segment) => `<label class="fact-row" style="cursor:pointer"><div><strong>${esc(segment.section_title)} · ${esc(segment.segment_key)}</strong><small>${esc(segment.text)}</small></div><input type="checkbox" data-rewrite-segment="${esc(segment.segment_key)}" ${selectedKeys.has(segment.segment_key) ? "checked" : ""} /></label>`).join("") || `<div class="empty"><div><strong>版本没有可改写段落</strong><p>请确认简历解析结果包含正文段落。</p></div></div>`}</div><form id="rewrite-form" class="form-card" style="margin-top:16px"><div class="field-group"><label>本次引用的已确认事实</label><div class="fact-list">${facts.length ? facts.map((fact) => `<label class="permission-option"><input type="checkbox" name="fact_version_id" value="${esc(fact.version?.id || "")}" data-rewrite-fact /> <span>${esc(fact.fact_category)}：${esc(fact.fact_text)}</span></label>`).join("") : `<div class="micro">还没有补充事实；可以先只基于已确认简历生成建议。</div>`}</div></div><div class="form-foot"><span class="micro">开始改写确认消耗 1 次改写。</span><button class="button primary small" type="submit" ${segments.length ? "" : "disabled"}>生成逐段建议</button></div></form></div></section><aside><section class="card"><div class="card-head"><div><h3>补充一个事实</h3><p>事实需挂在当前简历版本和真实段落上。</p></div></div><div class="card-body"><form id="fact-form" class="form-card"><div class="field-group"><label>事实类别</label><input class="field" name="fact_category" value="项目结果" required /></div><div class="field-group"><label>来源段落</label><select class="select" name="source_segment_key">${segments.map((segment) => `<option value="${esc(segment.segment_key)}">${esc(segment.segment_key)}</option>`).join("")}</select></div><div class="field-group"><label>事实内容</label><textarea class="textarea" name="fact_text" style="min-height:100px" placeholder="例如：上线后首屏耗时下降 30%" required></textarea></div><div class="form-foot"><span class="micro">保存后成为事实 version 1。</span><button class="button soft small" type="submit" ${segments.length ? "" : "disabled"}>保存事实</button></div></form></div></section></aside></div>${rewrite ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>改写结果</h3><p>${esc(rewrite.id)} · ${esc(labelStatus(rewrite.status))} · 采用决定会追加流水。</p></div><div class="item-actions"><button class="button primary small" data-action="create-variant-from-rewrite" ${rewrite.status === "available" ? "" : "disabled"}>用采用结果制作岗位版</button></div></div><div class="card-body"><div class="rewrite-list">${(rewrite.segments || []).map(rewriteSegmentItem).join("") || `<div class="empty"><div><strong>还没有段落建议</strong><p>返回上方选择段落并生成建议。</p></div></div>`}</div></div></section>` : ""}`;
+        }
+
+        function adminMetricsPage() {
+          const metrics = state.workspace.data.admin.metrics;
+          const costs = state.workspace.data.admin.costs;
+          const feedback = state.workspace.data.admin.feedback || [];
+          if (!metrics) return `${heading("ADMIN", "站点概况", "当前账号没有读到站点指标；点击刷新重试。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="empty"><div><strong>指标暂不可用</strong><p>服务端会按权限返回管理数据。</p></div></div>`;
+          return `${heading("ADMIN OVERVIEW", "站点概况", "只展示聚合指标和脱敏元数据；成本、反馈和账号操作均留有审计入口。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="admin-grid"><div class="admin-stat"><div class="eyebrow">账号</div><strong>${esc(String(metrics.accounts?.total ?? 0))}</strong><span>求职 ${esc(String(metrics.accounts?.seeker ?? 0))} · 招聘 ${esc(String(metrics.accounts?.recruiter ?? 0))}</span></div><div class="admin-stat"><div class="eyebrow">岗位</div><strong>${esc(String(metrics.job_pool_items ?? 0))}</strong><span>当前未删除岗位</span></div><div class="admin-stat"><div class="eyebrow">报告</div><strong>${esc(String(metrics.analyses ?? 0))}</strong><span>已完成分析</span></div><div class="admin-stat"><div class="eyebrow">面试</div><strong>${esc(String(metrics.interviews ?? 0))}</strong><span>已创建会话</span></div><div class="admin-stat"><div class="eyebrow">去投递</div><strong>${esc(String(metrics.apply_clicks_today ?? 0))}</strong><span>上海自然日 ${esc(metrics.metric_date)}</span></div><div class="admin-stat"><div class="eyebrow">模型成本</div><strong>${costs?.known_cost_usd == null ? "未知" : `$${esc(Number(costs.known_cost_usd).toFixed(4))}`}</strong><span>未知成本调用 ${esc(String(costs?.unknown_cost_calls ?? 0))}</span></div></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>产品反馈</h3><p>正文只在管理员主动打开详情时读取；状态变更会写入审计日志。</p></div></div><div class="card-body">${feedback.length ? `<div class="admin-list">${feedback.map((item) => `<article class="admin-row"><div><strong>${esc(item.feedback_type)} · ${esc(String(item.rating || "—"))} 分</strong><small>${esc(item.id)} · ${esc(item.account_id || "未知账号")} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${item.status === "closed" ? "success" : item.status === "reviewing" ? "opportunity" : "neutral"}">${esc(item.status)}</span>${new Set(state.session.account?.admin_permissions || []).has("admin.stats.read") ? `<button class="button link-button small" data-action="cycle-feedback" data-id="${esc(item.id)}" data-status="${esc(item.status)}">更新状态</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无反馈</strong><p>用户反馈会在这里汇总。</p></div></div>`}</div></section>`;
+        }
+
+        function adminUsersPage() {
+          const users = state.workspace.data.admin.users || [];
+          const canManage = new Set(state.session.account?.admin_permissions || []).has("admin.users.manage_status");
+          return `${heading("ADMIN USERS", "用户管理", "按邮箱、注册身份和状态筛选；状态写操作需要服务端权限和当前 CSRF。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<section class="card"><form id="admin-user-search" class="form-card"><div class="form-row"><div class="field-group"><label>邮箱搜索</label><input class="field" name="search" placeholder="可留空" /></div><div class="field-group"><label>注册身份</label><select class="select" name="registration_role"><option value="">全部</option><option value="seeker">求职</option><option value="recruiter">招聘</option></select></div></div><div class="form-foot"><span class="micro">最多返回 200 个账号。</span><button class="button soft small" type="submit">筛选</button></div></form></section><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>账号列表</h3><p>${esc(String(users.length))} 个账号</p></div></div><div class="card-body">${users.length ? `<div class="admin-list">${users.map((item) => `<article class="admin-row"><div><strong>${esc(item.email)}</strong><small>${esc(item.registration_role)} · ${esc(accountStatusLabel(item.status))} · ${item.email_verified ? "已验证" : "未验证"} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${statusClass(item.status === "active" ? "available" : item.status === "suspended" ? "failed" : "unknown")}">${esc(accountStatusLabel(item.status))}</span>${canManage && item.id !== state.session.account?.id ? `<button class="button link-button small" data-action="toggle-user-status" data-id="${esc(item.id)}" data-status="${esc(item.status)}">${item.status === "suspended" ? "恢复" : "暂停"}</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>没有匹配账号</strong><p>调整筛选条件后再试。</p></div></div>`}</div></section>`;
+        }
+
+        function permissionOptions(selected = []) {
+          const allowed = new Set(state.session.account?.admin_permissions || []);
+          return [...allowed].sort().map((keyName) => `<label class="permission-option"><input type="checkbox" name="permission_keys" value="${esc(keyName)}" ${selected.includes(keyName) ? "checked" : ""} /> <span>${esc(keyName)}</span></label>`).join("");
+        }
+
+        function adminRolesPage() {
+          const roles = state.workspace.data.admin.roles || [];
+          const selected = state.workspace.selectedRole;
+          const permissions = selected?.permissions || [];
+          return `${heading("ADMIN ROLES", "角色权限", "内置超级管理员只读；自定义角色只能授予当前管理员已有的权限。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="two-col"><section class="card"><div class="card-head"><div><h3>角色列表</h3><p>点击自定义角色进入编辑。</p></div></div><div class="card-body">${roles.length ? `<div class="admin-list">${roles.map((item) => `<article class="admin-row"><div><strong>${esc(item.name)} ${item.is_builtin ? "· 内置" : ""}</strong><small>${esc(item.description || "无描述")} · ${esc(item.status)} · ${esc(String(item.permissions?.length || 0))} 项权限</small></div><div class="item-actions">${item.is_builtin ? `<span class="tag neutral">只读</span>` : `<button class="button link-button small" data-action="select-role" data-id="${esc(item.id)}">编辑</button>`}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无角色</strong><p>刷新后重试。</p></div></div>`}</div></section><section class="card"><div class="card-head"><div><h3>${selected ? "编辑自定义角色" : "创建自定义角色"}</h3><p>保存会增加角色 revision 并记录后台审计。</p></div>${selected ? `<button class="button link-button small" data-action="clear-role">新建</button>` : ""}</div><div class="card-body"><form id="admin-role-form" class="form-card"><input type="hidden" name="role_id" value="${esc(selected?.id || "")}" /><div class="field-group"><label>角色名称</label><input class="field" name="name" value="${esc(selected?.name || "演示运营")}" required /></div><div class="field-group"><label>描述</label><input class="field" name="description" value="${esc(selected?.description || "用于明天演示的受限后台角色")}" /></div><div class="field-group"><label>状态</label><select class="select" name="status"><option value="active" ${selected?.status !== "archived" ? "selected" : ""}>启用</option><option value="archived" ${selected?.status === "archived" ? "selected" : ""}>归档</option></select></div><div class="field-group"><label>可授予权限</label><div class="permission-grid">${permissionOptions(permissions)}</div></div><div class="form-foot"><span class="micro">当前账号可授予 ${esc(String((state.session.account?.admin_permissions || []).length))} 项权限。</span><button class="button primary small" type="submit">${selected ? "保存角色" : "创建角色"}</button></div></form></div></section></div>`;
+        }
+
+        function adminUsagePage() {
+          const grants = state.workspace.data.admin.grants || [];
+          const users = state.workspace.data.admin.users || [];
+          return `${heading("ADMIN USAGE", "次数管理", "给指定账号追加分析、改写或面试次数；每笔发放都要求原因，并支持幂等重试。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<section class="card"><div class="card-head"><div><h3>发放次数</h3><p>只允许发放当前账号角色允许使用的功能。</p></div></div><div class="card-body"><form id="admin-grant-form" class="form-card"><div class="field-group"><label>目标账号</label>${users.length ? `<select class="select" name="user_id">${users.filter((item) => item.status === "active").map((item) => `<option value="${esc(item.id)}">${esc(item.email)} · ${esc(item.registration_role)}</option>`).join("")}</select>` : `<input class="field" name="user_id" placeholder="粘贴账号 ID" required />`}</div><div class="form-row"><div class="field-group"><label>功能</label><select class="select" name="feature"><option value="analysis">分析</option><option value="rewrite">改写</option><option value="interview">面试</option></select></div><div class="field-group"><label>次数</label><input class="field" name="count" type="number" min="1" max="10000" value="5" required /></div></div><div class="field-group"><label>发放原因</label><input class="field" name="reason" value="明日 SDD 演示补充次数" required /></div><div class="form-foot"><span class="micro">写入用量流水和管理员审计。</span><button class="button primary small" type="submit">确认发放</button></div></form></div></section><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>最近发放</h3><p>共 ${esc(String(grants.length))} 笔。</p></div></div><div class="card-body">${grants.length ? `<div class="admin-list">${grants.slice(0, 30).map((item) => `<article class="admin-row"><div><strong>${esc(item.feature)} +${esc(String(item.count))}</strong><small>${esc(item.account_id || "未知账号")} · ${esc(item.reason)} · ${esc(date(item.created_at))}</small></div><span class="tag success">${esc(String(item.after_available))} 可用</span></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无发放记录</strong><p>提交一次发放后会在这里留下记录。</p></div></div>`}</div></section>`;
+        }
+
+        function logRow(type, item) {
+          const title = type === "operations" ? item.action : type === "security" ? item.event_type : taskTypeLabel(item.task_type);
+          const detail = type === "operations" ? `${item.outcome || ""} · ${item.reason || "无原因"}` : type === "security" ? `${item.outcome || ""} · ${item.reason_code || "无原因码"}` : `${labelStatus(item.status)} · 重试 ${item.retry_count || 0} 次`;
+          return `<article class="admin-row"><div><strong>${esc(title)}</strong><small>${esc(item.id)} · ${esc(detail)} · ${esc(date(item.created_at))}</small></div><button class="button link-button small" data-action="open-log" data-log-type="${esc(type)}" data-id="${esc(item.id)}">查看</button></article>`;
+        }
+
+        function adminLogsPage() {
+          const accountPermissions = new Set(state.session.account?.admin_permissions || []);
+          const type = state.workspace.adminLogType || "operations";
+          const permission = { operations: "admin.logs.operations.read", security: "admin.logs.security.read", tasks: "admin.logs.tasks.read" }[type];
+          const rows = state.workspace.data.admin.logs?.[type] || [];
+          const canExport = accountPermissions.has("admin.logs.export");
+          const selectedLog = state.workspace.selectedLog;
+          const exportNotice = state.workspace.lastLogExport ? `<div class="callout success" style="margin-bottom:18px">日志导出已生成：${esc(state.workspace.lastLogExport.id)} · <a href="/api/v1/admin/log-exports/${esc(state.workspace.lastLogExport.id)}/file" target="_blank" rel="noreferrer">下载 JSON</a></div>` : "";
+          const detail = selectedLog ? `<section class="card" style="margin-bottom:18px"><div class="card-head"><div><h3>日志详情</h3><p>${esc(selectedLog.type)} · ${esc(selectedLog.item?.id || "")}</p></div><button class="button link-button small" data-action="close-log">收起</button></div><div class="card-body"><pre class="raw-report">${esc(json(selectedLog.item))}</pre></div></section>` : "";
+          return `${heading("ADMIN LOGS", "日志管理", "操作、安全和任务日志分开授权；详情只展示必要元数据，导出文件同样受权限保护。", `${canExport ? `<button class="button outline small" data-action="export-logs">导出当前日志</button>` : ""}<button class="button outline small" data-action="refresh">刷新</button>`)}${exportNotice}${detail}<div class="admin-tabs">${["operations", "security", "tasks"].map((item) => `<button class="button admin-tab ${type === item ? "active" : ""}" data-action="admin-log-type" data-log-type="${item}" ${accountPermissions.has({ operations: "admin.logs.operations.read", security: "admin.logs.security.read", tasks: "admin.logs.tasks.read" }[item]) ? "" : "disabled"}>${item === "operations" ? "操作" : item === "security" ? "安全" : "任务"}</button>`).join("")}</div>${accountPermissions.has(permission) ? `<section class="card"><div class="card-head"><div><h3>${esc(type)} 日志</h3><p>${esc(String(rows.length))} 条最近记录。</p></div></div><div class="card-body">${rows.length ? `<div class="admin-list">${rows.map((item) => logRow(type, item)).join("")}</div>` : `<div class="empty"><div><strong>暂无日志</strong><p>完成一次操作后会留下必要的元数据。</p></div></div>`}</div></section>` : `<div class="empty"><div><strong>没有该日志类型的权限</strong><p>请切换到当前管理员可以读取的日志。</p></div></div>`}`;
         }
 
         function render() {
@@ -852,10 +1022,19 @@
           const jobs = [
             ["documents", "/api/v1/documents"],
             ["analyses", "/api/v1/analyses"],
+            ["tasks", "/api/v1/tasks"],
             ["usage", "/api/v1/usage"],
             ["stats", "/api/v1/stats/me"],
           ];
-          if (seeker) jobs.push(["preferences", "/api/v1/preferences"], ["pool", "/api/v1/job-pool/items"], ["interviews", "/api/v1/interviews"], ["variants", "/api/v1/resumes"]);
+          if (seeker) jobs.push(["preferences", "/api/v1/preferences"], ["facts", "/api/v1/facts"], ["pool", "/api/v1/job-pool/items"], ["interviews", "/api/v1/interviews"], ["variants", "/api/v1/resumes"]);
+          const permissions = new Set(state.session.account.admin_permissions || []);
+          if (permissions.has("admin.stats.read")) jobs.push(["admin_metrics", "/api/v1/admin/metrics"], ["admin_costs", "/api/v1/admin/costs"], ["admin_feedback", "/api/v1/admin/feedback"]);
+          if (permissions.has("admin.users.read")) jobs.push(["admin_users", "/api/v1/admin/users"]);
+          if (permissions.has("admin.roles.manage")) jobs.push(["admin_roles", "/api/v1/admin/roles"]);
+          if (permissions.has("admin.usage.grant")) jobs.push(["admin_grants", "/api/v1/admin/usage-grants"]);
+          if (permissions.has("admin.logs.operations.read")) jobs.push(["admin_log_operations", "/api/v1/admin/logs/operations"]);
+          if (permissions.has("admin.logs.security.read")) jobs.push(["admin_log_security", "/api/v1/admin/logs/security"]);
+          if (permissions.has("admin.logs.tasks.read")) jobs.push(["admin_log_tasks", "/api/v1/admin/logs/tasks"]);
           const results = await Promise.all(jobs.map(async ([name, path]) => {
             try { return { name, value: await request(path, { formal: true }) }; }
             catch (error) { return { name, error }; }
@@ -865,7 +1044,23 @@
           for (const item of results) {
             if (item.error) { failures.push(item.error instanceof ApiError ? item.error.message : "部分数据读取失败"); continue; }
             if (item.name === "usage" || item.name === "stats") state.workspace.data[item.name] = item.value;
-            else state.workspace.data[item.name] = item.value?.items || [];
+            else if (item.name.startsWith("admin_")) {
+              const admin = state.workspace.data.admin;
+              if (item.name === "admin_metrics" || item.name === "admin_costs") admin[item.name.slice(6)] = item.value;
+              else if (item.name === "admin_log_operations" || item.name === "admin_log_security" || item.name === "admin_log_tasks") admin.logs[item.name.slice(10)] = item.value?.items || [];
+              else admin[item.name.slice(6)] = item.value?.items || [];
+            } else state.workspace.data[item.name] = item.value?.items || [];
+          }
+          if (!seeker) {
+            const candidate = state.workspace.data.documents.find((item) => item.document_type === "resume" && item.subject_type === "candidate_resume" && item.latest_version);
+            if (candidate) {
+              try {
+                const preferenceResult = await request(`/api/v1/preferences?subject_document_id=${encodeURIComponent(candidate.id)}`, { formal: true });
+                state.workspace.data.preferences = preferenceResult?.items || [];
+              } catch (error) {
+                failures.push(error instanceof ApiError ? error.message : "候选人岗位期望读取失败");
+              }
+            }
           }
           state.workspace.loaded = true;
           state.workspace.loading = false;
@@ -890,20 +1085,50 @@
           return { document: created, version };
         }
 
-        async function savePreference(form) {
-          const values = new FormData(form);
-          const min = Number(values.get("min_salary"));
-          const max = Number(values.get("max_salary"));
+        function preferenceContentFromForm(values) {
+          const minK = Number(values.get("min_salary"));
+          const maxK = Number(values.get("max_salary"));
+          if (!Number.isFinite(minK) || !Number.isFinite(maxK) || minK < 0 || maxK < minK) throw new Error("请检查薪资上下限");
           const title = String(values.get("job_title") || "").trim();
           const location = String(values.get("location") || "").trim();
           const mode = String(values.get("work_mode") || "onsite");
-          const content = {
+          if (!title || !location) throw new Error("岗位和地点不能为空");
+          return {
             job_title: { status: "specified", value: title, strength: "prefer" },
             locations: { status: "specified", values: location.split(/[、,，/／|]/).map((item) => item.trim()).filter(Boolean), strength: "prefer" },
             work_mode: { status: "specified", value: mode, strength: "prefer" },
-            salary: { status: "specified", min, max, currency: "CNY", period: "monthly", tax_basis: "pre_tax", salary_months: 12, strength: "prefer" },
+            salary: { status: "specified", min: minK * 1000, max: maxK * 1000, currency: "CNY", period: "monthly", tax_basis: "pre_tax", salary_months: 12, strength: "prefer" },
           };
-          await request("/api/v1/preferences", { method: "POST", formal: true, idempotencyKey: key("preference"), body: { display_name: `${title} · ${location}`, context: "self", is_default: true, preference: content } });
+        }
+
+        async function savePreference(form) {
+          const values = new FormData(form);
+          const content = preferenceContentFromForm(values);
+          const subjectId = String(values.get("subject_document_id") || "").trim();
+          const data = await request("/api/v1/preferences", { method: "POST", formal: true, idempotencyKey: key("preference"), body: { display_name: `${content.job_title.value} · ${content.locations.values.join("、")}`, context: subjectId ? "candidate" : "self", ...(subjectId ? { subject_document_id: subjectId } : {}), is_default: true, preference: content } });
+          if (subjectId) {
+            state.workspace.recruiterSubjectId = subjectId;
+            state.workspace.data.preferences = [...state.workspace.data.preferences.filter((item) => item.subject_document_id !== subjectId), data];
+          }
+        }
+
+        async function saveFact(form) {
+          const source = state.workspace.rewriteSource;
+          if (!source?.document?.id || !source?.version?.id) throw new Error("当前简历版本不可用，请刷新报告后重试");
+          const values = new FormData(form);
+          const data = await request("/api/v1/facts", { method: "POST", formal: true, idempotencyKey: key("fact"), body: { document_id: source.document.id, source_document_version_id: source.version.id, source_segment_key: String(values.get("source_segment_key") || ""), fact_category: String(values.get("fact_category") || "事实").trim(), fact_text: String(values.get("fact_text") || "").trim(), source_type: "user_added" } });
+          state.workspace.data.facts = [data, ...state.workspace.data.facts.filter((item) => item.id !== data.id)];
+        }
+
+        async function createRewrite(form) {
+          const analysis = state.workspace.selectedAnalysis;
+          const source = state.workspace.rewriteSource;
+          const segmentKeys = [...document.querySelectorAll("input[data-rewrite-segment]:checked")].map((node) => node.dataset.rewriteSegment).filter(Boolean);
+          state.workspace.rewriteSegmentKeys = segmentKeys;
+          if (!analysis || !source?.version?.id || !segmentKeys.length) throw new Error("至少选择一个简历段落");
+          const factVersionIds = [...form.querySelectorAll("input[data-rewrite-fact]:checked")].map((node) => node.value).filter(Boolean);
+          const data = await request("/api/v1/rewrites", { method: "POST", formal: true, idempotencyKey: key("rewrite"), body: { analysis_id: analysis.id, source_resume_version_id: source.version.id, segment_keys: segmentKeys, fact_version_ids: factVersionIds, confirm_usage: true } });
+          state.workspace.selectedRewrite = data.rewrite;
         }
 
         async function savePool(form) {
@@ -967,12 +1192,125 @@
           }
         }
 
-        async function createVariant() {
+        async function openRewrite() {
+          const analysis = state.workspace.selectedAnalysis;
+          const resumeRef = analysis?.input_versions?.find((item) => item && item.type === "resume");
+          const candidates = state.workspace.data.documents.filter((item) => item.document_type === "resume");
+          if (!analysis || !resumeRef || !candidates.length) throw new Error("当前报告没有可读取的简历版本");
+          state.workspace.loading = true;
+          state.workspace.error = "";
+          render();
+          try {
+            let document = candidates.find((item) => item.latest_version?.id === resumeRef.id) || null;
+            let detail = null;
+            for (const candidate of document ? [document] : candidates) {
+              try {
+                const candidateDetail = await request(`/api/v1/documents/${encodeURIComponent(candidate.id)}?version_id=${encodeURIComponent(resumeRef.id)}`, { formal: true });
+                if (candidateDetail.version?.id === resumeRef.id) { document = candidate; detail = candidateDetail; break; }
+              } catch (error) {
+                if (!(error instanceof ApiError) || error.status !== 404) throw error;
+              }
+            }
+            if (!document || !detail) throw new Error("当前报告引用的简历版本已不可用，请刷新后重试");
+            if (!detail.version) throw new Error("简历版本已不可用，请刷新后重试");
+            state.workspace.rewriteSource = { document, version: detail.version };
+            state.workspace.rewriteSegmentKeys = [];
+            state.workspace.selectedRewrite = null;
+            state.workspace.page = "rewrite";
+          } catch (error) {
+            state.workspace.error = error instanceof ApiError ? error.message : error.message || "改写入口读取失败";
+          } finally {
+            state.workspace.loading = false;
+            render();
+          }
+        }
+
+        async function openTask(id) {
+          state.workspace.loading = true;
+          state.workspace.error = "";
+          render();
+          try {
+            const sameTask = state.workspace.selectedTask?.id === id;
+            const result = await requestDetailed(`/api/v1/tasks/${encodeURIComponent(id)}`, { formal: true, headers: sameTask && state.workspace.selectedTaskEtag ? { "If-None-Match": state.workspace.selectedTaskEtag } : {} });
+            if (result.response.status !== 304) {
+              state.workspace.selectedTask = result.data;
+              state.workspace.selectedTaskEtag = result.response.headers.get("ETag") || "";
+            }
+            state.workspace.page = "tasks";
+          } catch (error) {
+            state.workspace.error = error instanceof ApiError ? error.message : error.message || "任务读取失败";
+          } finally {
+            state.workspace.loading = false;
+            render();
+          }
+        }
+
+        async function retryTask(id) {
+          const data = await request(`/api/v1/tasks/${encodeURIComponent(id)}/retry`, { method: "POST", formal: true, idempotencyKey: key("task-retry"), body: { reason: "演示现场重试" } });
+          state.workspace.selectedTask = data.task;
+          state.workspace.selectedTaskEtag = "";
+          state.workspace.page = "tasks";
+          await loadWorkspace(true);
+        }
+
+        async function deleteResource(path, label) {
+          const impactResult = await requestDetailed(`${path}/deletion-impact`, { formal: true });
+          const impact = impactResult.data || {};
+          const affected = Object.entries(impact.affected || {}).map(([name, count]) => `${name}: ${count}`).join("，") || "无关联记录";
+          const confirmed = window.confirm(`确认删除${label}？\n\n删除影响快照：${affected}\n\n删除后旧入口将不可读取。`);
+          if (!confirmed) return false;
+          const etag = impactResult.response.headers.get("ETag");
+          if (!etag) throw new Error("删除影响快照缺少 ETag，请刷新后重试");
+          await requestDetailed(path, { method: "DELETE", formal: true, headers: { "If-Match": etag } });
+          return true;
+        }
+
+        async function goToApply(id, clickToken) {
+          if (!clickToken) throw new Error("去投递令牌已失效，请刷新岗位详情");
+          const targetUrl = state.workspace.selectedPool?.id === id ? state.workspace.selectedPool.source_url : "";
+          if (!targetUrl) throw new Error("岗位原始链接不可用，请刷新岗位详情");
+          const tab = window.open("about:blank", "_blank");
+          try {
+            const response = await fetch(`/api/v1/job-pool/items/${encodeURIComponent(id)}/go-to-apply`, { ...requestInit({ method: "POST", formal: true, idempotencyKey: key("apply"), body: { click_token: clickToken } }), redirect: "manual" });
+            if (response.status !== 303 && response.type !== "opaqueredirect") {
+              let payload = null;
+              try { payload = await response.json(); } catch (_) {}
+              const error = payload?.error || {};
+              throw new ApiError(response.status, error.code || "APPLY_FAILED", error.message || "去投递失败", error.action);
+            }
+            if (tab && !tab.closed) tab.location.href = targetUrl;
+            else window.location.assign(targetUrl);
+          } catch (error) {
+            if (tab && !tab.closed) tab.close();
+            throw error;
+          }
+        }
+
+        async function decideRewrite(actionNode) {
+          const rewriteId = actionNode.dataset.rewriteId;
+          const segmentId = actionNode.dataset.segmentId;
+          const decision = actionNode.dataset.decision;
+          const payload = { decision, base_decision_no: Number(actionNode.dataset.baseDecisionNo || 0) };
+          if (decision === "edited") payload.edited_text = String(document.getElementById(actionNode.dataset.editId)?.value || "").trim();
+          const data = await request(`/api/v1/rewrites/${encodeURIComponent(rewriteId)}/segments/${encodeURIComponent(segmentId)}/decisions`, { method: "POST", formal: true, idempotencyKey: key("rewrite-decision"), body: payload });
+          state.workspace.selectedRewrite = data.rewrite;
+          setToast("改写决定已保存");
+        }
+
+        async function createVariantFromRewrite() {
+          const rewrite = state.workspace.selectedRewrite;
+          if (!rewrite || rewrite.status !== "available") throw new Error("改写结果尚未完成");
+          await createVariant(rewrite.id);
+          setToast("已用采用结果创建岗位版简历");
+          await loadWorkspace(true);
+        }
+
+        async function createVariant(rewriteId = null) {
           const analysis = state.workspace.selectedAnalysis;
           const pool = state.workspace.selectedPool || findPoolForAnalysis(analysis?.id);
           const resumeId = analysis?.input_versions?.find((item) => item && item.type === "resume")?.id || pool?.resume_version_id;
           if (!analysis || !pool || !resumeId) throw new Error("当前报告缺少可用的岗位或简历版本");
-          const data = await request("/api/v1/resumes", { method: "POST", formal: true, idempotencyKey: key("variant"), body: { job_pool_item_id: pool.id, source_resume_version_id: resumeId, title: `${pool.job_title || "岗位"} · 岗位版简历` } });
+          const data = await request("/api/v1/resumes", { method: "POST", formal: true, idempotencyKey: key("variant"), body: { job_pool_item_id: pool.id, source_resume_version_id: resumeId, title: `${pool.job_title || "岗位"} · 岗位版简历`, ...(rewriteId ? { rewrite_id: rewriteId } : {}) } });
           state.workspace.selectedVariant = data;
           state.workspace.page = "variants";
         }
@@ -1021,6 +1359,76 @@
           await request("/api/v1/feedback", { method: "POST", formal: true, idempotencyKey: key("feedback"), body: { feedback_type: String(values.get("feedback_type")), content: String(values.get("content") || "").trim(), rating: Number(values.get("rating")) } });
         }
 
+        async function searchAdminUsers(form) {
+          const values = new FormData(form);
+          const params = new URLSearchParams();
+          const search = String(values.get("search") || "").trim();
+          const registrationRole = String(values.get("registration_role") || "");
+          if (search) params.set("search", search);
+          if (registrationRole) params.set("registration_role", registrationRole);
+          const result = await request(`/api/v1/admin/users${params.toString() ? `?${params.toString()}` : ""}`, { formal: true });
+          state.workspace.data.admin.users = result?.items || [];
+          state.workspace.error = "";
+          render();
+        }
+
+        async function toggleUserStatus(id, currentStatus) {
+          const detail = await request(`/api/v1/admin/users/${encodeURIComponent(id)}`, { formal: true });
+          const account = detail.account || {};
+          const nextStatus = currentStatus === "suspended" ? "active" : "suspended";
+          if (!window.confirm(`确认将该账号${nextStatus === "suspended" ? "暂停" : "恢复"}？`)) return;
+          await request(`/api/v1/admin/users/${encodeURIComponent(id)}/status`, { method: "PUT", formal: true, idempotencyKey: key("admin-user-status"), body: { status: nextStatus, reason: nextStatus === "suspended" ? "演示管理员操作" : "演示管理员恢复", base_revision: account.revision } });
+          setToast(nextStatus === "suspended" ? "账号已暂停" : "账号已恢复");
+          await loadWorkspace(true);
+        }
+
+        async function saveAdminRole(form) {
+          const values = new FormData(form);
+          const roleId = String(values.get("role_id") || "").trim();
+          const payload = {
+            name: String(values.get("name") || "").trim(),
+            description: String(values.get("description") || "").trim(),
+            status: String(values.get("status") || "active"),
+            permission_keys: values.getAll("permission_keys").map((item) => String(item)),
+            reason: roleId ? "更新演示后台角色" : "创建演示后台角色",
+          };
+          const selected = roleId ? state.workspace.data.admin.roles.find((item) => item.id === roleId) : null;
+          if (roleId) payload.base_revision = selected?.revision;
+          const data = await request(roleId ? `/api/v1/admin/roles/${encodeURIComponent(roleId)}` : "/api/v1/admin/roles", { method: roleId ? "PUT" : "POST", formal: true, idempotencyKey: key("admin-role"), body: payload });
+          state.workspace.selectedRole = data;
+          setToast(roleId ? "后台角色已更新" : "后台角色已创建");
+          await loadWorkspace(true);
+        }
+
+        async function grantUsage(form) {
+          const values = new FormData(form);
+          const userId = String(values.get("user_id") || "").trim();
+          if (!userId) throw new Error("请选择目标账号");
+          const data = await request(`/api/v1/admin/users/${encodeURIComponent(userId)}/usage-grants`, { method: "POST", formal: true, idempotencyKey: key("admin-grant"), body: { feature: String(values.get("feature")), count: Number(values.get("count")), reason: String(values.get("reason") || "").trim() } });
+          setToast(`已发放 ${data.grant?.count || 0} 次${data.grant?.feature || ""}`);
+          await loadWorkspace(true);
+        }
+
+        async function cycleFeedback(id, currentStatus) {
+          const nextStatus = { new: "reviewing", reviewing: "closed", closed: "new" }[currentStatus] || "reviewing";
+          await request(`/api/v1/admin/feedback/${encodeURIComponent(id)}`, { method: "PUT", formal: true, body: { status: nextStatus } });
+          setToast(`反馈状态已更新为 ${nextStatus}`);
+          await loadWorkspace(true);
+        }
+
+        async function openLog(type, id) {
+          const item = await request(`/api/v1/admin/logs/${encodeURIComponent(type)}/${encodeURIComponent(id)}`, { formal: true });
+          state.workspace.selectedLog = { type, item };
+          render();
+        }
+
+        async function exportLogs() {
+          const type = state.workspace.adminLogType || "operations";
+          const data = await request("/api/v1/admin/log-exports", { method: "POST", formal: true, idempotencyKey: key("log-export"), body: { log_type: type, filters: {} } });
+          state.workspace.lastLogExport = data;
+          setToast("日志导出已生成");
+        }
+
         async function handleFormalSubmit(form) {
           const button = form.querySelector("button[type=submit]");
           if (button) button.disabled = true;
@@ -1028,11 +1436,17 @@
             if (form.id === "auth-form") return await submitAuth(form);
             if (form.id === "formal-document-form") { await createFormalDocument(form); setToast("资料已确认，已生成不可变版本"); }
             else if (form.id === "preference-form") { await savePreference(form); setToast("岗位期望已保存为独立版本"); }
+            else if (form.id === "recruiter-preference-form") { await savePreference(form); setToast("候选人岗位期望已保存"); }
             else if (form.id === "pool-form") { await savePool(form); setToast("岗位已入池，分析结果已可恢复"); }
             else if (form.id === "recruiter-analysis-form") { await createRecruiterAnalysis(form); setToast("单人分析已创建"); }
+            else if (form.id === "fact-form") { await saveFact(form); form.reset(); setToast("事实已保存为 version 1"); }
+            else if (form.id === "rewrite-form") { await createRewrite(form); setToast("逐段改写建议已生成"); }
             else if (form.id === "variant-form") { const values = new FormData(form); const pool = state.workspace.data.pool.find((item) => item.id === values.get("pool_id")); if (!pool) throw new Error("岗位不存在，请刷新后重试"); const resumeId = pool.resume_version_id; if (!resumeId) throw new Error("该岗位还没有绑定简历版本"); const data = await request("/api/v1/resumes", { method: "POST", formal: true, idempotencyKey: key("variant"), body: { job_pool_item_id: pool.id, source_resume_version_id: resumeId, title: String(values.get("title") || "岗位版简历") } }); state.workspace.selectedVariant = data; setToast("岗位版简历版本已创建"); }
             else if (form.id === "answer-form") { await answerInterview(form); setToast("回答已保存，反馈已返回"); }
             else if (form.id === "feedback-form") { await sendFeedback(form); form.reset(); setToast("感谢反馈，已单独记录"); }
+            else if (form.id === "admin-user-search") return await searchAdminUsers(form);
+            else if (form.id === "admin-role-form") await saveAdminRole(form);
+            else if (form.id === "admin-grant-form") await grantUsage(form);
             await loadWorkspace(true);
           } catch (error) {
             state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "操作失败，请重试";
@@ -1072,15 +1486,31 @@
           if (action === "auth-role") { state.auth.role = actionNode.dataset.role; render(); return; }
           if (action === "logout") { void (async () => { try { await request("/api/v1/auth/logout", { method: "POST", formal: true }); } catch (_) {} clearSession(); state.screen = "demo"; setToast("已退出正式工作台"); })(); return; }
           if (action === "refresh") { void refreshWorkspace(); return; }
+          if (action === "open-task") { void openTask(actionNode.dataset.id); return; }
+          if (action === "close-task") { state.workspace.selectedTask = null; state.workspace.selectedTaskEtag = ""; render(); return; }
+          if (action === "retry-task") { void (async () => { try { await retryTask(actionNode.dataset.id); setToast("任务已重新排队"); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "任务重试失败"; render(); } })(); return; }
           if (action === "open-pool") { void openPool(actionNode.dataset.id); return; }
           if (action === "close-pool") { state.workspace.selectedPool = null; render(); return; }
           if (action === "open-analysis") { void openAnalysis(actionNode.dataset.id); return; }
+          if (action === "open-rewrite") { void (async () => { try { await openRewrite(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "改写入口打开失败"; render(); } })(); return; }
+          if (action === "decide-rewrite") { void (async () => { try { await decideRewrite(actionNode); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "改写决定保存失败"; render(); } })(); return; }
+          if (action === "create-variant-from-rewrite") { void (async () => { try { await createVariantFromRewrite(); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "岗位版创建失败"; render(); } })(); return; }
+          if (action === "go-apply") { void (async () => { try { await goToApply(actionNode.dataset.id, actionNode.dataset.token); setToast("已记录去投递点击"); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "去投递失败"; render(); } })(); return; }
+          if (["delete-document", "delete-pool", "delete-analysis"].includes(action)) { void (async () => { const resource = action === "delete-document" ? "documents" : action === "delete-pool" ? "job-pool/items" : "analyses"; const label = action === "delete-document" ? "资料" : action === "delete-pool" ? "岗位" : "报告"; try { const deleted = await deleteResource(`/api/v1/${resource}/${encodeURIComponent(actionNode.dataset.id)}`, label); if (!deleted) return; state.workspace.selectedPool = null; state.workspace.selectedAnalysis = null; state.workspace.selectedRewrite = null; state.workspace.rewriteSource = null; setToast(`${label}已删除`); await loadWorkspace(true); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || `${label}删除失败`; render(); } })(); return; }
           if (action === "create-variant") { void (async () => { try { await createVariant(); setToast("岗位版简历已创建"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error.message || "岗位版创建失败"; render(); } })(); return; }
           if (action === "export-variant") { void (async () => { try { await exportVariant(actionNode.dataset.versionId); setToast("PDF 导出已完成，可下载"); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message; render(); } })(); return; }
           if (action === "start-interview") { void (async () => { try { await startInterview(); setToast("面试会话已创建"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error.message || "面试创建失败"; render(); } })(); return; }
           if (action === "new-interview") { const candidate = state.workspace.data.pool.find((item) => item.latest_analysis && item.resume_version_id); if (candidate) void (async () => { try { await openAnalysis(candidate.latest_analysis.id); await startInterview(); setToast("面试会话已创建"); render(); } catch (error) { state.workspace.error = error.message || "面试创建失败"; render(); } })(); return; }
           if (action === "open-interview") { void openInterview(actionNode.dataset.id); return; }
           if (action === "finish-interview") { void (async () => { try { await finishInterview(actionNode.dataset.id); setToast("已生成练习总结"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message; render(); } })(); }
+          if (action === "cycle-feedback") { void (async () => { try { await cycleFeedback(actionNode.dataset.id, actionNode.dataset.status); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "反馈状态更新失败"; render(); } })(); return; }
+          if (action === "toggle-user-status") { void (async () => { try { await toggleUserStatus(actionNode.dataset.id, actionNode.dataset.status); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "账号状态更新失败"; render(); } })(); return; }
+          if (action === "select-role") { state.workspace.selectedRole = state.workspace.data.admin.roles.find((item) => item.id === actionNode.dataset.id) || null; render(); return; }
+          if (action === "clear-role") { state.workspace.selectedRole = null; render(); return; }
+          if (action === "open-log") { void (async () => { try { await openLog(actionNode.dataset.logType, actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "日志读取失败"; render(); } })(); return; }
+          if (action === "close-log") { state.workspace.selectedLog = null; render(); return; }
+          if (action === "admin-log-type") { state.workspace.adminLogType = actionNode.dataset.logType; state.workspace.selectedLog = null; render(); return; }
+          if (action === "export-logs") { void (async () => { try { await exportLogs(); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "日志导出失败"; render(); } })(); return; }
         });
 
         render();

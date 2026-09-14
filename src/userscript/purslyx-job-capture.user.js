@@ -16,7 +16,7 @@
   "use strict";
 
   // 生产部署只需替换这个地址；脚本不保存密码，也不把岗位正文写进日志。
-  const API_ORIGIN = "http://127.0.0.1:8000";
+  const API_ORIGIN = "http://127.0.0.1:8001";
   const DRAFT_KEY = "purslyx.pending-job-drafts.v1";
   const TOKEN_KEY = "purslyx.browser-token.v1";
   const seen = new Set();

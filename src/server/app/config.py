@@ -35,11 +35,12 @@ class Settings:
     )
     token_secret: str = field(default_factory=lambda: os.getenv("PURSLYX_TOKEN_SECRET", ""))
     product_origin: str = field(
-        default_factory=lambda: os.getenv("PURSLYX_PRODUCT_ORIGIN", "http://127.0.0.1:8000")
+        default_factory=lambda: os.getenv("PURSLYX_PRODUCT_ORIGIN", "http://127.0.0.1:8001")
     )
     allowed_origins: str = field(
         default_factory=lambda: os.getenv(
-            "PURSLYX_ALLOWED_ORIGINS", "http://127.0.0.1:8000,http://localhost:8000"
+            "PURSLYX_ALLOWED_ORIGINS",
+            "http://127.0.0.1:8001,http://localhost:8001,http://127.0.0.1:8000,http://localhost:8000",
         )
     )
     model_provider: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_PROVIDER", "local"))

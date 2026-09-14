@@ -17,7 +17,7 @@ from typing import Any
 import httpx
 
 
-BASE_URL = os.getenv("PURSLYX_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+BASE_URL = os.getenv("PURSLYX_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
 PASSWORD = "purslyx-smoke-password-2026"
 
 
@@ -41,7 +41,7 @@ def call(
     **kwargs: Any,
 ) -> tuple[httpx.Response, dict[str, Any]]:
     response = client.request(method, f"{BASE_URL}{path}", headers=headers, **kwargs)
-    body = response_body(response)
+    body = {} if response.status_code in {204, 304} else response_body(response)
     if response.status_code not in expected:
         error = body.get("error") or {}
         raise RuntimeError(
@@ -366,6 +366,15 @@ def main() -> None:
         report = data_of(report_body)
         if not report.get("report", {}).get("dimensions"):
             raise RuntimeError("报告没有能力维度和证据结果")
+        analysis_task_id = (analysis.get("task") or {}).get("id")
+        if not analysis_task_id:
+            raise RuntimeError("分析没有关联可读取的任务")
+        call(client, "GET", "/api/v1/tasks", headers=web_headers)
+        task_response, _ = call(client, "GET", f"/api/v1/tasks/{analysis_task_id}", headers=web_headers)
+        task_etag = task_response.headers.get("ETag")
+        if not task_etag:
+            raise RuntimeError("任务详情没有返回 ETag")
+        call(client, "GET", f"/api/v1/tasks/{analysis_task_id}", expected=(304,), headers={**web_headers, "If-None-Match": task_etag})
 
         segments = [
             segment
@@ -576,7 +585,13 @@ def main() -> None:
             },
         )
         deleted_id = data_of(delete_body)["id"]
-        call(client, "DELETE", f"/api/v1/documents/{deleted_id}", expected=(200,), headers=web_headers)
+        impact_response, impact_body = call(client, "GET", f"/api/v1/documents/{deleted_id}/deletion-impact", headers=web_headers)
+        if not data_of(impact_body).get("impact_version"):
+            raise RuntimeError("删除影响快照没有返回版本")
+        deletion_etag = impact_response.headers.get("ETag")
+        if not deletion_etag:
+            raise RuntimeError("删除影响快照没有返回 ETag")
+        call(client, "DELETE", f"/api/v1/documents/{deleted_id}", expected=(204,), headers={**web_headers, "If-Match": deletion_etag})
         assert_error(client, "GET", f"/api/v1/documents/{deleted_id}", 404, "RESOURCE_NOT_FOUND", headers=web_headers)
 
     print(
@@ -588,6 +603,7 @@ def main() -> None:
                 "confirmed_versions": 2,
                 "multipart_file_ready": True,
                 "analysis_status": analysis.get("status"),
+                "task_304": True,
                 "ability_score": analysis.get("ability_score"),
                 "evidence_coverage": analysis.get("evidence_coverage"),
                 "rewrite_status": rewrite.get("status"),

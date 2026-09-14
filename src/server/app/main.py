@@ -72,12 +72,19 @@ class MatchCreateRequest(BaseModel):
 def _meta(request: Request) -> dict[str, str]:
     """为所有响应生成轻量元信息，便于演示时追踪一次请求。"""
 
-    request_id = request.headers.get("X-Request-ID", "demo-request")
+    request_id = request.headers.get("X-Request-ID", "").strip()
+    if not request_id or len(request_id) > 64:
+        request_id = secrets.token_hex(12)
+    request.state.request_id = request_id
     return {"request_id": request_id, "server_time": utcnow().isoformat()}
 
 
 def _ok(request: Request, data: Any, *, code: int = status.HTTP_200_OK) -> JSONResponse:
-    return JSONResponse(status_code=code, content={"data": data, "meta": _meta(request)})
+    meta = _meta(request)
+    response = JSONResponse(status_code=code, content={"data": data, "meta": meta})
+    response.headers["X-Request-ID"] = meta["request_id"]
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
 
 
 def _error(request: Request, error: DomainError) -> JSONResponse:

@@ -520,6 +520,8 @@ class LogExport(Base):
     status: Mapped[str] = mapped_column(String(24), default="queued", nullable=False)
     file_path: Mapped[str | None] = mapped_column(String(1024))
     task_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 

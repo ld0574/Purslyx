@@ -70,16 +70,12 @@ Node.js 构建，邮件、Celery 和 Redis Worker 暂不阻塞演示。
 ```bash
 uv venv .venv
 uv pip install -e '.[test]'
-
-export DATABASE_URL='postgresql+psycopg://purslyx@10.10.10.201:5432/purslyx'
-export PGPASSWORD='<从 docs/02-technical/deployment/本地开发环境.md 读取>'
-export PURSLYX_TOKEN_SECRET='<至少 32 个随机字符>'
-export PURSLYX_DEBUG=true
-export PURSLYX_AUTO_VERIFY_LOCAL=true
-export PURSLYX_AUTO_CREATE_SCHEMA=true
-
-PYTHONPATH=src .venv/bin/uvicorn server.app.main:app --host 127.0.0.1 --port 8000
+scripts/start_201_local.sh
 ```
+
+启动脚本只从被 Git 忽略的 `docs/02-technical/deployment/本地开发环境.md` 读取
+PostgreSQL 密码并注入当前进程；默认监听 8001（如端口空闲，也可用
+`PURSLYX_PORT=8000 scripts/start_201_local.sh`）。
 
 另开终端执行：
 
@@ -88,5 +84,5 @@ PYTHONPATH=src .venv/bin/python scripts/smoke_201.py
 ```
 
 看到 `"database": {"backend": "postgresql"...}`、`"analysis_status": "available"` 即可
-进入浏览器打开 <http://127.0.0.1:8000/> 演示。完整的 201 连接约定见
+进入浏览器打开 <http://127.0.0.1:8001/> 演示。完整的 201 连接约定见
 [201 环境部署约定](docs/02-technical/deployment/201环境部署.md)。

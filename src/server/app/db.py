@@ -85,6 +85,7 @@ def _upgrade_early_demo_schema() -> None:
             "product_feedback": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
             "browser_job_drafts": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
             "interview_answers": ("request_hash", "VARCHAR(64)"),
+            "log_exports": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
         }
         for table_name, column_values in idempotency_columns.items():
             if table_name not in inspector.get_table_names():
