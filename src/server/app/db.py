@@ -104,6 +104,8 @@ def _upgrade_early_demo_schema() -> None:
                 ("reviewed_by_account_id", "INTEGER"),
                 ("reviewed_at", "TIMESTAMPTZ"),
             ),
+            "analysis_reports": (("preference_version_id", "INTEGER"),),
+            "task_outbox": (("claimed_by", "VARCHAR(120)"), ("claimed_at", "TIMESTAMPTZ")),
         }
         for table_name, column_values in additive_columns.items():
             if table_name not in inspector.get_table_names():
@@ -153,3 +155,26 @@ def _upgrade_early_demo_schema() -> None:
                 connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN metric_date SET NOT NULL"))
             if "target_url" in columns:
                 connection.execute(text("ALTER TABLE apply_click_events ALTER COLUMN target_url DROP NOT NULL"))
+        numeric_columns = {
+            "model_call_attempts": ("cost_usd",),
+            "site_budget_buckets": ("budget_usd", "reserved_usd", "settled_usd", "unknown_usd"),
+            "budget_reservations": ("upper_bound_usd", "actual_cost_usd"),
+        }
+        for table_name, column_names in numeric_columns.items():
+            if table_name not in inspector.get_table_names():
+                continue
+            column_info = {item["name"]: item for item in inspector.get_columns(table_name)}
+            for column_name in column_names:
+                if column_name in column_info and "numeric" not in str(column_info[column_name]["type"]).lower():
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "{table_name}" ALTER COLUMN "{column_name}" '
+                            "TYPE NUMERIC(20,8) USING "
+                            f'"{column_name}"::numeric'
+                        )
+                    )
+        if "budget_reservations" in inspector.get_table_names():
+            columns = {item["name"] for item in inspector.get_columns("budget_reservations")}
+            if "call_key" not in columns:
+                connection.execute(text("ALTER TABLE budget_reservations ADD COLUMN call_key VARCHAR(160)"))
+                connection.execute(text("CREATE UNIQUE INDEX IF NOT EXISTS uk_budget_reservation_call_key ON budget_reservations(call_key) WHERE call_key IS NOT NULL"))

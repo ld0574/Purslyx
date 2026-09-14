@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import Account, AdminPermission, AdminRole, AccountRole, RolePermission
+from .models import Account, AdminPermission, AdminRole, AccountRole, ModelPriceVersion, RolePermission
 from .security import hash_password, normalize_email
 
 
@@ -72,3 +73,47 @@ def seed_permissions(db: Session) -> None:
             db.flush()
         if db.scalar(select(AccountRole).where(AccountRole.account_id == account.id, AccountRole.role_id == role.id)) is None:
             db.add(AccountRole(account_id=account.id, role_id=role.id))
+
+    seed_model_prices(db)
+
+
+def seed_model_prices(db: Session) -> None:
+    """种入本地零成本价格；外部模型只有显式配置价格才允许调用。"""
+
+    provider = settings.model_provider.strip().lower()
+    values = {
+        "input": settings.model_input_usd_per_million,
+        "cached": settings.model_cached_input_usd_per_million,
+        "output": settings.model_output_usd_per_million,
+    }
+    if provider == "local":
+        values = {"input": "0", "cached": "0", "output": "0"}
+    if any(not value.strip() for value in values.values()):
+        return
+    try:
+        parsed = {key: Decimal(value) for key, value in values.items()}
+    except (InvalidOperation, ValueError):
+        return
+    if any(value < 0 or not value.is_finite() for value in parsed.values()):
+        return
+    current = datetime.now(timezone.utc)
+    existing = db.scalar(
+        select(ModelPriceVersion).where(
+            ModelPriceVersion.provider == provider,
+            ModelPriceVersion.model == settings.model_name,
+            ModelPriceVersion.effective_to.is_(None),
+        )
+    )
+    if existing is None:
+        db.add(
+            ModelPriceVersion(
+                provider=provider,
+                model=settings.model_name,
+                input_usd_per_million=parsed["input"],
+                cached_input_usd_per_million=parsed["cached"],
+                output_usd_per_million=parsed["output"],
+                source_url="local://configured-runtime-price" if provider == "local" else "runtime-config",
+                verified_on=current.date().isoformat(),
+                effective_from=current,
+            )
+        )

@@ -78,6 +78,10 @@ class Settings:
     )
     model_provider: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_PROVIDER", "local"))
     model_name: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL", "gpt-5.6-luna"))
+    execution_mode: str = field(default_factory=lambda: os.getenv("PURSLYX_EXECUTION_MODE", "inline").strip().lower())
+    model_input_usd_per_million: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_INPUT_USD_PER_MILLION", ""))
+    model_cached_input_usd_per_million: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_CACHED_INPUT_USD_PER_MILLION", ""))
+    model_output_usd_per_million: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_OUTPUT_USD_PER_MILLION", ""))
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY"))
     openai_base_url: str | None = field(default_factory=lambda: os.getenv("OPENAI_BASE_URL"))
     smtp_host: str | None = field(default_factory=lambda: os.getenv("SMTP_HOST"))
@@ -112,6 +116,12 @@ class Settings:
 
         if not self.token_secret or len(self.token_secret) < 32:
             raise RuntimeError("PURSLYX_TOKEN_SECRET 至少需要 32 个字符。")
+
+    def require_execution_mode(self) -> None:
+        """只允许已实现的本地执行模式，避免拼写错误导致任务永久排队。"""
+
+        if self.execution_mode not in {"inline", "worker"}:
+            raise RuntimeError("PURSLYX_EXECUTION_MODE 只能是 inline 或 worker。")
 
     @property
     def origins(self) -> list[str]:

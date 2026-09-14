@@ -62,7 +62,7 @@ Purslyx/
 当前先交付一条能落地的纵向切片：提交简历文字和岗位 JD → 确认不可变资料版本 → 生成
 带证据、覆盖率和条件状态的匹配报告。根路径页面使用隔离的 `/api/v1/demo` 短入口，
 正式链路使用带认证的 `/api/v1` 接口，并由 `scripts/smoke_201.py` 复核；页面不需要
-Node.js 构建，邮件、Celery 和 Redis Worker 暂不阻塞演示。
+Node.js 构建，默认内联执行不阻塞演示，也可以切换到同一 PostgreSQL outbox 的本地 Worker。
 
 数据库固定直连【本地开发环境.md】中的 201 PostgreSQL，禁止 SQLite。密码不要拼进 URL（本
 地密码含 URL 特殊字符），用 `PGPASSWORD` 注入：
@@ -86,3 +86,20 @@ PYTHONPATH=src .venv/bin/python scripts/smoke_201.py
 看到 `"database": {"backend": "postgresql"...}`、`"analysis_status": "available"` 即可
 进入浏览器打开 <http://127.0.0.1:8001/> 演示。完整的 201 连接约定见
 [201 环境部署约定](docs/02-technical/deployment/201环境部署.md)。
+
+如需现场展示 queued → running → succeeded 的异步 SDD 流程，另开两个终端：
+
+```bash
+# 终端 A：启动只负责受理任务的 HTTP 服务
+PURSLYX_EXECUTION_MODE=worker scripts/start_201_local.sh
+# 终端 B：持续处理 outbox
+PYTHONPATH=src .venv/bin/python scripts/worker_201.py
+```
+
+Worker 同样只读取 `本地开发环境.md`，也可用下面的一次性验收脚本替代终端 B：
+
+```bash
+PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_201.py
+```
+
+演示结束后恢复为不设置 `PURSLYX_EXECUTION_MODE` 的默认内联模式即可。

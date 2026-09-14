@@ -34,3 +34,14 @@ def test_other_postgres_host_is_rejected() -> None:
         assert "201" in str(exc)
     else:
         raise AssertionError("the demo must stay on the 201 PostgreSQL host")
+
+
+def test_execution_mode_is_explicit() -> None:
+    Settings(execution_mode="inline").require_execution_mode()
+    Settings(execution_mode="worker").require_execution_mode()
+    try:
+        Settings(execution_mode="queue").require_execution_mode()
+    except RuntimeError as exc:
+        assert "inline" in str(exc)
+    else:
+        raise AssertionError("unsupported execution mode must be rejected")

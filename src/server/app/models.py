@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -324,6 +325,8 @@ class Analysis(TimestampMixin, Base):
     resume_version_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     job_version_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     preference_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    # 分析必须冻结具体的岗位期望版本，不能只指向会继续变化的父记录。
+    preference_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
     job_category: Mapped[str] = mapped_column(String(32), default="general", nullable=False)
     ability_score: Mapped[float | None] = mapped_column(Float)
     evidence_coverage: Mapped[float | None] = mapped_column(Float)
@@ -488,7 +491,7 @@ class ModelCall(Base):
     status: Mapped[str] = mapped_column(String(24), nullable=False)
     input_tokens: Mapped[int | None] = mapped_column(Integer)
     output_tokens: Mapped[int | None] = mapped_column(Integer)
-    cost_usd: Mapped[float | None] = mapped_column(Float)
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     error_code: Mapped[str | None] = mapped_column(String(80))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
@@ -823,9 +826,9 @@ class ModelPriceVersion(Base):
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
     provider: Mapped[str] = mapped_column(String(80), nullable=False)
     model: Mapped[str] = mapped_column(String(120), nullable=False)
-    input_usd_per_million: Mapped[float | None] = mapped_column(Float)
-    cached_input_usd_per_million: Mapped[float | None] = mapped_column(Float)
-    output_usd_per_million: Mapped[float | None] = mapped_column(Float)
+    input_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    cached_input_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    output_usd_per_million: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     source_url: Mapped[str | None] = mapped_column(String(1024))
     verified_on: Mapped[str | None] = mapped_column(String(10))
     effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -840,10 +843,10 @@ class SiteBudgetBucket(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     metric_date: Mapped[str] = mapped_column(String(10), nullable=False)
-    budget_usd: Mapped[float] = mapped_column(Float, nullable=False)
-    reserved_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
-    settled_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
-    unknown_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    budget_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    reserved_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    settled_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
+    unknown_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), default=0, nullable=False)
     concurrent_reserved: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     concurrent_limit: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
@@ -860,8 +863,9 @@ class BudgetReservation(Base):
     task_id: Mapped[int | None] = mapped_column(Integer, index=True)
     model_call_id: Mapped[int | None] = mapped_column(Integer, index=True)
     metric_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
-    upper_bound_usd: Mapped[float] = mapped_column(Float, nullable=False)
-    actual_cost_usd: Mapped[float | None] = mapped_column(Float)
+    call_key: Mapped[str | None] = mapped_column(String(160), unique=True, index=True)
+    upper_bound_usd: Mapped[Decimal] = mapped_column(Numeric(20, 8), nullable=False)
+    actual_cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     status: Mapped[str] = mapped_column(String(24), default="reserved", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -893,6 +897,8 @@ class TaskOutbox(Base):
     status: Mapped[str] = mapped_column(String(24), default="pending", nullable=False)
     attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    claimed_by: Mapped[str | None] = mapped_column(String(120), index=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 

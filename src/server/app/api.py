@@ -29,6 +29,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from .budget import settle_budget
 from .config import settings
 from .db import get_db
 from .errors import DomainError, NotFoundError
@@ -46,6 +47,7 @@ from .models import (
     AnalysisRequirementResult,
     AuditEvent,
     ApplyClick,
+    BudgetReservation,
     BrowserAuthCode,
     BrowserJobDraft,
     BrowserSession,
@@ -80,10 +82,12 @@ from .models import (
     StoredFile,
     Task,
     TaskAttempt,
+    TaskInputRef,
     TaskOutbox,
     UsageGrant,
     UsageLedger,
     UsageReservation,
+    WorkflowCheckpointRef,
     WebSession,
 )
 from .parsing import MAX_FILE_BYTES, MAX_TEXT_CHARS, detect_source_type, extract_file_text, normalize_text, parse_job_text, sha256_bytes
@@ -473,6 +477,140 @@ def _no_content(request: Request) -> Response:
         status_code=204,
         headers={"X-Request-ID": meta["request_id"], "Cache-Control": "private, no-store"},
     )
+
+
+def _task_references(task: Task, resource_ids: set[str]) -> bool:
+    """在任务冻结输入中查找资源，避免用 JSON SQL 表达式绕过版本边界。"""
+
+    data = task.input_data if isinstance(task.input_data, dict) else {}
+    direct_keys = (
+        "document_id",
+        "resume_version_id",
+        "job_version_id",
+        "preference_version_id",
+        "analysis_id",
+        "rewrite_id",
+        "interview_id",
+        "job_pool_item_id",
+        "resume_variant_version_id",
+    )
+    if any(str(data.get(key)) in resource_ids for key in direct_keys if data.get(key)):
+        return True
+    for value in data.get("fact_version_ids") or []:
+        if str(value) in resource_ids:
+            return True
+    for value in data.get("input_versions") or []:
+        if isinstance(value, dict) and str(value.get("resource_id")) in resource_ids:
+            return True
+    return False
+
+
+def _mark_tasks_cancelled(
+    db: Session,
+    account_id: int,
+    *,
+    resource_ids: set[str],
+    task_ids: set[int] | None = None,
+    reason: str,
+) -> set[int]:
+    """立即撤销任务可见性并释放仍未结算的功能次数。"""
+
+    candidates = db.scalars(
+        select(Task).where(
+            Task.account_id == account_id,
+            Task.status.in_(["queued", "running", "retry_wait"]),
+            Task.deleted_at.is_(None),
+        )
+    ).all()
+    selected = {
+        task.id
+        for task in candidates
+        if (task_ids and task.id in task_ids) or _task_references(task, resource_ids)
+    }
+    selected_tasks = [task for task in candidates if task.id in selected]
+    revoked_at = now_utc()
+    for task in selected_tasks:
+        task.status = "cancelled"
+        task.current_step = "cancelled"
+        task.failure = {"code": "TASK_SOURCE_DELETED", "message": reason, "retryable": False}
+        task.completed_at = revoked_at
+        for attempt in db.scalars(
+            select(TaskAttempt).where(TaskAttempt.task_id == task.id, TaskAttempt.status.in_(["queued", "running"]))
+        ).all():
+            attempt.status = "cancelled"
+            attempt.error_code = "TASK_SOURCE_DELETED"
+            attempt.finished_at = revoked_at
+        reservation = db.scalar(
+            select(UsageReservation).where(
+                UsageReservation.task_id == task.id,
+                UsageReservation.status == "reserved",
+            )
+        )
+        if reservation is not None:
+            release_feature(db, reservation.id, reason)
+        # 删除期间若外部模型已经发出，预算只能按未知成本持有；本地模型上界为零。
+        for budget in db.scalars(
+            select(BudgetReservation).where(
+                BudgetReservation.task_id == task.id,
+                BudgetReservation.status == "reserved",
+            )
+        ).all():
+            settle_budget(db, budget.id, None)
+        db.query(TaskOutbox).filter(
+            TaskOutbox.task_id == task.id,
+            TaskOutbox.status.in_(["pending", "claimed"]),
+        ).update(
+            {
+                TaskOutbox.status: "published",
+                TaskOutbox.claimed_by: None,
+                TaskOutbox.claimed_at: None,
+                TaskOutbox.published_at: revoked_at,
+            },
+            synchronize_session=False,
+        )
+        db.query(WorkflowCheckpointRef).filter(
+            WorkflowCheckpointRef.task_id == task.id,
+            WorkflowCheckpointRef.content_access_revoked_at.is_(None),
+        ).update({WorkflowCheckpointRef.content_access_revoked_at: revoked_at}, synchronize_session=False)
+    db.flush()
+    return selected
+
+
+def _mark_files_deleted(
+    db: Session,
+    account_id: int,
+    *,
+    storage_keys: set[str],
+    purposes: set[str] | None = None,
+) -> list[Path]:
+    """先标记私有文件，再返回事务提交后可安全删除的精确路径。"""
+
+    if not storage_keys:
+        return []
+    conditions = [
+        StoredFile.account_id == account_id,
+        StoredFile.status == "available",
+        StoredFile.deleted_at.is_(None),
+    ]
+    if purposes:
+        conditions.append(StoredFile.purpose.in_(purposes))
+    if storage_keys:
+        conditions.append(StoredFile.storage_key.in_(storage_keys))
+    rows = db.scalars(select(StoredFile).where(*conditions)).all()
+    paths: list[Path] = []
+    for row in rows:
+        paths.append(private_path(row.storage_key, settings.data_dir))
+        row.status = "deleted"
+        row.deleted_at = now_utc()
+    db.flush()
+    return list(dict.fromkeys(paths))
+
+
+def _unlink_after_commit(paths: list[Path]) -> None:
+    """只清理已通过私有根目录校验的文件；缺失文件视为已清理。"""
+
+    for path in paths:
+        path.unlink(missing_ok=True)
 
 
 class RegisterRequest(BaseModel):
@@ -1084,35 +1222,45 @@ def parse_document(
     )
     if not existed:
         db.commit()
-        attempt = None
-        try:
-            attempt = mark_task_running(db, task)
-            db.commit()
+        task_result: dict[str, Any] = {}
+
+        def work() -> Any:
             content_text = document.raw_text
             if not content_text and document.file_path:
                 content_text = extract_file_text(private_path(document.file_path, settings.data_dir), document.source_type)
             if not content_text:
                 raise DomainError("DOCUMENT_CONTENT_UNREADABLE", "原始资料无法读取", 422, "paste_text")
             provider = get_model_provider()
-            result = provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
+            return provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
+
+        def save_result(value: dict[str, Any]) -> None:
             draft = _latest_draft(db, document.id, account.id)
             if draft is None:
                 draft = DocumentDraft(account_id=account.id, document_id=document.id, revision=0)
                 db.add(draft)
-            draft.content = result.value
+            draft.content = value
             draft.revision = (draft.revision or 0) + 1
             draft.status = "unconfirmed"
-            draft.missing_field_codes = _missing_document_fields(result.value, document.document_type)
-            document.draft_content = result.value
+            draft.missing_field_codes = _missing_document_fields(value, document.document_type)
+            document.draft_content = value
             document.draft_revision = draft.revision
             document.status = "available"
-            task_result = {"document_id": document.public_id, "draft_id": draft.public_id}
-            finish_task(db, task, None, task_result, attempt=attempt)
-            model_call(db, account.id, task.id, "document_parse", result.provider, result.model, input_tokens=result.input_tokens, output_tokens=result.output_tokens, cost_usd=result.cost_usd)
-            db.commit()
+            task_result.update({"document_id": document.public_id, "draft_id": draft.public_id})
+
+        try:
+            run_local_task(
+                db,
+                task,
+                None,
+                work,
+                on_success=save_result,
+                cost_feature="document_parse",
+                task_result=task_result,
+            )
         except Exception as exc:
-            db.rollback()
-            fail_task(db, task.id, None, exc, attempt_id=attempt.id if attempt else None)
+            db.refresh(document)
+            document.status = "failed"
+            document.failure_code = getattr(exc, "code", "DOCUMENT_PARSE_FAILED")
             db.commit()
             raise
     db.refresh(task)
@@ -1246,24 +1394,74 @@ def document_deletion_impact(request: Request, account: WebAccount, document_id:
 def delete_document(request: Request, account: WebAccount, document_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _write_guard(request, account)
     item = _document(db, account.id, document_id)
-    version_count = db.scalar(select(func.count(DocumentVersion.id)).where(DocumentVersion.document_id == item.id, DocumentVersion.deleted_at.is_(None))) or 0
-    analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), (Analysis.resume_version_id.in_(select(DocumentVersion.id).where(DocumentVersion.document_id == item.id)) | Analysis.job_version_id.in_(select(DocumentVersion.id).where(DocumentVersion.document_id == item.id))))) or 0
+    version_rows = db.scalars(select(DocumentVersion).where(DocumentVersion.document_id == item.id, DocumentVersion.deleted_at.is_(None))).all()
+    version_ids = {row.id for row in version_rows}
+    analysis_rows = db.scalars(
+        select(Analysis).where(
+            Analysis.account_id == account.id,
+            Analysis.deleted_at.is_(None),
+            (Analysis.resume_version_id.in_(version_ids) | Analysis.job_version_id.in_(version_ids)),
+        )
+    ).all() if version_ids else []
+    pool_rows = db.scalars(
+        select(JobPoolItem).where(
+            JobPoolItem.account_id == account.id,
+            JobPoolItem.deleted_at.is_(None),
+            ((JobPoolItem.job_document_id == item.id) | JobPoolItem.job_document_version_id.in_(version_ids)),
+        )
+    ).all() if version_ids else db.scalars(select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.job_document_id == item.id, JobPoolItem.deleted_at.is_(None))).all()
+    analysis_ids = {row.id for row in analysis_rows}
+    rewrite_rows = db.scalars(select(Rewrite).where(Rewrite.account_id == account.id, Rewrite.analysis_id.in_(analysis_ids), Rewrite.deleted_at.is_(None))).all() if analysis_ids else []
+    interview_rows = db.scalars(select(Interview).where(Interview.account_id == account.id, Interview.analysis_id.in_(analysis_ids), Interview.deleted_at.is_(None))).all() if analysis_ids else []
+    pool_ids = {row.id for row in pool_rows}
+    variant_rows = db.scalars(
+        select(ResumeVariant).where(
+            ResumeVariant.account_id == account.id,
+            ResumeVariant.deleted_at.is_(None),
+            (ResumeVariant.source_resume_version_id.in_(version_ids) | ResumeVariant.job_pool_item_id.in_(pool_ids)),
+        )
+    ).all() if version_ids or pool_ids else []
+    variant_ids = {row.id for row in variant_rows}
+    variant_version_rows = db.scalars(select(ResumeVariantVersion).where(ResumeVariantVersion.account_id == account.id, ResumeVariantVersion.resume_variant_id.in_(variant_ids))).all() if variant_ids else []
+    export_rows = db.scalars(select(Export).where(Export.account_id == account.id, Export.resume_variant_version_id.in_({row.id for row in variant_version_rows}))).all() if variant_version_rows else []
+    fact_rows = db.scalars(select(Fact).where(Fact.account_id == account.id, Fact.document_id == item.id, Fact.deleted_at.is_(None))).all()
+    fact_version_rows = db.scalars(select(FactVersion).where(FactVersion.account_id == account.id, FactVersion.fact_id.in_({row.id for row in fact_rows}), FactVersion.deleted_at.is_(None))).all() if fact_rows else []
+    resource_ids = {item.public_id, *(row.public_id for row in version_rows), *(row.public_id for row in analysis_rows), *(row.public_id for row in rewrite_rows), *(row.public_id for row in interview_rows), *(row.public_id for row in pool_rows), *(row.public_id for row in variant_rows), *(row.public_id for row in variant_version_rows), *(row.public_id for row in export_rows), *(row.public_id for row in fact_version_rows)}
+    task_ids = {row.task_id for row in [*analysis_rows, *rewrite_rows, *interview_rows, *export_rows] if row.task_id}
+    task_ids.update(row.id for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all() if _task_references(row, resource_ids))
+    version_count = len(version_rows)
+    analysis_count = len(analysis_rows)
     running_count = db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.status.in_(["queued", "running"]))) or 0
     _require_deletion_match(request, _impact_version(item.public_id, item.updated_at.isoformat(), version_count, analysis_count, running_count))
-    item.deleted_at = now_utc()
+    storage_keys = {value for value in [item.file_path, *(row.file_path for row in export_rows)] if value}
+    files = _mark_files_deleted(
+        db,
+        account.id,
+        storage_keys=storage_keys,
+        purposes={"document_source", "resume_pdf"},
+    )
+    for value in storage_keys:
+        path = private_path(value, settings.data_dir)
+        if path not in files:
+            files.append(path)
+    now = now_utc()
+    _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="来源资料已删除")
+    item.deleted_at = now
     item.status = "deleted"
-    db.query(DocumentVersion).filter(DocumentVersion.document_id == item.id, DocumentVersion.deleted_at.is_(None)).update({DocumentVersion.deleted_at: now_utc()})
+    db.query(DocumentVersion).filter(DocumentVersion.document_id == item.id, DocumentVersion.deleted_at.is_(None)).update({DocumentVersion.deleted_at: now}, synchronize_session=False)
     db.query(DocumentDraft).filter(DocumentDraft.document_id == item.id, DocumentDraft.status != "confirmed").update({DocumentDraft.status: "expired"})
-    # 删除是业务事实的可见性撤销，分析历史保留最小状态但不能再读正文。
-    version_ids = select(DocumentVersion.id).where(DocumentVersion.document_id == item.id)
-    db.query(Analysis).filter(Analysis.account_id == account.id, (Analysis.resume_version_id.in_(version_ids) | Analysis.job_version_id.in_(version_ids))).update({Analysis.deleted_at: now_utc()}, synchronize_session=False)
-    db.query(StoredFile).filter(
-        StoredFile.account_id == account.id,
-        StoredFile.purpose == "document_source",
-        StoredFile.storage_key == item.file_path,
-        StoredFile.deleted_at.is_(None),
-    ).update({StoredFile.status: "deleted", StoredFile.deleted_at: now_utc()}, synchronize_session=False)
+    db.query(Analysis).filter(Analysis.id.in_(analysis_ids)).update({Analysis.deleted_at: now, Analysis.result: None}, synchronize_session=False) if analysis_ids else None
+    db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in rewrite_rows})).update({Rewrite.deleted_at: now}, synchronize_session=False) if rewrite_rows else None
+    db.query(Interview).filter(Interview.id.in_({row.id for row in interview_rows})).update({Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None}, synchronize_session=False) if interview_rows else None
+    db.query(ResumeVariant).filter(ResumeVariant.id.in_(variant_ids)).update({ResumeVariant.deleted_at: now, ResumeVariant.status: "deleted"}, synchronize_session=False) if variant_ids else None
+    db.query(Export).filter(Export.id.in_({row.id for row in export_rows})).update({Export.status: "expired", Export.file_path: None, Export.failure_code: "SOURCE_DELETED"}, synchronize_session=False) if export_rows else None
+    db.query(Fact).filter(Fact.id.in_({row.id for row in fact_rows})).update({Fact.deleted_at: now, Fact.status: "deleted"}, synchronize_session=False) if fact_rows else None
+    db.query(FactVersion).filter(FactVersion.id.in_({row.id for row in fact_version_rows})).update({FactVersion.deleted_at: now}, synchronize_session=False) if fact_version_rows else None
+    if pool_rows:
+        db.query(JobPoolItem).filter(JobPoolItem.id.in_(pool_ids)).update({JobPoolItem.deleted_at: now, JobPoolItem.analysis_status: "deleted", JobPoolItem.source_url: None, JobPoolItem.job_fields: {}}, synchronize_session=False)
+    db.query(Preference).filter(Preference.account_id == account.id, Preference.subject_document_id == item.id, Preference.deleted_at.is_(None)).update({Preference.deleted_at: now, Preference.status: "archived", Preference.is_default: False}, synchronize_session=False)
     db.commit()
+    _unlink_after_commit(files)
     return _no_content(request)
 
 
@@ -1279,14 +1477,36 @@ def pool_deletion_impact(request: Request, account: WebAccount, item_id: str = P
 def delete_pool_item(request: Request, account: WebAccount, item_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _write_guard(request, account)
     item = _pool(db, account.id, item_id)
-    analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))) or 0
+    analysis_rows = db.scalars(select(Analysis).where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))).all()
+    rewrite_rows = db.scalars(select(Rewrite).where(Rewrite.account_id == account.id, Rewrite.analysis_id.in_({row.id for row in analysis_rows}), Rewrite.deleted_at.is_(None))).all() if analysis_rows else []
+    interview_rows = db.scalars(select(Interview).where(Interview.account_id == account.id, Interview.analysis_id.in_({row.id for row in analysis_rows}), Interview.deleted_at.is_(None))).all() if analysis_rows else []
+    variant_rows = db.scalars(select(ResumeVariant).where(ResumeVariant.account_id == account.id, ResumeVariant.job_pool_item_id == item.id, ResumeVariant.deleted_at.is_(None))).all()
+    variant_version_rows = db.scalars(select(ResumeVariantVersion).where(ResumeVariantVersion.account_id == account.id, ResumeVariantVersion.resume_variant_id.in_({row.id for row in variant_rows}))).all() if variant_rows else []
+    export_rows = db.scalars(select(Export).where(Export.account_id == account.id, Export.resume_variant_version_id.in_({row.id for row in variant_version_rows}))).all() if variant_version_rows else []
+    resource_ids = {item.public_id, *(row.public_id for row in analysis_rows), *(row.public_id for row in rewrite_rows), *(row.public_id for row in interview_rows), *(row.public_id for row in variant_rows), *(row.public_id for row in variant_version_rows), *(row.public_id for row in export_rows)}
+    task_ids = {row.task_id for row in [*analysis_rows, *rewrite_rows, *interview_rows, *export_rows] if row.task_id}
+    task_ids.update(row.id for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all() if _task_references(row, resource_ids))
+    analysis_count = len(analysis_rows)
     _require_deletion_match(request, _impact_version(item.public_id, item.revision, analysis_count))
-    item.deleted_at = now_utc()
+    storage_keys = {row.file_path for row in export_rows if row.file_path}
+    files = _mark_files_deleted(db, account.id, storage_keys=storage_keys, purposes={"resume_pdf"})
+    for value in storage_keys:
+        path = private_path(value, settings.data_dir)
+        if path not in files:
+            files.append(path)
+    now = now_utc()
+    _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="匹配池岗位已删除")
+    item.deleted_at = now
     item.analysis_status = "deleted"
     item.source_url = None
     item.job_fields = {}
-    db.query(Analysis).filter(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None)).update({Analysis.deleted_at: now_utc()}, synchronize_session=False)
+    db.query(Analysis).filter(Analysis.id.in_({row.id for row in analysis_rows})).update({Analysis.deleted_at: now, Analysis.result: None}, synchronize_session=False) if analysis_rows else None
+    db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in rewrite_rows})).update({Rewrite.deleted_at: now}, synchronize_session=False) if rewrite_rows else None
+    db.query(Interview).filter(Interview.id.in_({row.id for row in interview_rows})).update({Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None}, synchronize_session=False) if interview_rows else None
+    db.query(ResumeVariant).filter(ResumeVariant.id.in_({row.id for row in variant_rows})).update({ResumeVariant.deleted_at: now, ResumeVariant.status: "deleted"}, synchronize_session=False) if variant_rows else None
+    db.query(Export).filter(Export.id.in_({row.id for row in export_rows})).update({Export.status: "expired", Export.file_path: None, Export.failure_code: "SOURCE_DELETED"}, synchronize_session=False) if export_rows else None
     db.commit()
+    _unlink_after_commit(files)
     return _no_content(request)
 
 
@@ -1301,10 +1521,18 @@ def analysis_deletion_impact(request: Request, account: WebAccount, analysis_id:
 def delete_analysis(request: Request, account: WebAccount, analysis_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _write_guard(request, account)
     item = _analysis(db, account.id, analysis_id)
+    rewrite_rows = db.scalars(select(Rewrite).where(Rewrite.analysis_id == item.id, Rewrite.deleted_at.is_(None))).all()
+    interview_rows = db.scalars(select(Interview).where(Interview.analysis_id == item.id, Interview.deleted_at.is_(None))).all()
+    task_ids = {value for value in [item.task_id, *(row.task_id for row in rewrite_rows), *(row.task_id for row in interview_rows)] if value}
+    resource_ids = {item.public_id, *(row.public_id for row in rewrite_rows), *(row.public_id for row in interview_rows)}
+    task_ids.update(row.id for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all() if _task_references(row, resource_ids))
     _require_deletion_match(request, _impact_version(item.public_id, item.updated_at.isoformat()))
-    item.deleted_at = now_utc()
+    now = now_utc()
+    _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="分析报告已删除")
+    item.deleted_at = now
     item.result = None
-    db.query(Rewrite).filter(Rewrite.analysis_id == item.id, Rewrite.deleted_at.is_(None)).update({Rewrite.deleted_at: now_utc()}, synchronize_session=False)
+    db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in rewrite_rows})).update({Rewrite.deleted_at: now}, synchronize_session=False) if rewrite_rows else None
+    db.query(Interview).filter(Interview.id.in_({row.id for row in interview_rows})).update({Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None}, synchronize_session=False) if interview_rows else None
     db.commit()
     return _no_content(request)
 
@@ -1321,7 +1549,17 @@ def delete_interview(request: Request, account: WebAccount, interview_id: str = 
     _write_guard(request, account)
     item = _interview(db, account.id, interview_id)
     _require_deletion_match(request, _impact_version(item.public_id, item.revision))
-    item.deleted_at = now_utc()
+    now = now_utc()
+    task_ids = {item.task_id} if item.task_id else set()
+    task_ids.update(
+        row.id
+        for row in db.scalars(
+            select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))
+        ).all()
+        if _task_references(row, {item.public_id})
+    )
+    _mark_tasks_cancelled(db, account.id, resource_ids={item.public_id}, task_ids=task_ids, reason="面试会话已删除")
+    item.deleted_at = now
     item.questions = None
     item.answers = None
     item.summary = None
@@ -1717,6 +1955,38 @@ def create_fact_version(payload: FactVersionRequest, request: Request, account: 
     return _ok(request, _fact_view(db, item, include_versions=True), code=201)
 
 
+@router.get("/facts/{fact_id}/deletion-impact", tags=["facts"])
+def fact_deletion_impact(request: Request, account: WebAccount, fact_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    item = _fact(db, account.id, fact_id)
+    version_count = db.scalar(select(func.count(FactVersion.id)).where(FactVersion.fact_id == item.id, FactVersion.deleted_at.is_(None))) or 0
+    version = _impact_version(item.public_id, item.revision, version_count)
+    return _ok(request, {"resource_id": item.public_id, "resource_type": "fact", "affected": {"versions": version_count}, "impact_version": version}, headers={"ETag": f'"{version}"'})
+
+
+@router.delete("/facts/{fact_id}", tags=["facts"])
+def delete_fact(request: Request, account: WebAccount, fact_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
+    _write_guard(request, account)
+    require_seeker(account)
+    item = _fact(db, account.id, fact_id)
+    version_rows = db.scalars(select(FactVersion).where(FactVersion.fact_id == item.id, FactVersion.deleted_at.is_(None))).all()
+    version_count = len(version_rows)
+    _require_deletion_match(request, _impact_version(item.public_id, item.revision, version_count))
+    resource_ids = {item.public_id, *(row.public_id for row in version_rows)}
+    task_ids = {
+        row.id
+        for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all()
+        if _task_references(row, resource_ids)
+    }
+    now = now_utc()
+    _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="补充事实已删除")
+    item.deleted_at = now
+    item.status = "deleted"
+    db.query(FactVersion).filter(FactVersion.fact_id == item.id, FactVersion.deleted_at.is_(None)).update({FactVersion.deleted_at: now}, synchronize_session=False)
+    db.commit()
+    return _no_content(request)
+
+
 # ------------------------------------ 改写与岗位版 ------------------------------------
 
 
@@ -1963,8 +2233,9 @@ def create_rewrite(payload: RewriteRequest, request: Request, account: WebAccoun
     db.flush()
     db.commit()
 
-    def work() -> dict[str, Any]:
-        return get_model_provider().rewrite(selected, (job_version.content.get("job_fields") or {}), facts).value
+    def work() -> Any:
+        # 保留 ModelResult 的 token 与 provider 元数据，由任务服务统一记成本和预算。
+        return get_model_provider().rewrite(selected, (job_version.content.get("job_fields") or {}), facts)
 
     def save_result(value: dict[str, Any]) -> None:
         item.status = "available"
@@ -1996,6 +2267,42 @@ def create_rewrite(payload: RewriteRequest, request: Request, account: WebAccoun
 def get_rewrite(request: Request, account: WebAccount, rewrite_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     require_seeker(account)
     return _ok(request, _rewrite_view(db, _rewrite(db, account.id, rewrite_id)))
+
+
+@router.get("/rewrites/{rewrite_id}/deletion-impact", tags=["rewrites"])
+def rewrite_deletion_impact(request: Request, account: WebAccount, rewrite_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    item = _rewrite(db, account.id, rewrite_id)
+    segment_count = db.scalar(select(func.count(RewriteSegment.id)).where(RewriteSegment.rewrite_id == item.id)) or 0
+    version = _impact_version(item.public_id, item.updated_at.isoformat(), segment_count)
+    return _ok(request, {"resource_id": item.public_id, "resource_type": "rewrite", "affected": {"segments": segment_count}, "impact_version": version}, headers={"ETag": f'"{version}"'})
+
+
+@router.delete("/rewrites/{rewrite_id}", tags=["rewrites"])
+def delete_rewrite(request: Request, account: WebAccount, rewrite_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
+    _write_guard(request, account)
+    require_seeker(account)
+    item = _rewrite(db, account.id, rewrite_id)
+    segment_count = db.scalar(select(func.count(RewriteSegment.id)).where(RewriteSegment.rewrite_id == item.id)) or 0
+    _require_deletion_match(request, _impact_version(item.public_id, item.updated_at.isoformat(), segment_count))
+    resource_ids = {item.public_id}
+    task_ids = {item.task_id} if item.task_id else set()
+    task_ids.update(
+        row.id
+        for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all()
+        if _task_references(row, resource_ids)
+    )
+    now = now_utc()
+    _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="改写结果已删除")
+    item.deleted_at = now
+    item.status = "deleted"
+    item.segments = None
+    db.query(RewriteEvidence).filter(RewriteEvidence.rewrite_segment_id.in_(select(RewriteSegment.id).where(RewriteSegment.rewrite_id == item.id))).delete(synchronize_session=False)
+    db.query(RewriteSegment).filter(RewriteSegment.rewrite_id == item.id).delete(synchronize_session=False)
+    db.query(RewriteDecision).filter(RewriteDecision.rewrite_id == item.id).delete(synchronize_session=False)
+    db.query(ResumeVariantVersion).filter(ResumeVariantVersion.rewrite_id == item.id).update({ResumeVariantVersion.rewrite_id: None}, synchronize_session=False)
+    db.commit()
+    return _no_content(request)
 
 
 @router.post("/rewrites/{rewrite_id}/segments/{segment_id}/decisions", tags=["rewrites"])
@@ -2100,6 +2407,49 @@ def list_resume_variants(
 def get_resume_variant(request: Request, account: WebAccount, resume_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     require_seeker(account)
     return _ok(request, _variant_view(db, _variant(db, account.id, resume_id)))
+
+
+@router.get("/resumes/{resume_id}/deletion-impact", tags=["resumes"])
+def resume_variant_deletion_impact(request: Request, account: WebAccount, resume_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    item = _variant(db, account.id, resume_id)
+    version_count = db.scalar(select(func.count(ResumeVariantVersion.id)).where(ResumeVariantVersion.resume_variant_id == item.id)) or 0
+    export_count = db.scalar(select(func.count(Export.id)).where(Export.resume_variant_version_id.in_(select(ResumeVariantVersion.id).where(ResumeVariantVersion.resume_variant_id == item.id)))) or 0
+    version = _impact_version(item.public_id, item.revision, version_count, export_count)
+    return _ok(request, {"resource_id": item.public_id, "resource_type": "resume_variant", "affected": {"versions": version_count, "exports": export_count}, "impact_version": version}, headers={"ETag": f'"{version}"'})
+
+
+@router.delete("/resumes/{resume_id}", tags=["resumes"])
+def delete_resume_variant(request: Request, account: WebAccount, resume_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
+    _write_guard(request, account)
+    require_seeker(account)
+    item = _variant(db, account.id, resume_id)
+    version_rows = db.scalars(select(ResumeVariantVersion).where(ResumeVariantVersion.resume_variant_id == item.id)).all()
+    export_rows = db.scalars(select(Export).where(Export.account_id == account.id, Export.resume_variant_version_id.in_({row.id for row in version_rows}))).all() if version_rows else []
+    version_count = len(version_rows)
+    export_count = len(export_rows)
+    _require_deletion_match(request, _impact_version(item.public_id, item.revision, version_count, export_count))
+    resource_ids = {item.public_id, *(row.public_id for row in version_rows), *(row.public_id for row in export_rows)}
+    task_ids = {row.task_id for row in export_rows if row.task_id}
+    task_ids.update(
+        row.id
+        for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all()
+        if _task_references(row, resource_ids)
+    )
+    storage_keys = {row.file_path for row in export_rows if row.file_path}
+    files = _mark_files_deleted(db, account.id, storage_keys=storage_keys, purposes={"resume_pdf"})
+    for value in storage_keys:
+        path = private_path(value, settings.data_dir)
+        if path not in files:
+            files.append(path)
+    now = now_utc()
+    _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="岗位版简历已删除")
+    item.deleted_at = now
+    item.status = "deleted"
+    db.query(Export).filter(Export.id.in_({row.id for row in export_rows})).update({Export.status: "expired", Export.file_path: None, Export.failure_code: "SOURCE_DELETED"}, synchronize_session=False) if export_rows else None
+    db.commit()
+    _unlink_after_commit(files)
+    return _no_content(request)
 
 
 @router.post("/resumes/{resume_id}/versions", tags=["resumes"], status_code=201)
@@ -2394,7 +2744,13 @@ def get_browser_draft(request: Request, account: BrowserAccount, draft_id: str =
     return _ok(request, _browser_draft_view(draft))
 
 
-def _preference_version(db: Session, account_id: int, public_id: str | None) -> PreferenceVersion | None:
+def _preference_version(
+    db: Session,
+    account_id: int,
+    public_id: str | None,
+    *,
+    subject_document_id: int | None = None,
+) -> PreferenceVersion | None:
     if not public_id:
         return None
     row = db.scalar(select(PreferenceVersion).where(PreferenceVersion.public_id == public_id, PreferenceVersion.account_id == account_id, PreferenceVersion.deleted_at.is_(None)))
@@ -2403,6 +2759,10 @@ def _preference_version(db: Session, account_id: int, public_id: str | None) -> 
     preference = db.get(Preference, row.preference_id)
     if preference is None or preference.deleted_at is not None:
         raise NotFoundError("岗位期望不存在")
+    if subject_document_id is not None and preference.subject_document_id != subject_document_id:
+        raise DomainError("PREFERENCE_SUBJECT_INVALID", "岗位期望没有指向当前候选人简历", 422)
+    if subject_document_id is None and preference.subject_document_id is not None:
+        raise DomainError("PREFERENCE_SUBJECT_INVALID", "求职分析只能使用本人的岗位期望", 422)
     return row
 
 
@@ -2445,7 +2805,19 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
         "context_type": item.context_type,
         "status": item.status,
         "task": task_view(db.get(Task, item.task_id)) if item.task_id and db.get(Task, item.task_id) else None,
-        "input_versions": [{"type": "resume", "id": resume_version.public_id} if resume_version else None, {"type": "job", "id": job_version.public_id} if job_version else None],
+        "input_versions": [
+            value
+            for value in [
+                {"type": "resume", "id": resume_version.public_id} if resume_version else None,
+                {"type": "job", "id": job_version.public_id} if job_version else None,
+                (
+                    {"type": "preference", "id": db.get(PreferenceVersion, item.preference_version_id).public_id}
+                    if item.preference_version_id and db.get(PreferenceVersion, item.preference_version_id)
+                    else None
+                ),
+            ]
+            if value is not None
+        ],
         "preference_id": db.get(Preference, item.preference_id).public_id if item.preference_id and db.get(Preference, item.preference_id) else None,
         "job_category": item.job_category,
         "ability_score": item.ability_score,
@@ -2520,7 +2892,23 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
     if job_document is None or job_document.account_id != account.id or job_document.deleted_at is not None or not _document_type_is_job(job_document.document_type):
         raise DomainError("ANALYSIS_INPUT_INVALID", "岗位版本类型不正确", 422)
     input_data = {"context_type": context_type, "resume_version_id": resume_version.public_id, "job_version_id": job_version.public_id, "preference_version_id": preference.public_id if preference else None}
-    task, reservation, existed = create_task(db, account, "analysis", input_data, feature="analysis", idempotency_key=key, input_refs=[("resume_version", resume_version.public_id, resume_version.version_no, payload_hash(resume_version.content)), ("job_version", job_version.public_id, job_version.version_no, payload_hash(job_version.content))])
+    task, reservation, existed = create_task(
+        db,
+        account,
+        "analysis",
+        input_data,
+        feature="analysis",
+        idempotency_key=key,
+        input_refs=[
+            ("resume_version", resume_version.public_id, resume_version.version_no, payload_hash(resume_version.content)),
+            ("job_version", job_version.public_id, job_version.version_no, payload_hash(job_version.content)),
+            *(
+                [("preference_version", preference.public_id, preference.version_no, payload_hash(preference.content))]
+                if preference
+                else []
+            ),
+        ],
+    )
     if existed:
         analysis = db.scalar(select(Analysis).where(Analysis.task_id == task.id, Analysis.account_id == account.id, Analysis.deleted_at.is_(None)))
         if analysis is None:
@@ -2534,6 +2922,7 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
         resume_version_id=resume_version.id,
         job_version_id=job_version.id,
         preference_id=preference.preference_id if preference else None,
+        preference_version_id=preference.id if preference else None,
         task_id=task.id,
     )
     db.add(analysis)
@@ -2544,8 +2933,9 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
         pool.analysis_status = "queued"
     db.commit()
 
-    def work() -> dict[str, Any]:
-        return get_model_provider().analyze(resume_version.content, job_version.content, preference.content if preference else None, context_type).value
+    def work() -> Any:
+        # 不在 API 层丢弃模型调用元数据，Worker／预算服务需要使用真实 token。
+        return get_model_provider().analyze(resume_version.content, job_version.content, preference.content if preference else None, context_type)
 
     def save_result(report: dict[str, Any]) -> None:
         analysis.status = "available"
@@ -2567,6 +2957,15 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
 
         run_local_task(db, task, reservation, work, on_success=save_result, feature="analysis")
     except Exception as exc:
+        # 本地执行失败时，任务服务已经把次数释放并把任务置为 failed；业务结果也必须
+        # 同步落为失败，否则岗位和报告会永久停在 queued，前端无法给出重试入口。
+        db.refresh(analysis)
+        analysis.status = "failed"
+        if pool is not None:
+            db.refresh(pool)
+            pool.analysis_status = "failed"
+            pool.blocking_reasons = ["分析失败，可重试"]
+        db.commit()
         raise DomainError("ANALYSIS_FAILED", "分析任务失败，请稍后重试", 503, "retry") from exc
     db.refresh(analysis)
     return analysis, task, False
@@ -2619,7 +3018,19 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
             pool.blocking_reasons = ["需要已确认简历版本、岗位期望版本和使用次数确认"]
             db.commit()
             return _ok(request, _pool_view(db, pool), code=201)
-        analysis, task, _ = _start_analysis(db, account, context_type="seeker_pool", resume_version=resume_version, job_version=job_version, preference=preference, pool=pool, key=key)
+        # 先保留岗位，再尝试预留分析次数；次数不足时岗位仍应可见并进入待满足条件，
+        # 不能因为一次计次失败把用户刚确认的岗位一并回滚。
+        db.commit()
+        try:
+            analysis, task, _ = _start_analysis(db, account, context_type="seeker_pool", resume_version=resume_version, job_version=job_version, preference=preference, pool=pool, key=key)
+        except DomainError as exc:
+            if exc.code not in {"USAGE_INSUFFICIENT", "TASK_QUEUE_LIMIT_REACHED", "BUDGET_LIMIT_REACHED", "BUDGET_CONCURRENCY_LIMIT"}:
+                raise
+            pool = _pool(db, account.id, pool.public_id)
+            pool.analysis_status = "awaiting_requirements"
+            pool.blocking_reasons = [exc.message]
+            db.commit()
+            return _ok(request, _pool_view(db, pool), code=201)
         return _ok(request, {"job_pool_item": _pool_view(db, pool), "analysis": _analysis_view(db, analysis), "task": task_view(task)}, code=202)
     db.commit()
     return _ok(request, _pool_view(db, pool), code=201)
@@ -2687,7 +3098,7 @@ def create_recruiter_analysis(payload: AnalysisRequest, request: Request, accoun
         raise DomainError("USAGE_CONFIRMATION_REQUIRED", "开始分析前需要确认消耗 1 次分析", 422)
     resume_version = _version(db, account.id, payload.resume_document_version_id)
     job_version = _version(db, account.id, payload.job_document_version_id)
-    preference = _preference_version(db, account.id, payload.preference_version_id)
+    preference = _preference_version(db, account.id, payload.preference_version_id, subject_document_id=resume_version.document_id)
     analysis, task, _ = _start_analysis(db, account, context_type="recruiter_single", resume_version=resume_version, job_version=job_version, preference=preference, pool=None, key=key)
     return _ok(request, {"analysis": _analysis_view(db, analysis), "task": task_view(task)}, code=202)
 
@@ -2884,8 +3295,8 @@ def start_interview(payload: InterviewStartRequest, request: Request, account: W
     item.task_id = task.id
     db.commit()
 
-    def work() -> dict[str, Any]:
-        return get_model_provider().opening_questions(analysis.result or {}, resume_version.content).value
+    def work() -> Any:
+        return get_model_provider().opening_questions(analysis.result or {}, resume_version.content)
 
     def save_questions(value: dict[str, Any]) -> None:
         questions = value.get("questions", [])[:3]
@@ -2944,7 +3355,7 @@ def _public_question_id(db: Session, account_id: int, value: str) -> InterviewQu
 def _finish_interview_summary(db: Session, account: Account, item: Interview, completion_type: str) -> None:
     questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == item.id).order_by(InterviewQuestion.position_no)).all()
     answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == item.id).order_by(InterviewAnswer.created_at)).all()
-    question_values = [{"id": row.public_id, "main_no": row.main_no, "question_text": row.question_text} for row in questions]
+    question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
     answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
     value = get_model_provider().summary(question_values, answer_values, completion_type).value
     db.add(InterviewSummary(account_id=account.id, interview_id=item.id, completion_type=completion_type, content=value))
@@ -2984,34 +3395,84 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
     task, _, existed = create_task(db, account, "interview_feedback", {"interview_id": item.public_id, "question_id": question.public_id}, idempotency_key=key)
     db.commit()
     if not existed:
-        attempt = None
-        try:
-            attempt = mark_task_running(db, task)
-            db.commit()
-            feedback_value = get_model_provider().feedback({"question_text": question.question_text}, answer.answer_text).value
-            db.refresh(task)
-            db.add(InterviewFeedback(account_id=account.id, interview_id=item.id, question_id=question.id, status="available", content=feedback_value.get("content"), needs_followup=bool(feedback_value.get("needs_followup")), completed_at=now_utc()))
-            if feedback_value.get("needs_followup"):
-                last_position = db.scalar(select(func.max(InterviewQuestion.position_no)).where(InterviewQuestion.interview_id == item.id)) or 0
-                followup = InterviewQuestion(account_id=account.id, interview_id=item.id, question_type="followup", main_no=question.main_no, parent_question_id=question.id, position_no=int(last_position) + 1, question_text="请再补充你本人采取的具体行动和可以核对的结果。", basis={"parent_question_id": question.public_id, "rule_version": "interview-followup-v1"}, status="awaiting_answer")
-                db.add(followup)
-                db.flush()
-                item.current_question_id = followup.public_id
+        task_result: dict[str, Any] = {}
+
+        def work() -> Any:
+            return get_model_provider().feedback(
+                {"question_text": question.question_text, "question_type": question.question_type},
+                answer.answer_text,
+            )
+
+        def save_feedback(feedback_value: dict[str, Any]) -> None:
+            db.add(
+                InterviewFeedback(
+                    account_id=account.id,
+                    interview_id=item.id,
+                    question_id=question.id,
+                    status="available",
+                    content=feedback_value.get("content"),
+                    needs_followup=bool(feedback_value.get("needs_followup")),
+                    completed_at=now_utc(),
+                )
+            )
+            if feedback_value.get("needs_followup") and question.question_type == "main":
+                existing_followup = db.scalar(
+                    select(InterviewQuestion).where(
+                        InterviewQuestion.interview_id == item.id,
+                        InterviewQuestion.parent_question_id == question.id,
+                    )
+                )
+                if existing_followup is not None:
+                    item.current_question_id = existing_followup.public_id
+                    item.status = "awaiting_answer"
+                    followup_id = existing_followup.public_id
+                else:
+                    last_position = db.scalar(select(func.max(InterviewQuestion.position_no)).where(InterviewQuestion.interview_id == item.id)) or 0
+                    followup = InterviewQuestion(
+                        account_id=account.id,
+                        interview_id=item.id,
+                        question_type="followup",
+                        main_no=question.main_no,
+                        parent_question_id=question.id,
+                        position_no=int(last_position) + 1,
+                        question_text="请再补充你本人采取的具体行动和可以核对的结果。",
+                        basis={"parent_question_id": question.public_id, "rule_version": "interview-followup-v1"},
+                        status="awaiting_answer",
+                    )
+                    db.add(followup)
+                    db.flush()
+                    item.current_question_id = followup.public_id
+                    item.status = "awaiting_answer"
+                    followup_id = followup.public_id
+                task_result.update({"question_id": question.public_id, "needs_followup": True, "followup_id": followup_id})
             else:
-                next_main = db.scalar(select(InterviewQuestion).where(InterviewQuestion.interview_id == item.id, InterviewQuestion.question_type == "main", InterviewQuestion.status == "awaiting_answer").order_by(InterviewQuestion.main_no))
+                next_main = db.scalar(
+                    select(InterviewQuestion)
+                    .where(
+                        InterviewQuestion.interview_id == item.id,
+                        InterviewQuestion.question_type == "main",
+                        InterviewQuestion.status == "awaiting_answer",
+                    )
+                    .order_by(InterviewQuestion.main_no)
+                )
                 if next_main:
                     item.current_question_id = next_main.public_id
+                    item.status = "awaiting_answer"
                 else:
                     _finish_interview_summary(db, account, item, "completed")
-            task_result = {"question_id": question.public_id, "needs_followup": bool(feedback_value.get("needs_followup"))}
-            finish_task(db, task, None, task_result, attempt=attempt)
-            model_call(db, account.id, task.id, "interview_feedback", "local", "deterministic-v1")
-            if item.status == "processing":
-                item.status = "awaiting_answer"
-            db.commit()
+                task_result.update({"question_id": question.public_id, "needs_followup": False})
+
+        try:
+            run_local_task(
+                db,
+                task,
+                None,
+                work,
+                on_success=save_feedback,
+                cost_feature="interview_feedback",
+                task_result=task_result,
+            )
         except Exception as exc:
-            db.rollback()
-            fail_task(db, task.id, None, exc, attempt_id=attempt.id if attempt else None)
             item = _interview(db, account.id, interview_id)
             item.status = "awaiting_answer"
             db.commit()
@@ -3028,7 +3489,7 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
     item = _interview(db, account.id, interview_id)
     if item.status in {"completed", "ended_early"}:
         return _ok(request, _interview_view(db, item))
-    if item.status == "processing":
+    if item.status != "awaiting_answer":
         raise DomainError("INTERVIEW_PROCESSING", "本轮回答仍在处理，完成后才能提前结束", 409, "wait")
     if payload.base_revision != item.revision:
         raise DomainError("INTERVIEW_ROUND_CONFLICT", "会话轮次已变化，请刷新后重试", 409, "refresh")
@@ -3835,7 +4296,18 @@ def admin_costs(
     known = [row.cost_usd for row in calls if row.cost_usd is not None]
     successful_result_count = int(db.scalar(select(func.count(Analysis.id)).where(Analysis.status.in_(["available", "succeeded"]), Analysis.completed_at >= start_at, Analysis.completed_at < end_at, *( [Analysis.account_id.in_(account_ids)] if account_ids is not None else []))) or 0)
     known_total = sum(known)
-    return _ok(request, {"known_cost": f"{known_total:.8f}" if known else None, "known_cost_usd": known_total if known else None, "currency": "USD", "unknown_cost_count": sum(row.cost_usd is None for row in calls), "unknown_cost_calls": sum(row.cost_usd is None for row in calls), "model_call_count": len(calls), "successful_result_count": successful_result_count, "known_cost_per_success": f"{known_total / successful_result_count:.8f}" if known and successful_result_count else None, "by_feature": [{"feature": value, "calls": sum(row.feature == value for row in calls), "cost_usd": sum(row.cost_usd for row in calls if row.feature == value and row.cost_usd is not None) or None} for value in sorted({row.feature for row in calls})], "pricing_watermark_at": now_utc().isoformat(), "rule_version": "costs-v1"})
+    by_feature = []
+    for value in sorted({row.feature for row in calls}):
+        feature_total = sum((row.cost_usd for row in calls if row.feature == value and row.cost_usd is not None), 0)
+        by_feature.append(
+            {
+                "feature": value,
+                "calls": sum(row.feature == value for row in calls),
+                "cost_usd": float(feature_total) if feature_total else None,
+                "cost_usd_exact": f"{feature_total:.8f}" if feature_total else None,
+            }
+        )
+    return _ok(request, {"known_cost": f"{known_total:.8f}" if known else None, "known_cost_usd": float(known_total) if known else None, "currency": "USD", "unknown_cost_count": sum(row.cost_usd is None for row in calls), "unknown_cost_calls": sum(row.cost_usd is None for row in calls), "model_call_count": len(calls), "successful_result_count": successful_result_count, "known_cost_per_success": f"{known_total / successful_result_count:.8f}" if known and successful_result_count else None, "by_feature": by_feature, "pricing_watermark_at": now_utc().isoformat(), "rule_version": "costs-v1"})
 
 
 @router.get("/admin/feedback", tags=["admin"])
@@ -4094,7 +4566,7 @@ def admin_log_detail(request: Request, account: WebAccount, log_type: str, log_i
         if row:
             failure = row.failure or {}
             calls = db.scalars(select(ModelCall).where(ModelCall.task_id == row.id).order_by(ModelCall.created_at)).all()
-            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": call.cost_usd, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id"}) else None}
+            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": float(call.cost_usd) if call.cost_usd is not None else None, "cost_usd_exact": f"{call.cost_usd:.8f}" if call.cost_usd is not None else None, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id"}) else None}
         else:
             value = None
     if value is None:

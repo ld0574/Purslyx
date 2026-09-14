@@ -12,6 +12,7 @@
 | F12、AC17/18 | 岗位期望独立保存并生成版本快照 | `POST /preferences` | `api.py::create_preference`；`job_preferences`、`job_preference_versions` | 正式冒烟选择杭州前端期望 |
 | F04 | 建议只改写原有段落，采用动作留痕 | `POST /rewrites`、`POST /rewrites/{id}/segments/{segment}/decisions` | `api.py::create_rewrite`、`decide_rewrite`；`resume_rewrite_*` 表 | 正式冒烟创建改写并采用一段 |
 | F05 | 岗位版从冻结简历版本生成 PDF | `POST /resumes`、`POST /exports`、`GET /exports/{id}/file` | `api.py::create_resume_variant`、`create_resume_export`；`pdf_export.py` | 正式冒烟校验 `%PDF`，人工检查 A4 渲染 |
+| 删除边界 | 删除资料后派生正文与 PDF 立即不可访问，活动任务不再写回 | `GET /documents/{id}/deletion-impact`、`DELETE /documents/{id}` | `api.py::delete_document`、`_mark_tasks_cancelled`；`deleted_at`、`StoredFile` | 正式冒烟断言分析／改写／面试／岗位版 404，导出过期且文件 404 |
 | F07、F13 | 浏览器岗位草稿去重，确认后可安全 303 跳转 | `/browser-auth/*`、`/browser/job-drafts`、`/job-pool/items`、`go-to-apply` | `api.py` 浏览器与跳转路由；`purslyx-job-capture.user.js`；`browser_job_drafts`、`apply_click_events` | 正式冒烟重复草稿命中同 ID、重复点击均 303 |
 | F08 | 面试开场 3 个问题，刷新后恢复原会话 | `POST /interviews`、`GET /interviews/{id}`、`POST /interviews/{id}/answers` | `api.py::start_interview`、`submit_answer`；`interview_*` 表 | 正式冒烟断言 3 题并提交首题 |
 | F10、F11 | 模型调用、反馈与统计不把正文写入成本日志 | `GET /usage`、`GET /stats/me`、`POST /feedback`；`GET/PUT /admin/feedback/{id}` | `services.py::model_call`；`model_call_attempts`、`product_feedback`、审计表 | 正式 API 已实现；管理端页面已接通，未纳入本次自动冒烟 |

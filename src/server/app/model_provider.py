@@ -100,7 +100,9 @@ class ModelProvider:
 
     def feedback(self, question: dict[str, Any], answer: str) -> ModelResult:
         clean = answer.strip()
-        if len(clean) < 12:
+        # 每个主问题最多允许一条追问；追问本身只反馈，不再递归生成追问。
+        is_followup = question.get("question_type") == "followup"
+        if len(clean) < 12 and not is_followup:
             content = {
                 "strengths": ["已经开始回答问题"],
                 "gaps": ["缺少具体行动、背景和可核验结果"],
@@ -126,12 +128,29 @@ class ModelProvider:
         )
 
     def summary(self, questions: list[dict[str, Any]], answers: list[dict[str, Any]], completion_type: str) -> ModelResult:
-        answered = len([item for item in answers if item.get("answer_text")])
-        unanswered = [item.get("main_no") for item in questions if not any(answer.get("question_id") == item.get("id") for answer in answers)]
+        main_questions = [item for item in questions if item.get("question_type", "main") == "main"]
+        main_ids = {item.get("id") for item in main_questions}
+        answered_ids = {
+            answer.get("question_id")
+            for answer in answers
+            if answer.get("answer_text") and answer.get("question_id")
+        }
+        answered = len(main_ids & answered_ids)
+        answered_followups = sum(
+            1
+            for answer in answers
+            if answer.get("answer_text") and answer.get("question_id") not in main_ids
+        )
+        unanswered = [
+            item.get("main_no")
+            for item in main_questions
+            if item.get("id") not in answered_ids
+        ]
         return ModelResult(
             {
                 "completion_type": completion_type,
                 "answered_main_count": answered,
+                "answered_followup_count": answered_followups,
                 "unanswered_main_numbers": unanswered,
                 "content": {
                     "summary": "已根据实际提交的回答生成练习总结。",

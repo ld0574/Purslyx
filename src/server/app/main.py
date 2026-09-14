@@ -186,6 +186,7 @@ async def lifespan(_: FastAPI):
     """启动时只连接 PostgreSQL；建表行为由演示环境开关控制。"""
 
     settings.require_postgres_url()
+    settings.require_execution_mode()
     if not settings.debug:
         settings.require_runtime_secrets()
     try:

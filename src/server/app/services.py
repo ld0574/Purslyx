@@ -11,13 +11,17 @@ import binascii
 import hashlib
 import json
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Any, Callable
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .errors import DomainError
+from .budget import actual_cost_from_price, ensure_price_version, release_budget, reserve_budget, settle_budget
+from .config import settings
+from .model_provider import ModelResult
 from .models import (
     Account,
     ModelCall,
@@ -473,16 +477,287 @@ def create_task(
     return task, reservation, False
 
 
-def mark_task_running(db: Session, task: Task) -> TaskAttempt:
+def mark_outbox_published(db: Session, task_id: int) -> None:
+    """同步本地 Worker 完成后确认事务 outbox，避免留下虚假的 pending 消息。"""
+
+    task = db.get(Task, task_id)
+    for event in db.scalars(
+        select(TaskOutbox).where(TaskOutbox.task_id == task_id, TaskOutbox.status.in_(["pending", "claimed"]))
+    ).all():
+        # 旧执行代次在租约恢复后可能迟到；retry 事件必须留给新代次，不能被旧 Worker
+        # 的失败清理逻辑一起标成 published。
+        if task is not None and task.status in {"queued", "retry_wait"} and event.event_type == "task.retry":
+            continue
+        event.status = "published"
+        event.claimed_by = None
+        event.claimed_at = None
+        event.published_at = utcnow()
+        event.attempts += 1
+
+
+def claim_outbox_batch(
+    db: Session,
+    *,
+    owner: str,
+    limit: int = 10,
+    now: datetime | None = None,
+    lease_seconds: int = 60,
+) -> list[TaskOutbox]:
+    """使用 PostgreSQL ``SKIP LOCKED`` 认领一批待执行 outbox 事件。
+
+    ``claimed`` 事件在 Worker 崩溃后会重新变得可认领；认领只在当前事务内改变，
+    调用方必须先提交，再执行模型调用或文件操作。
+    """
+
+    if not owner or len(owner) > 120:
+        raise DomainError("WORKER_OWNER_INVALID", "Worker 标识无效", 422)
+    if not 1 <= limit <= 100:
+        raise DomainError("WORKER_BATCH_INVALID", "Worker 批量大小必须在 1 到 100 之间", 422)
+    if lease_seconds < 1:
+        raise DomainError("WORKER_LEASE_INVALID", "Worker 租约时长必须为正数", 422)
+    current = now or utcnow()
+    expired_before = current - timedelta(seconds=lease_seconds)
+    statement = (
+        select(TaskOutbox)
+        .where(
+            TaskOutbox.available_at <= current,
+            or_(
+                TaskOutbox.status == "pending",
+                and_(
+                    TaskOutbox.status == "claimed",
+                    or_(TaskOutbox.claimed_at.is_(None), TaskOutbox.claimed_at <= expired_before),
+                ),
+            ),
+        )
+        .order_by(TaskOutbox.available_at.asc(), TaskOutbox.id.asc())
+        .limit(limit)
+        .with_for_update(skip_locked=True)
+    )
+    events = list(db.scalars(statement).all())
+    for event in events:
+        event.status = "claimed"
+        event.claimed_by = owner
+        event.claimed_at = current
+        event.attempts += 1
+    db.flush()
+    return events
+
+
+def _latest_attempt(db: Session, task_id: int) -> TaskAttempt | None:
+    return db.scalar(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id == task_id)
+        .order_by(TaskAttempt.execution_generation.desc(), TaskAttempt.id.desc())
+    )
+
+
+def _current_running_attempt(db: Session, task_id: int) -> TaskAttempt | None:
+    return db.scalar(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id == task_id, TaskAttempt.status == "running")
+        .order_by(TaskAttempt.execution_generation.desc(), TaskAttempt.id.desc())
+    )
+
+
+def assert_current_attempt(
+    db: Session,
+    task: Task,
+    attempt: TaskAttempt,
+    *,
+    owner: str | None = None,
+    now: datetime | None = None,
+) -> None:
+    """在写业务结果前确认执行代次仍是当前租约。"""
+
+    current = _current_running_attempt(db, task.id)
+    current_time = now or utcnow()
+    if (
+        task.status != "running"
+        or current is None
+        or current.id != attempt.id
+        or current.execution_generation != attempt.execution_generation
+        or (owner is not None and current.lease_owner != owner)
+        or (current.lease_expires_at is not None and current.lease_expires_at <= current_time)
+    ):
+        raise DomainError("TASK_STALE_EXECUTION", "任务执行租约已失效，结果不会写回", 409, "retry")
+
+
+def claim_task_execution(
+    db: Session,
+    task_id: int,
+    *,
+    owner: str,
+    now: datetime | None = None,
+    lease_seconds: int = 600,
+) -> tuple[Task, TaskAttempt] | None:
+    """锁定一个 queued/retry_wait 任务并创建或接管当前执行代次。"""
+
+    if not owner or len(owner) > 120:
+        raise DomainError("WORKER_OWNER_INVALID", "Worker 标识无效", 422)
+    if lease_seconds < 1:
+        raise DomainError("WORKER_LEASE_INVALID", "Worker 租约时长必须为正数", 422)
+    current = now or utcnow()
+    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+    if task is None or task.deleted_at is not None:
+        return None
+    if task.status not in {"queued", "retry_wait"}:
+        return None
+    if task.next_retry_at is not None and task.next_retry_at > current:
+        return None
+
+    queued_attempt = db.scalar(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id == task.id, TaskAttempt.status == "queued")
+        .order_by(TaskAttempt.execution_generation.desc(), TaskAttempt.id.desc())
+        .with_for_update()
+    )
+    if queued_attempt is None:
+        latest = _latest_attempt(db, task.id)
+        generation = max(task.retry_count + 1, (latest.execution_generation + 1) if latest else 1)
+        attempt = TaskAttempt(task_id=task.id, execution_generation=generation, status="running")
+        db.add(attempt)
+    else:
+        attempt = queued_attempt
+        attempt.status = "running"
+        if attempt.execution_generation <= task.retry_count:
+            attempt.execution_generation = task.retry_count + 1
+    attempt.lease_owner = owner
+    attempt.lease_expires_at = current + timedelta(seconds=lease_seconds)
+    attempt.error_code = None
+    task.status = "running"
+    task.current_step = "running"
+    task.started_at = task.started_at or current
+    task.next_retry_at = None
+    task.failure = None
+    db.flush()
+    return task, attempt
+
+
+def heartbeat_task(
+    db: Session,
+    task_id: int,
+    attempt_id: int,
+    *,
+    owner: str,
+    now: datetime | None = None,
+    lease_seconds: int = 600,
+) -> TaskAttempt:
+    """延长当前任务租约；旧代次或错误 Worker 不得续租。"""
+
+    current = now or utcnow()
+    attempt = db.scalar(select(TaskAttempt).where(TaskAttempt.id == attempt_id).with_for_update())
+    task = db.scalar(select(Task).where(Task.id == task_id).with_for_update())
+    if attempt is None or task is None:
+        raise DomainError("TASK_NOT_FOUND", "任务执行记录不存在", 404)
+    assert_current_attempt(db, task, attempt, owner=owner, now=current)
+    attempt.lease_expires_at = current + timedelta(seconds=lease_seconds)
+    task.updated_at = current
+    db.flush()
+    return attempt
+
+
+def recover_expired_leases(
+    db: Session,
+    *,
+    limit: int = 50,
+    now: datetime | None = None,
+    retry_delay_seconds: int = 5,
+) -> list[int]:
+    """把过期执行代次转为可恢复任务，并为未知模型成本保留预算。"""
+
+    from .budget import settle_budget
+    from .models import BudgetReservation
+
+    if not 1 <= limit <= 100:
+        raise DomainError("WORKER_BATCH_INVALID", "Worker 批量大小必须在 1 到 100 之间", 422)
+    current = now or utcnow()
+    attempt_rows = list(
+        db.scalars(
+            select(TaskAttempt)
+            .where(
+                TaskAttempt.status == "running",
+                TaskAttempt.lease_expires_at.is_not(None),
+                TaskAttempt.lease_expires_at <= current,
+            )
+            .order_by(TaskAttempt.lease_expires_at.asc(), TaskAttempt.id.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        ).all()
+    )
+    recovered: list[int] = []
+    for expired_attempt in attempt_rows:
+        task = db.scalar(select(Task).where(Task.id == expired_attempt.task_id).with_for_update())
+        if task is None or task.deleted_at is not None:
+            expired_attempt.status = "expired"
+            expired_attempt.error_code = "TASK_SOURCE_DELETED"
+            expired_attempt.finished_at = current
+            continue
+        latest_running = _current_running_attempt(db, task.id)
+        if task.status != "running" or latest_running is None or latest_running.id != expired_attempt.id:
+            expired_attempt.status = "expired"
+            expired_attempt.error_code = "TASK_STALE_EXECUTION"
+            expired_attempt.finished_at = current
+            continue
+
+        expired_attempt.status = "expired"
+        expired_attempt.error_code = "TASK_LEASE_EXPIRED"
+        expired_attempt.finished_at = current
+        task.status = "retry_wait"
+        task.current_step = "retry_wait"
+        task.retry_count += 1
+        task.next_retry_at = current + timedelta(seconds=max(0, retry_delay_seconds))
+        task.failure = {
+            "code": "TASK_LEASE_EXPIRED",
+            "message": "Worker 租约过期，任务将自动恢复",
+            "retryable": True,
+        }
+        # 模型调用是否已经发出无法从租约超时本身推断；未知预留不能释放成零成本。
+        for reservation in db.scalars(
+            select(BudgetReservation).where(
+                BudgetReservation.task_id == task.id,
+                BudgetReservation.status == "reserved",
+            )
+        ).all():
+            settle_budget(db, reservation.id, None)
+        db.add(TaskAttempt(task_id=task.id, execution_generation=task.retry_count + 1, status="queued"))
+        retry_event = db.scalar(
+            select(TaskOutbox).where(
+                TaskOutbox.task_id == task.id,
+                TaskOutbox.event_type == "task.retry",
+                TaskOutbox.status.in_(["pending", "claimed"]),
+            )
+        )
+        if retry_event is None:
+            db.add(
+                TaskOutbox(
+                    task_id=task.id,
+                    event_type="task.retry",
+                    payload={"retry_count": task.retry_count, "reason": "lease_expired"},
+                    available_at=task.next_retry_at,
+                )
+            )
+        recovered.append(task.id)
+    db.flush()
+    return recovered
+
+
+def mark_task_running(
+    db: Session,
+    task: Task,
+    *,
+    lease_owner: str = "local-demo-worker",
+    execution_generation: int | None = None,
+) -> TaskAttempt:
     """同步演示 Worker 的认领记录。"""
 
     task.status = "running"
     task.current_step = "running"
     task.started_at = utcnow()
+    generation = execution_generation or task.retry_count + 1
     attempt = TaskAttempt(
         task_id=task.id,
-        execution_generation=task.retry_count + 1,
-        lease_owner="local-demo-worker",
+        execution_generation=generation,
+        lease_owner=lease_owner,
         lease_expires_at=utcnow() + timedelta(minutes=10),
         status="running",
     )
@@ -501,6 +776,8 @@ def finish_task(
 ) -> None:
     """业务结果写入后再结算功能次数。"""
 
+    if attempt is not None:
+        assert_current_attempt(db, task, attempt)
     task.status = "succeeded"
     task.current_step = "completed"
     task.progress = {"completed": 1, "total": 1}
@@ -526,6 +803,20 @@ def fail_task(
     task = db.get(Task, task_id)
     if task is None:
         raise DomainError("TASK_NOT_FOUND", "任务不存在", 404)
+    attempt = None
+    if attempt_id:
+        attempt = db.get(TaskAttempt, attempt_id)
+        if attempt is None:
+            return task
+        current = _current_running_attempt(db, task.id)
+        # 旧 Worker 的异常不能覆盖租约恢复后新代次的结果。
+        if task.status != "running" or current is None or current.id != attempt.id:
+            if attempt.status == "running":
+                attempt.status = "stale"
+                attempt.error_code = "TASK_STALE_EXECUTION"
+                attempt.finished_at = utcnow()
+            db.flush()
+            return task
     task.status = "failed"
     task.current_step = "failed"
     task.failure = {
@@ -534,12 +825,10 @@ def fail_task(
         "retryable": True,
     }
     task.completed_at = utcnow()
-    if attempt_id:
-        attempt = db.get(TaskAttempt, attempt_id)
-        if attempt is not None:
-            attempt.status = "failed"
-            attempt.error_code = task.failure["code"]
-            attempt.finished_at = utcnow()
+    if attempt is not None:
+        attempt.status = "failed"
+        attempt.error_code = task.failure["code"]
+        attempt.finished_at = utcnow()
     if reservation_id is not None:
         release_feature(db, reservation_id, "任务失败，结果未交付")
     db.flush()
@@ -557,9 +846,10 @@ def model_call(
     status: str = "succeeded",
     input_tokens: int | None = None,
     output_tokens: int | None = None,
-    cost_usd: float | None = None,
+    cost_usd: Decimal | float | None = None,
     error_code: str | None = None,
     duration_ms: int | None = None,
+    budget_reservation_id: int | None = None,
 ) -> ModelCall:
     """记录模型调用元数据，不保存简历、JD 或回答正文。"""
 
@@ -577,6 +867,15 @@ def model_call(
         duration_ms=duration_ms,
     )
     db.add(call)
+    if budget_reservation_id is not None:
+        from .models import BudgetReservation
+
+        db.flush()
+        reservation = db.get(BudgetReservation, budget_reservation_id)
+        if reservation is None:
+            raise DomainError("BUDGET_RESERVATION_NOT_FOUND", "模型预算预留不存在", 409)
+        reservation.model_call_id = call.id
+        settle_budget(db, budget_reservation_id, Decimal(str(cost_usd)) if cost_usd is not None else None)
     return call
 
 
@@ -685,10 +984,16 @@ def run_local_task(
     db: Session,
     task: Task,
     reservation: UsageReservation | None,
-    work: Callable[[], dict[str, Any]],
+    work: Callable[[], dict[str, Any] | ModelResult],
     *,
     on_success: Callable[[dict[str, Any]], None] | None = None,
     feature: str | None = None,
+    cost_feature: str | None = None,
+    estimated_input_tokens: int = 12000,
+    estimated_output_tokens: int = 4000,
+    attempt: TaskAttempt | None = None,
+    lease_owner: str = "local-demo-worker",
+    task_result: dict[str, Any] | None = None,
 ) -> None:
     """在没有 Celery 前置依赖时执行一个可追踪的本地任务。
 
@@ -696,32 +1001,91 @@ def run_local_task(
     的任务记录。真实队列接入时可复用同一组状态迁移函数。
     """
 
-    attempt: TaskAttempt | None = None
-    try:
-        attempt = mark_task_running(db, task)
+    if settings.execution_mode == "worker":
+        # HTTP 进程只负责创建任务、预留次数和提交 outbox；独立 Worker 会在提交后执行。
+        # 不在这里预先认领，避免 API 进程和 Worker 同时写同一执行代次。
         db.commit()
-        value = work()
+        return
+
+    budget_reservation = None
+    provider_name = settings.model_provider.lower() or "local"
+    model_name = settings.model_name
+    billed_feature = cost_feature or feature
+    try:
+        attempt = attempt or mark_task_running(db, task, lease_owner=lease_owner)
+        if billed_feature:
+            budget_reservation = reserve_budget(
+                db,
+                account_id=task.account_id,
+                task_id=task.id,
+                provider=provider_name,
+                model=model_name,
+                input_tokens=0 if provider_name == "local" else estimated_input_tokens,
+                output_tokens=0 if provider_name == "local" else estimated_output_tokens,
+                call_key=f"{task.public_id}:{attempt.execution_generation}:{billed_feature}",
+            )
+        db.commit()
+        raw_value = work()
+        model_result = raw_value if isinstance(raw_value, ModelResult) else None
+        value = model_result.value if model_result is not None else raw_value
         # commit 后刷新对象，避免旧事务状态覆盖其他 Worker 的字段。
         db.refresh(task)
         if on_success is not None:
             on_success(value)
-        finish_task(db, task, reservation, value, attempt=attempt)
-        if feature:
-            model_call(db, task.account_id, task.id, feature, "local", "deterministic-v1")
-        db.commit()
-    except Exception as exc:
-        db.rollback()
-        fail_task(db, task.id, reservation.id if reservation else None, exc, attempt_id=attempt.id if attempt else None)
-        if feature:
+        finish_task(db, task, reservation, task_result if task_result else value, attempt=attempt)
+        if billed_feature:
+            provider_name = model_result.provider if model_result is not None else provider_name
+            model_name = model_result.model if model_result is not None else model_name
+            input_tokens = model_result.input_tokens if model_result is not None else None
+            output_tokens = model_result.output_tokens if model_result is not None else None
+            actual_cost = model_result.cost_usd if model_result is not None else None
+            price = ensure_price_version(db, provider_name, model_name)
+            if actual_cost is None and provider_name == "local":
+                actual_cost = Decimal("0")
+            if actual_cost is None and input_tokens is not None and output_tokens is not None:
+                actual_cost = actual_cost_from_price(
+                    price,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                )
             model_call(
                 db,
                 task.account_id,
                 task.id,
-                feature,
-                "local",
-                "deterministic-v1",
+                billed_feature,
+                provider_name,
+                model_name,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=actual_cost,
+                budget_reservation_id=budget_reservation.id if budget_reservation else None,
+            )
+        mark_outbox_published(db, task.id)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        if budget_reservation is not None:
+            try:
+                if provider_name == "local":
+                    release_budget(db, budget_reservation.id)
+                else:
+                    # 外部调用是否已发出无法可靠判断，预算必须转为未知持有，不能当作零成本释放。
+                    settle_budget(db, budget_reservation.id, None)
+            except Exception:
+                db.rollback()
+        fail_task(db, task.id, reservation.id if reservation else None, exc, attempt_id=attempt.id if attempt else None)
+        if billed_feature:
+            model_call(
+                db,
+                task.account_id,
+                task.id,
+                billed_feature,
+                provider_name,
+                model_name,
                 status="failed",
                 error_code=getattr(exc, "code", "TASK_EXECUTION_FAILED"),
+                budget_reservation_id=None,
             )
+        mark_outbox_published(db, task.id)
         db.commit()
         raise

@@ -142,7 +142,7 @@ def compare_salary(preference: dict[str, Any] | None, job_salary: dict[str, Any]
         if job_salary and _field_status(job_salary) == "negotiable":
             return {"status": "unknown", "explanation": "岗位薪资为面议，暂不可与期望范围比较。"}
         return {"status": "unknown", "explanation": "岗位未披露可比较的薪资范围。"}
-    fields = ("currency", "period", "tax_basis")
+    fields = ("currency", "period", "tax_basis", "salary_months")
     if any(not preference.get(field) or not job_salary.get(field) for field in fields):
         return {"status": "unknown", "explanation": "币种、周期或税前税后口径缺失，暂不可比较。"}
     if any(preference.get(field) != job_salary.get(field) for field in fields):
@@ -171,7 +171,7 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
         results.append({"condition": "job_title", "status": "matched", "explanation": "求职期望明确表示不限制岗位方向。"})
     elif title.get("status") != "specified" or not job_title:
         results.append({"condition": "job_title", "status": "unknown", "explanation": "岗位方向信息不足。"})
-    elif str(title.get("value", "")).lower() in str(job_title).lower() or str(job_title).lower() in str(title.get("value", "")).lower():
+    elif _job_title_matches(str(title.get("value", "")), str(job_title), job_fields):
         results.append({"condition": "job_title", "status": "matched", "explanation": "岗位名称方向相符。"})
     else:
         results.append({"condition": "job_title", "status": "unknown", "explanation": "名称不同，需要结合实际职责确认方向。"})
@@ -209,6 +209,37 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
         }
     )
     return results
+
+
+def _job_title_matches(expected: str, actual: str, job_fields: dict[str, Any]) -> bool:
+    """用岗位方向和职责共同判断近义岗位，避免只依赖字符串包含。"""
+
+    expected_value = expected.strip().lower()
+    actual_value = actual.strip().lower()
+    if not expected_value or not actual_value:
+        return False
+    if expected_value in actual_value or actual_value in expected_value:
+        return True
+    aliases = {
+        "前端": {"前端开发", "web前端", "前端工程师", "frontend", "frontend engineer"},
+        "后端": {"后端开发", "后端工程师", "backend", "backend engineer"},
+        "产品": {"产品经理", "产品负责人", "product manager", "pm"},
+        "运营": {"运营经理", "用户运营", "内容运营", "增长运营"},
+    }
+    for family, names in aliases.items():
+        expected_in_family = family in expected_value or any(name in expected_value for name in names)
+        actual_in_family = family in actual_value or any(name in actual_value for name in names)
+        if expected_in_family and actual_in_family:
+            return True
+    expected_tokens = _tokens(expected_value)
+    actual_tokens = _tokens(actual_value)
+    if expected_tokens and actual_tokens and expected_tokens & actual_tokens:
+        return True
+    responsibility_text = " ".join(
+        str(item.get("text", item))
+        for item in (job_fields.get("responsibilities") or [])
+    )
+    return bool(expected_tokens & _tokens(responsibility_text))
 
 
 def build_match_result(

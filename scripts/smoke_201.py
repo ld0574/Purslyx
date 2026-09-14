@@ -296,6 +296,13 @@ def main() -> None:
         file_response = client.get(f"{BASE_URL}/api/v1/documents/{file_document['id']}/file", headers=web_headers)
         if file_response.status_code != 200 or "张三" not in file_response.text:
             raise RuntimeError("上传文件的私有下载结果无效")
+        file_impact_response, file_impact_body = call(client, "GET", f"/api/v1/documents/{file_document['id']}/deletion-impact", headers=web_headers)
+        file_impact_etag = file_impact_response.headers.get("ETag")
+        if not data_of(file_impact_body).get("impact_version") or not file_impact_etag:
+            raise RuntimeError("文件资料删除影响快照无效")
+        call(client, "DELETE", f"/api/v1/documents/{file_document['id']}", expected=(204,), headers={**web_headers, "If-Match": file_impact_etag})
+        if client.get(f"{BASE_URL}/api/v1/documents/{file_document['id']}/file", headers=web_headers).status_code != 404:
+            raise RuntimeError("删除资料后原始文件仍可访问")
 
         assert_error(
             client,
@@ -618,6 +625,48 @@ def main() -> None:
             raise RuntimeError("删除影响快照没有返回 ETag")
         call(client, "DELETE", f"/api/v1/documents/{deleted_id}", expected=(204,), headers={**web_headers, "If-Match": deletion_etag})
         assert_error(client, "GET", f"/api/v1/documents/{deleted_id}", 404, "RESOURCE_NOT_FOUND", headers=web_headers)
+
+        # 删除已被分析链路引用的简历，验证影响集合中的派生资源同时撤销访问。
+        cascade_impact_response, cascade_impact_body = call(
+            client,
+            "GET",
+            f"/api/v1/documents/{resume['id']}/deletion-impact",
+            headers=web_headers,
+        )
+        cascade_impact = data_of(cascade_impact_body)
+        affected = cascade_impact.get("affected") or {}
+        if int(affected.get("versions") or 0) < 1 or int(affected.get("analyses") or 0) < 1:
+            raise RuntimeError("级联删除影响快照没有识别简历版本和分析报告")
+        cascade_etag = cascade_impact_response.headers.get("ETag")
+        if not cascade_etag:
+            raise RuntimeError("级联删除影响快照没有返回 ETag")
+        call(
+            client,
+            "DELETE",
+            f"/api/v1/documents/{resume['id']}",
+            expected=(204,),
+            headers={**web_headers, "If-Match": cascade_etag},
+        )
+        for resource_path in (
+            f"/api/v1/documents/{resume['id']}",
+            f"/api/v1/analyses/{analysis['id']}",
+            f"/api/v1/rewrites/{rewrite['id']}",
+            f"/api/v1/interviews/{interview['id']}",
+            f"/api/v1/resumes/{variant['id']}",
+        ):
+            assert_error(client, "GET", resource_path, 404, "RESOURCE_NOT_FOUND", headers=web_headers)
+        _, expired_export_body = call(client, "GET", f"/api/v1/exports/{export['id']}", headers=web_headers)
+        expired_export = data_of(expired_export_body)
+        if expired_export.get("status") != "expired" or expired_export.get("file_available"):
+            raise RuntimeError("级联删除没有把导出标为过期")
+        assert_error(
+            client,
+            "GET",
+            f"/api/v1/exports/{export['id']}/file",
+            404,
+            "RESOURCE_NOT_FOUND",
+            headers=web_headers,
+        )
         call(
             client,
             "POST",
@@ -645,6 +694,7 @@ def main() -> None:
                 "interview_status_after_answer": "awaiting_answer",
                 "cross_account_isolation": True,
                 "delete_old_entry_blocked": True,
+                "cascade_delete_access_revoked": True,
                 "auth_contract": True,
             },
             ensure_ascii=False,
