@@ -4,7 +4,8 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-local_env_file="${PURSLYX_LOCAL_ENV_FILE:-$project_dir/docs/02-technical/deployment/本地开发环境.md}"
+# 演示环境只有一个事实来源，避免通过环境变量误指向 202 或其他数据库。
+local_env_file="$project_dir/docs/02-technical/deployment/本地开发环境.md"
 
 if [[ ! -f "$local_env_file" ]]; then
   echo "找不到本地开发环境文件：$local_env_file" >&2
