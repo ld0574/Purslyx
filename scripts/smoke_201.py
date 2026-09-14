@@ -92,6 +92,8 @@ def register_and_login(client: httpx.Client, email: str) -> tuple[dict[str, Any]
         json={"email": email, "password": PASSWORD, "registration_role": "seeker"},
     )
     registration = data_of(body)
+    if registration.get("status") != "verification_requested":
+        raise RuntimeError("注册没有返回中性受理状态")
     verification_token = registration.get("verification_token")
     if verification_token:
         call(client, "POST", "/api/v1/auth/verify-email", expected=(200,), json={"token": verification_token})
@@ -108,6 +110,16 @@ def register_and_login(client: httpx.Client, email: str) -> tuple[dict[str, Any]
     csrf_token = str(login.get("csrf_token") or "")
     if not access_token or not csrf_token:
         raise RuntimeError("登录没有返回访问令牌和 CSRF 令牌")
+    invalid_login = client.post(
+        f"{BASE_URL}/api/v1/auth/login",
+        json={"email": email, "password": "wrong-purslyx-password-2026"},
+    )
+    invalid_body = response_body(invalid_login)
+    invalid_error = invalid_body.get("error") or {}
+    if invalid_login.status_code != 401 or invalid_error.get("code") != "AUTH_INVALID_CREDENTIALS":
+        raise RuntimeError("错误凭据没有返回统一认证错误码")
+    if invalid_error.get("retryable") is not False or not invalid_error.get("request_id"):
+        raise RuntimeError("错误响应缺少 request_id 或 retryable")
     return login, access_token, csrf_token
 
 
@@ -205,6 +217,21 @@ def main() -> None:
 
         _, access_token, csrf_token = register_and_login(client, email)
         web_headers = auth_headers(access_token, csrf_token)
+
+        assert_error(
+            client,
+            "POST",
+            "/api/v1/documents",
+            403,
+            "CSRF_ORIGIN_INVALID",
+            headers={**web_headers, "Origin": "https://not-allowed.example", "Idempotency-Key": "origin-check"},
+            json={
+                "document_type": "resume",
+                "subject_type": "self_resume",
+                "title": "不应创建",
+                "text": "这条请求只用于验证 Origin。",
+            },
+        )
 
         # Bearer 会话也必须带 CSRF，避免把认证方式当成写请求绕过条件。
         assert_error(
@@ -591,6 +618,13 @@ def main() -> None:
             raise RuntimeError("删除影响快照没有返回 ETag")
         call(client, "DELETE", f"/api/v1/documents/{deleted_id}", expected=(204,), headers={**web_headers, "If-Match": deletion_etag})
         assert_error(client, "GET", f"/api/v1/documents/{deleted_id}", 404, "RESOURCE_NOT_FOUND", headers=web_headers)
+        call(
+            client,
+            "POST",
+            "/api/v1/auth/logout",
+            expected=(204,),
+            headers={**web_headers, "Origin": "http://127.0.0.1:8001"},
+        )
 
     print(
         json.dumps(
@@ -611,6 +645,7 @@ def main() -> None:
                 "interview_status_after_answer": "awaiting_answer",
                 "cross_account_isolation": True,
                 "delete_old_entry_blocked": True,
+                "auth_contract": True,
             },
             ensure_ascii=False,
         )
