@@ -117,10 +117,8 @@ from .services import (
     available_count,
     create_task,
     fail_task,
-    finish_task,
     grant_feature,
     grant_trial_if_needed,
-    mark_task_running,
     model_call,
     page_rows,
     payload_hash,
@@ -2531,22 +2529,30 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
     db.add(export)
     db.flush()
     db.commit()
+
+    # PDF 也必须服从统一的任务执行模式：inline 只是在当前请求中调用同一个任务
+    # 生命周期，worker 模式则只提交 queued + outbox，由 PostgreSQL Worker 认领。
     output_dir = settings.export_dir.resolve()
     output_path = output_dir / f"{export.public_id}.pdf"
     render_path = output_dir / f".{export.public_id}.pdf.rendering"
-    published_path: Path | None = None
-    attempt: TaskAttempt | None = None
-    try:
-        attempt = mark_task_running(db, task)
-        db.commit()
+
+    def work() -> dict[str, Any]:
         render_path.unlink(missing_ok=True)
         render_resume_pdf(version.content, version.layout, render_path, "岗位版简历")
         byte_size = render_path.stat().st_size
         ensure_storage_capacity(db, byte_size)
         render_path.replace(output_path)
-        published_path = output_path
-        export.file_path = storage_key(output_path, settings.data_dir)
-        export.content_hash = sha256_bytes(output_path.read_bytes())
+        return {
+            "export_id": export.public_id,
+            "file_ready": True,
+            "file_path": storage_key(output_path, settings.data_dir),
+            "byte_size": byte_size,
+            "content_hash": sha256_bytes(output_path.read_bytes()),
+        }
+
+    def save_result(value: dict[str, Any]) -> None:
+        export.file_path = value["file_path"]
+        export.content_hash = value["content_hash"]
         export.status = "available"
         export.completed_at = now_utc()
         db.add(
@@ -2555,26 +2561,33 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
                 purpose="resume_pdf",
                 original_filename="purslyx-resume.pdf",
                 media_type="application/pdf",
-                byte_size=byte_size,
-                sha256=export.content_hash,
-                storage_key=storage_key(output_path, settings.data_dir),
+                byte_size=int(value["byte_size"]),
+                sha256=value["content_hash"],
+                storage_key=value["file_path"],
                 status="available",
             )
         )
-        task_result = {"export_id": export.public_id, "file_ready": True}
-        finish_task(db, task, None, task_result, attempt=attempt)
-        db.commit()
+
+    try:
+        run_local_task(
+            db,
+            task,
+            None,
+            work,
+            on_success=save_result,
+            task_result={"export_id": export.public_id, "file_ready": True},
+        )
     except Exception as exc:
         db.rollback()
         render_path.unlink(missing_ok=True)
-        if published_path is not None:
-            published_path.unlink(missing_ok=True)
-        fail_task(db, task.id, None, exc, attempt_id=attempt.id if attempt else None)
-        export = db.get(Export, export.id)
-        if export:
-            export.status = "failed"
-            export.failure_code = getattr(exc, "code", "PDF_EXPORT_FAILED")
-        db.commit()
+        # run_local_task 已经把任务置为 failed；API 只同步更新 PDF 业务占位，
+        # worker 模式下此分支不会执行，失败回写由 Worker 的兜底逻辑完成。
+        if settings.execution_mode != "worker":
+            export = db.get(Export, export.id)
+            if export:
+                export.status = "failed"
+                export.failure_code = getattr(exc, "code", "PDF_EXPORT_FAILED")
+            db.commit()
         if isinstance(exc, DomainError):
             raise exc
         raise DomainError("PDF_EXPORT_FAILED", "PDF 导出失败，请重试", 503, "retry") from exc

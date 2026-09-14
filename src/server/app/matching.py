@@ -242,6 +242,93 @@ def _job_title_matches(expected: str, actual: str, job_fields: dict[str, Any]) -
     return bool(expected_tokens & _tokens(responsibility_text))
 
 
+def _verification_items(
+    dimensions: list[dict[str, Any]],
+    conditions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """把证据缺口和未知条件整理成可执行的核实清单。"""
+
+    items: list[dict[str, Any]] = []
+    for dimension in dimensions:
+        for requirement in dimension.get("requirements", []):
+            finding = str(requirement.get("status", "needs_confirmation"))
+            if finding not in {"gap", "needs_confirmation"}:
+                continue
+            requirement_id = str(requirement.get("requirement_id", "requirement"))
+            quote = str(requirement.get("job_quote", "")).strip()
+            items.append(
+                {
+                    "id": f"requirement:{requirement_id}",
+                    "kind": "requirement",
+                    "status": finding,
+                    "dimension_key": dimension.get("key"),
+                    "requirement_id": requirement_id,
+                    "job_quote": quote,
+                    "reason": requirement.get("explanation", "当前资料不足以确认该要求。"),
+                    "question": f"请结合真实经历，具体说明你在“{quote[:160]}”中的背景、个人行动和可核验结果。",
+                }
+            )
+
+    condition_labels = {
+        "job_title": "岗位方向",
+        "location": "工作地点",
+        "work_mode": "办公方式",
+        "salary": "薪资口径",
+    }
+    for condition in conditions:
+        finding = str(condition.get("status", "unknown"))
+        if finding not in {"unknown", "conflicted"}:
+            continue
+        code = str(condition.get("condition", "condition"))
+        label = condition_labels.get(code, code)
+        items.append(
+            {
+                "id": f"condition:{code}",
+                "kind": "condition",
+                "status": finding,
+                "condition": code,
+                "label": label,
+                "reason": condition.get("explanation", "条件信息需要进一步确认。"),
+                "question": f"请确认“{label}”的实际情况，以及它是否满足本次岗位判断所需的口径。",
+            }
+        )
+    return items[:20]
+
+
+def _interview_questions(dimensions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按缺口优先生成招聘方可直接使用的结构化问题。"""
+
+    priority = {"gap": 0, "needs_confirmation": 1, "partially_supported": 2, "supported": 3}
+    rows: list[tuple[int, int, dict[str, Any], dict[str, Any]]] = []
+    sequence = 0
+    for dimension in dimensions:
+        for requirement in dimension.get("requirements", []):
+            sequence += 1
+            rows.append((priority.get(str(requirement.get("status")), 4), sequence, dimension, requirement))
+    rows.sort(key=lambda item: (item[0], item[1]))
+    result: list[dict[str, Any]] = []
+    for index, (_, _, dimension, requirement) in enumerate(rows[:6], start=1):
+        requirement_id = str(requirement.get("requirement_id", f"requirement-{index}"))
+        quote = str(requirement.get("job_quote", "")).strip()
+        finding = str(requirement.get("status", "needs_confirmation"))
+        result.append(
+            {
+                "id": f"interview:{requirement_id}",
+                "question_type": "requirement_verification",
+                "priority": "high" if finding in {"gap", "needs_confirmation"} else "normal",
+                "question_text": f"请举例说明你如何完成“{quote[:160]}”，其中你本人负责什么，最后结果如何核验？",
+                "basis": {
+                    "requirement_id": requirement_id,
+                    "dimension_key": dimension.get("key"),
+                    "finding_type": finding,
+                    "evidence_segment_keys": [item.get("segment_key") for item in requirement.get("evidence", []) if item.get("segment_key")],
+                    "rule_version": "interview-question-basis-v1",
+                },
+            }
+        )
+    return result
+
+
 def build_match_result(
     resume_content: dict[str, Any],
     job_content: dict[str, Any],
@@ -265,6 +352,7 @@ def build_match_result(
         dimension_rows[dimension].append(
             {
                 "requirement_id": requirement["requirement_id"],
+                "dimension_key": dimension,
                 "job_quote": requirement["text"],
                 "status": status,
                 "evidence": evidence,
@@ -326,6 +414,8 @@ def build_match_result(
         coverage = (total_coverage / applicable_weight).quantize(Decimal("0.0001"))
 
     conditions = compare_conditions(preference_content, job_fields)
+    verification_items = _verification_items(dimension_output, conditions)
+    interview_questions = _interview_questions(dimension_output)
     hard_conflict = any(
         item["status"] == "conflicted"
         and (preference_content or {}).get(
@@ -350,6 +440,8 @@ def build_match_result(
         "evidence_coverage": float(coverage) if coverage is not None else None,
         "dimensions": dimension_output,
         "conditions": conditions,
+        "verification_items": verification_items,
+        "interview_questions": interview_questions,
         "overall_advice": advice,
         "scoring_rule_version": "ability-v0.1",
         "result_schema_version": "analysis-result-v1",

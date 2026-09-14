@@ -6,7 +6,7 @@
 | --- | --- | --- | --- | --- |
 | F01、AC10 | 固定求职身份；不同账号不能读对方资料 | `POST /auth/register`、`POST /auth/login`、`GET /documents/{id}` | `api.py::register`、`security.py::current_web_account`；`documents.account_id` | `scripts/smoke_201.py`：跨账号 404 |
 | F02、AC08 | 简历和 JD 先解析为可检查草稿；支持 PDF/DOC/DOCX 上传，失败时保留输入 | `POST /documents`、`GET /documents/{id}` | `api.py::_read_document_request`、`DocumentUploadMeta`、`parse_document`；`documents`、`document_drafts`、`stored_files`；`index.html::decorateDocumentForms` | 正式冒烟校验 multipart 文件导入；工作台支持文字与文件两条入口 |
-| F03、AC03 | 评分有固定维度、逐条要求、证据和条件状态 | `POST /job-pool/items`、`GET /analyses/{id}` | `api.py::_start_analysis`、`_persist_analysis_details`；`matching.py`；`analysis_*` 表 | 正式冒烟断言报告状态、维度和分数 |
+| F03、AC03 | 评分有固定维度、逐条要求、证据、条件状态，并给出可执行的待核实事项和针对性面试问题 | `POST /job-pool/items`、`GET /analyses/{id}` | `api.py::_start_analysis`、`_persist_analysis_details`、`_analysis_view`；`matching.py`；`model_provider.py`；`analysis_*` 表 | 正式冒烟断言报告状态、维度、分数、`verification_items` 和 `interview_questions`；正式报告页展示跟进区 |
 | F09、AC11/12 | 任务先预留，成功结算，重复请求不重复扣减 | 同一分析键重复调用 `POST /job-pool/items/{id}/analyze` | `services.py::create_task`、`reserve_feature`、`settle_feature`；`async_tasks`、`usage_*` | 正式冒烟比较分析前后余额差为 1 |
 | F09 | 任务中心可恢复读取，状态变化可用 ETag/304 判断；失败任务沿用原输入重试 | `GET /api/v1/tasks`、`GET /api/v1/tasks/{id}`、`POST /api/v1/tasks/{id}/retry` | `api.py::list_tasks`、`get_task`、`retry_task`；`services.py::task_view` | 正式冒烟断言任务详情 304；页面已接通查看和重试 |
 | F12、AC17/18 | 岗位期望独立保存并生成版本快照 | `POST /preferences` | `api.py::create_preference`；`job_preferences`、`job_preference_versions` | 正式冒烟选择杭州前端期望 |

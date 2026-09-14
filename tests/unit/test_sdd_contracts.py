@@ -23,6 +23,7 @@ if not settings.database_url:
 from server.app.api import _finish_interview_summary, _pool_by_pk  # noqa: E402
 from server.app.errors import NotFoundError  # noqa: E402
 from server.app.models import Account, Interview, InterviewAnswer, InterviewQuestion, JobPoolItem  # noqa: E402
+from server.app.matching import build_match_result  # noqa: E402
 
 
 class _Rows:
@@ -127,3 +128,22 @@ def test_variant_pool_lookup_uses_internal_pk_with_isolation_predicates() -> Non
     missing = _PoolSession(None)
     with pytest.raises(NotFoundError):
         _pool_by_pk(missing, account_id=7, pool_id=42)
+
+
+def test_match_report_exposes_verification_items_and_targeted_questions() -> None:
+    report = build_match_result(
+        {
+            "schema_version": "document-content-v1",
+            "sections": [{"section_key": "experience", "position": 1, "segments": [{"segment_key": "exp-1", "text": "负责 React 前端开发。"}]}],
+        },
+        {
+            "schema_version": "document-content-v1",
+            "job_fields": {"title": "前端开发工程师", "requirements": ["熟悉 React 和 TypeScript", "需要带领跨团队项目交付"]},
+        },
+        None,
+    )
+
+    assert report["verification_items"]
+    assert any(item["kind"] == "condition" for item in report["verification_items"])
+    assert len(report["interview_questions"]) == 2
+    assert report["interview_questions"][0]["basis"]["rule_version"] == "interview-question-basis-v1"

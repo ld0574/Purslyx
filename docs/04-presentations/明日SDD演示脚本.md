@@ -27,7 +27,7 @@
 3. 确认两份资料；
 4. 对已确认版本生成报告。
 
-展示输出中的 `resume_version`、`job_version`、`ability_score`、`evidence_coverage` 和 `conditions`。
+展示输出中的 `resume_version`、`job_version`、`ability_score`、`evidence_coverage`、`conditions`，以及报告下方的“待核实事项与针对性面试问题”；强调问题来自报告依据，不是前端临时拼接。
 
 ## 3. 讲 SDD 追溯（2 分钟）
 

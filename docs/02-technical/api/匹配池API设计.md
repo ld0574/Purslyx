@@ -155,6 +155,8 @@
 | `evidence_coverage` | decimal string | 是 | 0—1，原始精度 |
 | `dimensions` | AnalysisDimension[] | 否 | 固定规则中的适用维度 |
 | `conditions` | ConditionResult[] | 否 | 岗位方向、地点、方式、薪资 |
+| `verification_items` | VerificationItem[] | 否 | 从证据缺口和未知／冲突条件整理出的待核实事项 |
+| `interview_questions` | InterviewQuestion[] | 否 | 按要求缺口优先生成的针对性面试问题及其依据 |
 | `overall_advice` | object | 是 | Schema 校验的结论与下一步 |
 | `scoring_rule_version` | string | 否 | 评分计算规则 |
 | `result_schema_version` | string | 否 | 报告 Schema |
@@ -164,6 +166,8 @@
 `AnalysisDimension` 包含 `key`、`label`、`base_weight`、`effective_weight`、`score`、`evidence_status`、`summary`、`requirements`。每个要求包含 JD 引用、`supported`／`partially_supported`／`gap`／`needs_confirmation` 状态及简历证据。前端展示服务端计算值，不能自行重算或把未知写成差距。
 
 `ConditionResult` 包含 `condition`、期望值、JD 值、强度、`matched`／`conflicted`／`unknown`／`not_applicable` 和说明。条件冲突不改变能力分。
+
+`VerificationItem` 包含 `id`、`kind`、`status`、定位字段、`reason` 和可直接使用的 `question`；只收录能力要求的缺口／待确认项及未知／冲突条件。`InterviewQuestion` 包含 `id`、`question_type`、`priority`、`question_text` 和 `basis`，其中 `basis` 至少记录对应要求、维度、发现类型、证据段落及 `rule_version`。两组字段由服务端生成，前端只负责展示。
 
 ### POST `/api/v1/analyses`
 

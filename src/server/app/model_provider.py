@@ -73,6 +73,25 @@ class ModelProvider:
         return ModelResult({"segments": result, "schema_version": "rewrite-result-v1"}, self.name, settings.model_name)
 
     def opening_questions(self, report: dict[str, Any], resume: dict[str, Any]) -> ModelResult:
+        targeted = report.get("interview_questions") or []
+        if targeted:
+            questions = [
+                {
+                    "id": _uuid_like(index),
+                    "question_type": "main",
+                    "main_no": index + 1,
+                    "parent_question_id": None,
+                    "question_text": str(item.get("question_text", "")),
+                    "basis": item.get("basis") or {"rule_version": "interview-question-basis-v1"},
+                    "status": "awaiting_answer",
+                    "answer": None,
+                    "feedback": None,
+                }
+                for index, item in enumerate(targeted[:3])
+                if item.get("question_text")
+            ]
+            if len(questions) == 3:
+                return ModelResult({"questions": questions, "schema_version": "interview-question-v1"}, self.name, settings.model_name)
         requirements = [
             item.get("job_quote")
             for dimension in report.get("dimensions", [])

@@ -396,8 +396,13 @@ def main() -> None:
 
         _, report_body = call(client, "GET", f"/api/v1/analyses/{analysis['id']}", headers=web_headers)
         report = data_of(report_body)
-        if not report.get("report", {}).get("dimensions"):
+        report_payload = report.get("report") or {}
+        if not report_payload.get("dimensions"):
             raise RuntimeError("报告没有能力维度和证据结果")
+        if not report_payload.get("verification_items"):
+            raise RuntimeError("正式报告没有待核实事项")
+        if not report_payload.get("interview_questions"):
+            raise RuntimeError("正式报告没有针对性面试问题")
         analysis_task_id = (analysis.get("task") or {}).get("id")
         if not analysis_task_id:
             raise RuntimeError("分析没有关联可读取的任务")

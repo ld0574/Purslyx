@@ -153,6 +153,12 @@
       .report-card { padding: 20px; border: 1px solid var(--line); border-radius: 16px; background: #fff; }
       .report-card.full { grid-column: 1 / -1; }
       .report-card h3 { font-size: 16px; }
+      .followup-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-top: 14px; }
+      .followup-list { display: grid; gap: 9px; }
+      .followup-item { padding: 12px; border-radius: 11px; background: #f7fafc; }
+      .followup-item strong { display: block; font-size: 13px; line-height: 1.5; }
+      .followup-item p { margin-top: 6px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .followup-item small { display: block; margin-top: 7px; color: var(--muted); font-size: 11px; line-height: 1.45; }
       .dimension { padding: 14px 0; border-bottom: 1px solid #edf3f6; }
       .dimension:last-child { border-bottom: 0; padding-bottom: 0; }
       .dimension-head { display: flex; justify-content: space-between; gap: 12px; }
@@ -328,6 +334,7 @@
         .score-block { width: 150px; height: 150px; }
         .score-block::after { width: 114px; height: 114px; }
         .score-copy strong { font-size: 36px; }
+        .followup-columns { grid-template-columns: 1fr; }
         .report-card.full { grid-column: auto; }
         .condition-row { grid-template-columns: 1fr 80px; }
         .condition-row > p { grid-column: 1 / -1; }
@@ -660,13 +667,26 @@
             <div class="report-card"><h3>能力维度与逐条依据</h3>${dimensions.map((dimension) => demoDimension(dimension)).join("") || `<div class="empty">暂无维度数据</div>`}</div>
             <div class="report-card"><h3>岗位条件对照</h3><div style="margin-top:8px">${conditions.map((item) => `<div class="condition-row"><strong>${esc({ job_title: "岗位方向", location: "地点", work_mode: "办公方式", salary: "薪资" }[item.condition] || item.condition)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.explanation)}</p></div>`).join("") || `<div class="empty">没有条件数据</div>`}</div></div>
             <div class="report-card full"><h3>输入版本</h3><div class="version-strip"><span class="version-chip">简历 · ${esc(result.resume?.version?.id || "—")} · v${esc(result.resume?.version?.version_no || "—")}</span><span class="version-chip">岗位 · ${esc(result.job?.version?.id || "—")} · v${esc(result.job?.version?.version_no || "—")}</span><span class="version-chip">分析 · ${esc(result.analysis?.id || "—")}</span></div><details class="raw-report"><summary>展开报告 JSON（用于讲接口与落库）</summary><pre>${esc(json(result))}</pre></details></div>
-          </div>`;
+          </div>
+          ${reportFollowupSections(report)}`;
         }
 
         function demoDimension(dimension) {
           const score = Number(dimension.score);
           const width = Number.isFinite(score) ? Math.max(0, Math.min(score, 100)) : 0;
           return `<div class="dimension"><div class="dimension-head"><strong>${esc(dimension.label)}</strong><span>${Number.isFinite(score) ? `${esc(number(score))} 分` : "不适用"}</span></div>${Number.isFinite(score) ? `<div class="bar"><i style="width:${width}%"></i></div>` : ""}${(dimension.requirements || []).map((item) => `<div class="requirement"><div class="requirement-top"><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.job_quote)}</p></div>${item.evidence?.length ? `<div class="evidence">依据：${esc(item.evidence.map((evidence) => evidence.quote).join("；"))}</div>` : `<div class="evidence missing">暂无对应原文依据：保留为待确认，不直接判定为不具备。</div>`}</div>`).join("")}</div>`;
+        }
+
+        function reportFollowupSections(report) {
+          const verificationItems = Array.isArray(report?.verification_items) ? report.verification_items : [];
+          const interviewQuestions = Array.isArray(report?.interview_questions) ? report.interview_questions : [];
+          const verification = verificationItems.length
+            ? verificationItems.map((item) => `<article class="followup-item"><div class="item-title"><strong>${esc(item.label || item.job_quote || item.condition || "待核实事项")}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><p>${esc(item.reason || "需要进一步确认")}</p><small>建议核实：${esc(item.question || "请补充具体事实和结果")}</small></article>`).join("")
+            : `<div class="empty"><div><strong>暂无待核实事项</strong><p>当前报告没有发现需要单独列出的证据或条件缺口。</p></div></div>`;
+          const questions = interviewQuestions.length
+            ? interviewQuestions.map((item, index) => `<article class="followup-item"><div class="item-title"><strong>问题 ${esc(String(index + 1))}</strong><span class="tag ${item.priority === "high" ? "attention" : "neutral"}">${esc(item.priority === "high" ? "重点核实" : "常规核实")}</span></div><p>${esc(item.question_text || "")}</p><small>依据：${esc(item.basis?.requirement_id || item.basis?.dimension_key || "岗位要求")}</small></article>`).join("")
+            : `<div class="empty"><div><strong>暂无针对性问题</strong><p>请先补充可评估的岗位要求。</p></div></div>`;
+          return `<div class="report-card full report-followup-card"><h3>待核实事项与针对性面试问题</h3><div class="followup-columns"><div><div class="eyebrow">VERIFICATION ITEMS</div><div class="followup-list">${verification}</div></div><div><div class="eyebrow">INTERVIEW QUESTIONS</div><div class="followup-list">${questions}</div></div></div></div>`;
         }
 
         function authPage() {
@@ -893,6 +913,16 @@
           content.insertAdjacentHTML("beforeend", variantEditor(state.workspace.selectedVariant));
         }
 
+        function decorateReportPage() {
+          if (state.workspace.page !== "report") return;
+          const report = state.workspace.selectedAnalysis?.report;
+          if (!report) return;
+          const content = document.querySelector(".workspace-content");
+          const reportGrid = content?.querySelector(".report-grid");
+          if (!reportGrid || reportGrid.querySelector(".report-followup-card")) return;
+          reportGrid.insertAdjacentHTML("beforeend", reportFollowupSections(report));
+        }
+
         function interviewPage() {
           const interviews = state.workspace.data.interviews;
           const selected = state.workspace.selectedInterview;
@@ -1032,6 +1062,7 @@
           // 单文件 Web 端在每次局部刷新后重新补上语义化表单控件。
           decoratePreferenceForms();
           decorateDocumentForms();
+          decorateReportPage();
           decorateVariantPage();
         }
 
