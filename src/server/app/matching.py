@@ -133,7 +133,10 @@ def _field_status(obj: dict[str, Any] | None) -> str:
 def compare_salary(preference: dict[str, Any] | None, job_salary: dict[str, Any] | None) -> dict[str, Any]:
     """按文档规则比较薪资，不把未知当成冲突。"""
 
-    if not preference or _field_status(preference) != "specified":
+    preference_status = _field_status(preference)
+    if preference_status == "unrestricted":
+        return {"status": "matched", "explanation": "求职期望明确表示不限制薪资。"}
+    if not preference or preference_status != "specified":
         return {"status": "unknown", "explanation": "求职期望未明确提供薪资范围。"}
     if not job_salary or _field_status(job_salary) != "specified":
         if job_salary and _field_status(job_salary) == "negotiable":
@@ -164,7 +167,9 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
     results: list[dict[str, Any]] = []
     title = preference.get("job_title") or {}
     job_title = job_fields.get("title") or job_fields.get("job_title")
-    if title.get("status") != "specified" or not job_title:
+    if title.get("status") == "unrestricted":
+        results.append({"condition": "job_title", "status": "matched", "explanation": "求职期望明确表示不限制岗位方向。"})
+    elif title.get("status") != "specified" or not job_title:
         results.append({"condition": "job_title", "status": "unknown", "explanation": "岗位方向信息不足。"})
     elif str(title.get("value", "")).lower() in str(job_title).lower() or str(job_title).lower() in str(title.get("value", "")).lower():
         results.append({"condition": "job_title", "status": "matched", "explanation": "岗位名称方向相符。"})
@@ -173,8 +178,13 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
 
     locations = preference.get("locations") or {}
     wanted = {str(item).strip() for item in locations.get("values", []) if str(item).strip()}
-    actual = {str(item).strip() for item in (job_fields.get("locations") or []) if str(item).strip()}
-    if locations.get("status") != "specified" or not actual:
+    raw_actual = job_fields.get("locations") or []
+    if isinstance(raw_actual, str):
+        raw_actual = re.split(r"[/／、,，|]", raw_actual)
+    actual = {str(item).strip() for item in raw_actual if str(item).strip()}
+    if locations.get("status") == "unrestricted":
+        results.append({"condition": "location", "status": "matched", "explanation": "求职期望明确表示不限制地点。"})
+    elif locations.get("status") != "specified" or not actual:
         results.append({"condition": "location", "status": "unknown", "explanation": "地点未完整披露或未提供期望。"})
     elif wanted & actual:
         results.append({"condition": "location", "status": "matched", "explanation": "岗位地点包含可接受城市。"})
@@ -183,7 +193,9 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
 
     work_mode = preference.get("work_mode") or {}
     actual_mode = job_fields.get("work_mode")
-    if work_mode.get("status") != "specified" or not actual_mode:
+    if work_mode.get("status") == "unrestricted":
+        results.append({"condition": "work_mode", "status": "matched", "explanation": "求职期望明确表示不限制办公方式。"})
+    elif work_mode.get("status") != "specified" or not actual_mode:
         results.append({"condition": "work_mode", "status": "unknown", "explanation": "办公方式未完整披露或未提供期望。"})
     elif work_mode.get("value") == actual_mode:
         results.append({"condition": "work_mode", "status": "matched", "explanation": "办公方式符合已确认期望。"})

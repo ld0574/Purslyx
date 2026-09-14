@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 
 from .db import get_db
 from .errors import DomainError, NotFoundError
-from .models import Account, AccountRole, AdminPermission, AdminRole, BrowserSession, WebSession
+from .models import Account, AccountRole, AdminPermission, AdminRole, BrowserSession, RolePermission, WebSession
 
 
 PASSWORD_HASHER = PasswordHasher()

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import AdminPermission, AdminRole, AccountRole, RolePermission
+from .config import settings
+from .models import Account, AdminPermission, AdminRole, AccountRole, RolePermission
+from .security import hash_password, normalize_email
 
 
 PERMISSIONS = [
@@ -51,3 +55,20 @@ def seed_permissions(db: Session) -> None:
     for permission in permission_map.values():
         if permission.id not in existing:
             db.add(RolePermission(role_id=role.id, permission_id=permission.id))
+
+    # 只有部署者显式注入管理员邮箱和密码时才创建管理员，不在代码中放默认凭据。
+    if settings.admin_email and settings.admin_password:
+        account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(settings.admin_email)))
+        if account is None:
+            account = Account(
+                email=settings.admin_email.strip(),
+                email_normalized=normalize_email(settings.admin_email),
+                password_hash=hash_password(settings.admin_password),
+                registration_role="recruiter",
+                status="active",
+                email_verified_at=datetime.now(timezone.utc),
+            )
+            db.add(account)
+            db.flush()
+        if db.scalar(select(AccountRole).where(AccountRole.account_id == account.id, AccountRole.role_id == role.id)) is None:
+            db.add(AccountRole(account_id=account.id, role_id=role.id))

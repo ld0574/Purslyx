@@ -164,6 +164,7 @@ def parse_job_text(text: str) -> dict[str, Any]:
     salary_text = None
     requirements: list[str] = []
     responsibilities: list[str] = []
+    work_mode = None
     for line in lines[1:]:
         if re.search(r"公司|企业", line) and company is None:
             company = re.sub(r"^(公司|企业)\s*[:：]?\s*", "", line)
@@ -171,6 +172,13 @@ def parse_job_text(text: str) -> dict[str, Any]:
             salary_text = line
         if re.search(r"地点|工作地|办公地|城市", line) and location_text is None:
             location_text = re.sub(r"^(地点|工作地|办公地|城市)\s*[:：]?\s*", "", line)
+        if work_mode is None:
+            if re.search(r"远程|全远程|remote", line, re.IGNORECASE):
+                work_mode = "remote"
+            elif re.search(r"混合|灵活办公|hybrid", line, re.IGNORECASE):
+                work_mode = "hybrid"
+            elif re.search(r"现场|坐班|到岗|onsite", line, re.IGNORECASE):
+                work_mode = "onsite"
         if re.match(r"^(要求|任职要求|资格|技能)\s*[:：]?", line):
             continue
         if re.match(r"^(职责|工作内容|岗位职责)\s*[:：]?", line):
@@ -184,9 +192,13 @@ def parse_job_text(text: str) -> dict[str, Any]:
         "title": title,
         "company_name": company,
         "location_text": location_text,
-        "work_mode": None,
+        "work_mode": work_mode,
         "salary_text": salary_text,
-        "locations": [location_text] if location_text else [],
+        "locations": (
+            [item.strip() for item in re.split(r"[/／、,，|]", location_text) if item.strip()]
+            if location_text
+            else []
+        ),
         "salary": parse_salary_text(salary_text) if salary_text else None,
         "requirements": requirements or responsibilities,
         "responsibilities": responsibilities,

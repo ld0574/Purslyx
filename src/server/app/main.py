@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -24,13 +25,13 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import engine, get_db, init_db
 from .errors import DomainError, NotFoundError
+from .api import router as api_router
 from .model_provider import get_model_provider
 from .models import Account, Analysis, Document, DocumentVersion
 from .security import hash_password
 
 
 DEMO_EMAIL = "demo@purslyx.local"
-DEMO_PASSWORD = "purslyx-demo-account-only"
 WEB_INDEX = Path(__file__).resolve().parents[2] / "web" / "index.html"
 
 
@@ -102,7 +103,8 @@ def _demo_account(db: Session) -> Account:
     account = Account(
         email=DEMO_EMAIL,
         email_normalized=DEMO_EMAIL,
-        password_hash=hash_password(DEMO_PASSWORD),
+        # 短入口账号不可登录；使用一次性随机密码，避免在代码中留下共享凭据。
+        password_hash=hash_password(secrets.token_urlsafe(32)),
         registration_role="seeker",
         status="active",
         email_verified_at=utcnow(),
@@ -187,9 +189,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Request-ID"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-CSRF-Token", "Idempotency-Key"],
 )
+app.include_router(api_router)
 
 
 @app.exception_handler(DomainError)

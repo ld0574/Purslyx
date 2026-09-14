@@ -160,6 +160,8 @@ class Document(TimestampMixin, Base):
     raw_text: Mapped[str | None] = mapped_column(Text)
     file_path: Mapped[str | None] = mapped_column(String(1024))
     file_sha256: Mapped[str | None] = mapped_column(String(64))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     draft_content: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     draft_revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     failure_code: Mapped[str | None] = mapped_column(String(80))
@@ -176,6 +178,8 @@ class DocumentVersion(Base):
     document_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     schema_version: Mapped[str] = mapped_column(String(80), default="document-content-v1", nullable=False)
     confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
@@ -194,6 +198,8 @@ class Preference(TimestampMixin, Base):
     is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -210,6 +216,8 @@ class Fact(TimestampMixin, Base):
     source_type: Mapped[str] = mapped_column(String(32), default="user_added", nullable=False)
     status: Mapped[str] = mapped_column(String(20), default="active", nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -229,6 +237,7 @@ class Task(TimestampMixin, Base):
     failure: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     required_actions: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     usage_feature: Mapped[str | None] = mapped_column(String(32))
     usage_reserved: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     retry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -341,6 +350,8 @@ class RewriteDecision(Base):
     decision: Mapped[str] = mapped_column(String(24), nullable=False)
     edited_text: Mapped[str | None] = mapped_column(Text)
     decision_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -355,6 +366,8 @@ class ResumeVariant(TimestampMixin, Base):
     title: Mapped[str] = mapped_column(String(160), nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="editing", nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -369,6 +382,9 @@ class ResumeVariantVersion(Base):
     version_no: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     layout: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    rewrite_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     template_version: Mapped[str] = mapped_column(String(80), default="resume-template-v1", nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
@@ -423,6 +439,8 @@ class Feedback(TimestampMixin, Base):
     context_type: Mapped[str | None] = mapped_column(String(32))
     context_id: Mapped[str | None] = mapped_column(String(36))
     status: Mapped[str] = mapped_column(String(20), default="new", nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
@@ -435,8 +453,10 @@ class ApplyClick(Base):
     account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     job_pool_item_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     platform: Mapped[str] = mapped_column(String(32), nullable=False)
-    target_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    # 统计事实只保存链接摘要，原始链接仍只留在岗位记录中。
+    source_url_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     click_token_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    metric_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
 
 
@@ -516,3 +536,481 @@ class MetricRollup(Base):
     rule_version: Mapped[str] = mapped_column(String(80), default="daily-metrics-v1", nullable=False)
     source_watermark_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+# 以下模型对应评审后的数据库设计中尚未在第一版草案出现的明细表。跨模块 ID 仍由
+# Service 在事务内校验，不创建数据库外键，保持项目数据库规范的可清理与可巡检特性。
+
+
+class StoredFile(Base):
+    """私有原件、成品和导出文件的元数据。"""
+
+    __tablename__ = "stored_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    purpose: Mapped[str] = mapped_column(String(40), nullable=False)
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    media_type: Mapped[str] = mapped_column(String(160), nullable=False)
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(1024), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="available", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class DocumentDraft(Base):
+    """资料解析草稿；确认后保留最小状态，正文可按清理策略移除。"""
+
+    __tablename__ = "document_drafts"
+    __table_args__ = (Index("ix_document_drafts_account_document", "account_id", "document_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    document_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="unconfirmed", nullable=False)
+    content: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    missing_field_codes: Mapped[list[str] | None] = mapped_column(JSON)
+    failure_code: Mapped[str | None] = mapped_column(String(80))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class PreferenceVersion(Base):
+    """完整的岗位期望不可变版本。"""
+
+    __tablename__ = "job_preference_versions"
+    __table_args__ = (UniqueConstraint("preference_id", "version_no", name="uk_preference_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    preference_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), default="self_confirmed", nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class FactVersion(Base):
+    """补充事实不可变版本。"""
+
+    __tablename__ = "resume_fact_versions"
+    __table_args__ = (UniqueConstraint("fact_id", "version_no", name="uk_fact_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    fact_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    fact_category: Mapped[str] = mapped_column(String(40), nullable=False)
+    fact_text: Mapped[str] = mapped_column(Text, nullable=False)
+    source_document_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    source_segment_key: Mapped[str | None] = mapped_column(String(96))
+    source_type: Mapped[str] = mapped_column(String(32), default="user_added", nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+class RewriteSegment(Base):
+    """逐段改写结果，避免把所有段落塞进不可筛选的大 JSON。"""
+
+    __tablename__ = "resume_rewrite_segments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    rewrite_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    segment_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    original_text: Mapped[str] = mapped_column(Text, nullable=False)
+    suggested_text: Mapped[str | None] = mapped_column(Text)
+    rationale: Mapped[str | None] = mapped_column(Text)
+    current_decision: Mapped[str | None] = mapped_column(String(24))
+    current_decision_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="available", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class RewriteEvidence(Base):
+    """改写建议引用的简历段落或已确认事实。"""
+
+    __tablename__ = "resume_rewrite_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    rewrite_segment_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    quote: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class BrowserJobDraft(Base):
+    """BOSS／猎聘浏览器侧上传的短期岗位草稿。"""
+
+    __tablename__ = "browser_job_drafts"
+    __table_args__ = (UniqueConstraint("account_id", "platform", "source_url_hash", "content_hash", name="uk_browser_draft_dedupe"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    platform: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    source_url_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    capture_schema_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    captured_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    job_title: Mapped[str | None] = mapped_column(String(200))
+    company_name: Mapped[str | None] = mapped_column(String(200))
+    location_text: Mapped[str | None] = mapped_column(String(300))
+    work_mode: Mapped[str | None] = mapped_column(String(24))
+    salary_text: Mapped[str | None] = mapped_column(String(300))
+    job_description_text: Mapped[str | None] = mapped_column(Text)
+    missing_field_codes: Mapped[list[str] | None] = mapped_column(JSON)
+    captured_payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(24), default="awaiting_confirmation", nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class AnalysisDimensionScore(Base):
+    """报告固定能力维度得分。"""
+
+    __tablename__ = "analysis_dimension_scores"
+    __table_args__ = (UniqueConstraint("analysis_id", "dimension_key", name="uk_analysis_dimension"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    analysis_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    dimension_key: Mapped[str] = mapped_column(String(48), nullable=False)
+    label: Mapped[str] = mapped_column(String(120), nullable=False)
+    base_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    effective_weight: Mapped[float] = mapped_column(Float, nullable=False)
+    score: Mapped[float | None] = mapped_column(Float)
+    evidence_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary: Mapped[str | None] = mapped_column(Text)
+
+
+class AnalysisRequirementResult(Base):
+    """报告中逐条 JD 要求的结论。"""
+
+    __tablename__ = "analysis_requirement_results"
+    __table_args__ = (UniqueConstraint("analysis_id", "requirement_id", name="uk_analysis_requirement"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    analysis_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    requirement_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    dimension_key: Mapped[str] = mapped_column(String(48), nullable=False)
+    position_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    requirement_text: Mapped[str] = mapped_column(Text, nullable=False)
+    finding_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    match_coefficient: Mapped[float] = mapped_column(Float, nullable=False)
+    coverage_flag: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AnalysisEvidence(Base):
+    """逐条要求的原文证据引用。"""
+
+    __tablename__ = "analysis_evidence"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    analysis_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    requirement_result_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    document_version_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    segment_key: Mapped[str | None] = mapped_column(String(96))
+    quote: Mapped[str] = mapped_column(Text, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class AnalysisConditionResult(Base):
+    """岗位方向、地点、办公方式、薪资的条件对照。"""
+
+    __tablename__ = "analysis_condition_results"
+    __table_args__ = (UniqueConstraint("analysis_id", "condition_code", name="uk_analysis_condition"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    analysis_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    condition_code: Mapped[str] = mapped_column(String(32), nullable=False)
+    result_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    preference_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    job_value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    strength: Mapped[str | None] = mapped_column(String(24))
+    explanation: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class UsageGrant(Base):
+    """试用或后台追加的不可变发放事实。"""
+
+    __tablename__ = "usage_grants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    operator_account_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    feature: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    batch_key: Mapped[str | None] = mapped_column(String(80), index=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    reason: Mapped[str] = mapped_column(String(500), nullable=False)
+    before_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    after_available: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class UsageReservation(Base):
+    """计次任务的预留到结算／释放生命周期。"""
+
+    __tablename__ = "usage_reservations"
+    __table_args__ = (UniqueConstraint("task_id", "feature", name="uk_usage_reservation_task_feature"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    feature: Mapped[str] = mapped_column(String(32), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="reserved", nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ModelPriceVersion(Base):
+    """模型价格版本；未知价格不能被当成零成本。"""
+
+    __tablename__ = "model_price_versions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(80), nullable=False)
+    model: Mapped[str] = mapped_column(String(120), nullable=False)
+    input_usd_per_million: Mapped[float | None] = mapped_column(Float)
+    cached_input_usd_per_million: Mapped[float | None] = mapped_column(Float)
+    output_usd_per_million: Mapped[float | None] = mapped_column(Float)
+    source_url: Mapped[str | None] = mapped_column(String(1024))
+    verified_on: Mapped[str | None] = mapped_column(String(10))
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class SiteBudgetBucket(Base):
+    """按上海自然日控制的全站预算和并发槽。"""
+
+    __tablename__ = "site_budget_buckets"
+    __table_args__ = (UniqueConstraint("metric_date", name="uk_budget_date"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    metric_date: Mapped[str] = mapped_column(String(10), nullable=False)
+    budget_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    reserved_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    settled_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    unknown_usd: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    concurrent_reserved: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    concurrent_limit: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class BudgetReservation(Base):
+    """单次模型调用的预算预留。"""
+
+    __tablename__ = "budget_reservations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    task_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    model_call_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    metric_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
+    upper_bound_usd: Mapped[float] = mapped_column(Float, nullable=False)
+    actual_cost_usd: Mapped[float | None] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(24), default="reserved", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class TaskInputRef(Base):
+    """任务创建时冻结的资源与版本引用。"""
+
+    __tablename__ = "task_input_refs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    resource_public_id: Mapped[str] = mapped_column(String(96), nullable=False)
+    version_no: Mapped[int | None] = mapped_column(Integer)
+    snapshot_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class TaskOutbox(Base):
+    """事务提交后再发布到队列的持久消息。"""
+
+    __tablename__ = "task_outbox"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="pending", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class TaskAttempt(Base):
+    """任务执行代次、租约和结果摘要。"""
+
+    __tablename__ = "task_attempts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    execution_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_owner: Mapped[str | None] = mapped_column(String(120))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    status: Mapped[str] = mapped_column(String(24), default="running", nullable=False)
+    error_code: Mapped[str | None] = mapped_column(String(80))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class TaskArtifact(Base):
+    """可恢复步骤的结构化产物引用，不直接向用户暴露。"""
+
+    __tablename__ = "task_artifacts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    value: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    file_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class WorkflowCheckpointRef(Base):
+    """业务任务到工作流检查点的最小映射。"""
+
+    __tablename__ = "workflow_checkpoint_refs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    workflow_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    thread_ref: Mapped[str] = mapped_column(String(160), nullable=False)
+    checkpoint_ref: Mapped[str | None] = mapped_column(String(160))
+    content_access_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class InterviewQuestion(Base):
+    """面试题目明细，问题正文仍受账号删除状态控制。"""
+
+    __tablename__ = "interview_questions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    interview_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    question_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    main_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    parent_question_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    position_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    question_text: Mapped[str] = mapped_column(Text, nullable=False)
+    basis: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="awaiting_answer", nullable=False)
+
+
+class InterviewAnswer(Base):
+    """一道题至多一条最终回答事实。"""
+
+    __tablename__ = "interview_answers"
+    __table_args__ = (UniqueConstraint("interview_id", "question_id", name="uk_interview_answer"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    interview_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    question_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    answer_text: Mapped[str] = mapped_column(Text, nullable=False)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class InterviewFeedback(Base):
+    """逐题结构化反馈。"""
+
+    __tablename__ = "interview_feedback"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    interview_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    question_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="available", nullable=False)
+    content: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    needs_followup: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InterviewSummary(Base):
+    """面试完成或提前结束的总结。"""
+
+    __tablename__ = "interview_summaries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    interview_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    completion_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    content: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+
+
+class IntegrityScanRun(Base):
+    """只读引用完整性巡检批次。"""
+
+    __tablename__ = "integrity_scan_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    scanned_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
+    summary: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
+class IntegrityScanFinding(Base):
+    """巡检发现的孤儿、跨账号或删除状态异常，不自动修复。"""
+
+    __tablename__ = "integrity_scan_findings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    scan_run_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
+    finding_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    resource_public_id: Mapped[str | None] = mapped_column(String(96))
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, nullable=False)
