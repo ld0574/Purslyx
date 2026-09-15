@@ -14,7 +14,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # 201 演示阶段的首个版本以 ORM 元数据建立完整基线；后续变更使用显式迁移。
+    # 201 PostgreSQL 环境的首个版本以 ORM 元数据建立完整基线；后续变更使用显式迁移。
     # 该操作是幂等的，不删除既有表和数据。
     bind = op.get_bind()
     Base.metadata.create_all(bind=bind)

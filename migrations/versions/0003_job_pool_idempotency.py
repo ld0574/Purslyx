@@ -36,5 +36,5 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # 201 演示库不通过回滚删除幂等事实。
+    # 201 数据库不通过回滚删除幂等事实。
     pass

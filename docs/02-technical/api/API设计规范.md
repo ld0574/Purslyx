@@ -4,7 +4,7 @@
 | --- | --- |
 | 版本 | v0.1 |
 | 更新日期 | 2026-09-14 |
-| 状态 | 待评审；用于生成 FastAPI Schema、前端类型和 OpenAPI，不代表接口已实现 |
+| 状态 | 已实现；作为 FastAPI Schema、前端调用和 OpenAPI 的共同约束 |
 | API 前缀 | `/api/v1` |
 | 技术基线 | FastAPI、Pydantic 2、SQLAlchemy 2、PostgreSQL 18 |
 | 上级设计 | [技术架构](../技术架构.md)、[技术模块设计索引](../modules/技术模块设计索引.md) |

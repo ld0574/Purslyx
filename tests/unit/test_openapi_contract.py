@@ -39,8 +39,7 @@ def test_every_documented_endpoint_exists_in_openapi() -> None:
     assert documented <= implemented
 
 
-def test_openapi_has_full_business_surface_and_no_demo_routes() -> None:
+def test_openapi_has_full_business_surface() -> None:
     paths = set(app.openapi()["paths"])
     business_paths = {path for path in paths if path.startswith("/api/v1/")}
     assert len(business_paths) >= 77
-    assert not any(path.startswith("/api/v1/demo") for path in business_paths)

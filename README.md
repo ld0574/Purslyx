@@ -33,7 +33,6 @@ Purslyx/
 │   └── 99-archive/                # 已停用或被替代的历史文档，注明归档原因
 ├── src/
 │   ├── web/                       # Web 端：页面、交互与应用逻辑
-│   ├── extension/                 # 浏览器插件：清单、内容脚本、弹窗与后台逻辑
 │   └── userscript/                # 篡改猴脚本：脚本入口、页面增强与网页交互
 ├── tests/                         # 核心流程测试、异常输入用例及测试专用数据
 ├── scripts/                       # 启动、数据准备、打包和部署等辅助脚本
@@ -47,82 +46,10 @@ Purslyx/
 - **文档按内容归类**：项目命名与品牌素材放 `00-overview/brand/`，赛事资料放 `00-overview/event/`；产品需求放 `01-product/specs/`，视觉规范与探索稿放 `01-product/visual/`，可操作高保真稿和截图放 `01-product/prototypes/`；实现方式放 `02-technical/`，运营 SOP 与脱敏模板放 `03-operations/`，演示与提交材料放 `04-presentations/`。
 - **命名直观、层级稳定**：例如 `01-product/specs/需求说明.md`、`01-product/prototypes/高保真产品稿.html`、`02-technical/本地运行.md`。同一主题维护一份文件，日常修改由 Git 记录；整份文档停用或被替代时移入 `99-archive/`。
 - **说明与实际文件分开**：部署说明放 `docs/02-technical/`，部署配置放 `infra/`，执行脚本放 `scripts/`；脱敏样例放 `docs/03-operations/templates/`，展示材料放 `docs/04-presentations/`。简历及截图中的个人信息需脱敏。
-- **代码按使用端划分**：Web 端放 `src/web/`；浏览器侧预留 `src/extension/`（浏览器插件）和 `src/userscript/`（篡改猴脚本），按实际实现选择其中一种方案。
+- **代码按使用端划分**：Vue Web 端放 `src/web/`，篡改猴脚本放 `src/userscript/`。
 - **根目录保持简洁**：放项目入口说明、工具配置和环境变量示例；各端独立使用的依赖清单与构建配置放在对应源码目录，共用配置放根目录。
 - **本地文件**如真实密钥、`.env`、依赖目录、日志和构建产物不提交，按实际工具补充 `.gitignore`；环境变量模板使用 `.env.example`，只写变量名和占位值。
 
 现有资料：[需求说明（已评审）](docs/01-product/specs/需求说明.md) · [首版模块与页面清单（已评审）](docs/01-product/specs/首版模块与页面清单.md) · [首版高保真产品稿](docs/01-product/prototypes/高保真产品稿.html) · [篡改猴高保真产品稿](docs/01-product/prototypes/篡改猴高保真产品稿.html) · [技术架构（已评审）](docs/02-technical/技术架构.md) · [API 设计索引](docs/02-technical/api/API设计索引.md) · [技术模块设计索引](docs/02-technical/modules/技术模块设计索引.md) · [数据库设计规范（已评审）](docs/02-technical/database/数据库设计规范.md) · [模块数据库设计索引](docs/02-technical/database/数据库设计索引.md) · [项目起点与复用说明](docs/04-presentations/项目起点与复用说明.md) · [原始需求记录](docs/01-product/specs/需求记录.md) · [视觉方案](docs/01-product/visual/视觉方案.md) · [配色对比](docs/01-product/visual/视觉对比.html) · [项目命名说明](docs/00-overview/brand/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/event/黑客松信息.md) · [黑客松规则与赛题说明](docs/00-overview/event/黑客松规则与赛题说明.md)
 
 本项目采用 [Apache License 2.0](LICENSE)。
-
-## 完整产品工作台
-
-多页面工作台已经接上 `/api/v1` 认证接口：公共首页、登录／注册、求职端资料／期望、
-匹配池、报告、事实改写、岗位版简历、面试、任务、用量、统计，以及招聘端候选人资料／单人报告和管理端
-站点概况、用户、角色权限、次数、日志，均有独立页面入口；页面之间共用会话、API 客户端和视觉样式。
-菜单使用真实 URL 跳转，报告、岗位版、面试和任务通过短 ID 深链接恢复，不依赖单页内存状态。所有产品功能
-都通过登录后的正式业务链路访问，包含 CSRF、幂等、版本、用量与账号隔离；页面不需要 Node.js 构建，也可以
-切换到同一 PostgreSQL outbox 的本地 Worker。
-
-## 本地运行与验收
-
-数据库固定直连【本地开发环境.md】中的 201 PostgreSQL，禁止 SQLite。密码不要拼进 URL（本
-地密码含 URL 特殊字符），用 `PGPASSWORD` 注入：
-
-```bash
-uv venv .venv
-uv pip install -e '.[test]'
-PURSLYX_PORT=8001 scripts/start_201_local.sh
-```
-
-启动脚本只从被 Git 忽略的 `docs/02-technical/deployment/本地开发环境.md` 读取
-PostgreSQL 密码并注入当前进程；启动 Uvicorn 前会执行 Alembic 向前迁移和幂等种子写入，默认监听
-8001。端口可以调整，但数据库仍固定为该文件中的 201 PostgreSQL。
-
-另开终端执行：
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/smoke_201.py
-PURSLYX_BASE_URL=http://127.0.0.1:8001 node scripts/e2e_web_201.mjs
-```
-
-提交前的统一测试命令如下；Pytest 会同时执行篡改猴脚本的 Node 隔离 DOM 测试：
-
-```bash
-uvx ruff check src scripts tests migrations
-PYTHONPATH=src .venv/bin/python -m pytest
-```
-
-看到 `"database": {"backend": "postgresql"...}`、`"analysis_status": "available"` 即可
-进入浏览器打开 <http://127.0.0.1:8001/>。第二条命令会用本机 Chrome 自动完成公共首页、求职注册、资料确认、
-期望、入池与报告，以及招聘资料和单人报告，并检查五个管理端独立入口；测试账号和密码均为随机本地数据，
-不会读取环境文件中的真实凭据。完整的 201 连接约定见
-[201 环境部署约定](docs/02-technical/deployment/201环境部署.md)。
-
-## 异步任务执行
-
-如需使用 queued → running → succeeded 的独立 Worker 模式，另开两个终端：
-
-```bash
-# 终端 A：启动只负责受理任务的 HTTP 服务
-PURSLYX_EXECUTION_MODE=worker scripts/start_201_local.sh
-# 终端 B：持续处理 outbox
-PYTHONPATH=src .venv/bin/python scripts/worker_201.py
-```
-
-Worker 同样只读取 `本地开发环境.md`，也可用下面的一次性验收脚本替代终端 B：
-
-```bash
-PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_201.py
-PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_recovery_201.py
-```
-
-管理员日志导出需要部署者显式配置的管理员账号。可额外运行下面的一条可选验收；脚本不读取本地开发环境
-文件、不打印密码，未注入凭据时会安全跳过：
-
-```bash
-PURSLYX_ADMIN_EMAIL=... PURSLYX_ADMIN_PASSWORD=... \
-PYTHONPATH=src .venv/bin/python scripts/smoke_log_export_201.py
-```
-
-不设置 `PURSLYX_EXECUTION_MODE` 时默认使用内联任务模式。

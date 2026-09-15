@@ -15,7 +15,7 @@
 (function () {
   "use strict";
 
-  // 演示环境由【本地开发环境.md】启动到 201 PostgreSQL；部署时只需替换产品地址。
+  // 本地环境由【本地开发环境.md】启动并连接 201 PostgreSQL；部署时替换产品地址。
   const API_ORIGIN = "http://127.0.0.1:8001";
   const PRODUCT_ORIGIN = API_ORIGIN;
   const DRAFT_KEY = "purslyx.pending-job-drafts.v1";
