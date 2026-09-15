@@ -306,6 +306,12 @@ class TaskWorker:
             provider = get_model_provider()
             return provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
 
+        task_result: dict[str, Any] = {
+            "resource_type": "document",
+            "resource_id": document.public_id,
+            "path": f"/api/v1/documents/{document.public_id}",
+        }
+
         def save_result(value: dict[str, Any]) -> None:
             fresh = db.scalar(select(Document).where(Document.id == document.id, Document.account_id == task.account_id, Document.deleted_at.is_(None)))
             if fresh is None:
@@ -321,8 +327,9 @@ class TaskWorker:
             fresh.draft_content = value
             fresh.draft_revision = draft.revision
             fresh.status = "available"
+            task_result.update({"document_id": fresh.public_id, "draft_id": draft.public_id})
 
-        _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="document_parse", on_success=save_result)
+        _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="document_parse", on_success=save_result, task_result=task_result)
 
     def _handle_analysis(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         from .api import _persist_analysis_details
@@ -374,7 +381,22 @@ class TaskWorker:
                     pool.analysis_status = "available"
                     pool.revision += 1
 
-        _run_model(db, task, attempt, reservation, work, owner=self.owner, feature="analysis", cost_feature="analysis", on_success=save_result)
+        _run_model(
+            db,
+            task,
+            attempt,
+            reservation,
+            work,
+            owner=self.owner,
+            feature="analysis",
+            cost_feature="analysis",
+            on_success=save_result,
+            task_result={
+                "resource_type": "analysis",
+                "resource_id": analysis.public_id,
+                "path": f"/api/v1/analyses/{analysis.public_id}",
+            },
+        )
 
     def _handle_rewrite(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         from .api import _analysis, _resume_segments, _version
@@ -424,7 +446,22 @@ class TaskWorker:
                         )
                     )
 
-        _run_model(db, task, attempt, reservation, work, owner=self.owner, feature="rewrite", cost_feature="rewrite", on_success=save_result)
+        _run_model(
+            db,
+            task,
+            attempt,
+            reservation,
+            work,
+            owner=self.owner,
+            feature="rewrite",
+            cost_feature="rewrite",
+            on_success=save_result,
+            task_result={
+                "resource_type": "rewrite",
+                "resource_id": item.public_id,
+                "path": f"/api/v1/rewrites/{item.public_id}",
+            },
+        )
 
     def _handle_resume_export(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         export = db.scalar(select(Export).where(Export.task_id == task.id, Export.account_id == task.account_id))
@@ -468,7 +505,23 @@ class TaskWorker:
             )
 
         try:
-            _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature=None, on_success=save_result)
+            _run_model(
+                db,
+                task,
+                attempt,
+                reservation,
+                work,
+                owner=self.owner,
+                cost_feature=None,
+                on_success=save_result,
+                task_result={
+                    "resource_type": "export",
+                    "resource_id": export.public_id,
+                    "path": f"/api/v1/exports/{export.public_id}",
+                    "export_id": export.public_id,
+                    "file_ready": True,
+                },
+            )
         except Exception:
             render_path.unlink(missing_ok=True)
             if output_path.exists() and export.status != "available":
@@ -510,7 +563,22 @@ class TaskWorker:
             interview.current_question_id = interview.questions[0]["id"]
             interview.usage_settled = True
 
-        _run_model(db, task, attempt, reservation, work, owner=self.owner, feature="interview", cost_feature="interview", on_success=save_questions)
+        _run_model(
+            db,
+            task,
+            attempt,
+            reservation,
+            work,
+            owner=self.owner,
+            feature="interview",
+            cost_feature="interview",
+            on_success=save_questions,
+            task_result={
+                "resource_type": "interview",
+                "resource_id": interview.public_id,
+                "path": f"/api/v1/interviews/{interview.public_id}",
+            },
+        )
 
     def _handle_interview_feedback(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         interview = db.scalar(select(Interview).where(Interview.public_id == _input(task, "interview_id"), Interview.account_id == task.account_id, Interview.deleted_at.is_(None)))
@@ -557,7 +625,21 @@ class TaskWorker:
                 else:
                     self._save_summary(db, interview, "full")
 
-        _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="interview_feedback", on_success=save_feedback)
+        _run_model(
+            db,
+            task,
+            attempt,
+            reservation,
+            work,
+            owner=self.owner,
+            cost_feature="interview_feedback",
+            on_success=save_feedback,
+            task_result={
+                "resource_type": "interview",
+                "resource_id": interview.public_id,
+                "path": f"/api/v1/interviews/{interview.public_id}",
+            },
+        )
 
     def _save_summary(self, db: Session, interview: Interview, completion_type: str) -> None:
         questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
@@ -601,7 +683,21 @@ class TaskWorker:
             interview.current_question_id = None
             interview.revision += 1
 
-        _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="interview_summary", on_success=save_result)
+        _run_model(
+            db,
+            task,
+            attempt,
+            reservation,
+            work,
+            owner=self.owner,
+            cost_feature="interview_summary",
+            on_success=save_result,
+            task_result={
+                "resource_type": "interview",
+                "resource_id": interview.public_id,
+                "path": f"/api/v1/interviews/{interview.public_id}",
+            },
+        )
 
     def _handle_log_export(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         """处理已由管理端创建的日志导出占位；没有正文进入任务 result。"""
@@ -629,7 +725,13 @@ class TaskWorker:
             owner=self.owner,
             cost_feature=None,
             on_success=save_result,
-            task_result={"export_id": item.public_id, "file_ready": True},
+            task_result={
+                "resource_type": "log_export",
+                "resource_id": item.public_id,
+                "path": f"/api/v1/admin/log-exports/{item.public_id}",
+                "export_id": item.public_id,
+                "file_ready": True,
+            },
         )
 
 

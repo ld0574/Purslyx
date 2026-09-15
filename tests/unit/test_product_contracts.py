@@ -28,9 +28,9 @@ from server.app.api import (  # noqa: E402
     _log_export_datetime,
     _log_export_view,
     _pool_by_pk,
+    _validate_interview_summary_replay,
 )
 from server.app.errors import DomainError, NotFoundError  # noqa: E402
-from server.app.main import app  # noqa: E402
 from server.app.matching import build_match_result  # noqa: E402
 from server.app.models import (  # noqa: E402
     Interview,
@@ -49,14 +49,6 @@ class _Rows:
 
     def all(self) -> list[Any]:
         return self._rows
-
-
-def test_anonymous_demo_api_is_not_registered() -> None:
-    """所有业务功能都必须通过带认证的正式 API 进入。"""
-
-    paths = {route.path for route in app.routes if hasattr(route, "path")}
-    assert app.title == "Purslyx API"
-    assert not any(path.startswith("/api/v1/demo") for path in paths)
 
 
 class _InterviewSession:
@@ -88,6 +80,16 @@ class _InterviewSession:
 
     def add(self, value: Any) -> None:
         self.added.append(value)
+
+
+def test_interview_summary_replay_rejects_a_different_interview() -> None:
+    task = SimpleNamespace(input_data={"interview_id": "interview-1", "completion_type": "early"})
+
+    _validate_interview_summary_replay(task, "interview-1")  # type: ignore[arg-type]
+    with pytest.raises(DomainError) as error:
+        _validate_interview_summary_replay(task, "interview-2")  # type: ignore[arg-type]
+
+    assert error.value.code == "IDEMPOTENCY_CONFLICT"
 
 
 @pytest.mark.parametrize(

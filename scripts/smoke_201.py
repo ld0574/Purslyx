@@ -848,7 +848,7 @@ def main() -> None:
             client,
             "POST",
             f"/api/v1/interviews/{early_interview['id']}/finish",
-            expected=(200,),
+            expected=(202,),
             headers={**web_headers, "Idempotency-Key": f"finish-early-{suffix}"},
             json={"base_revision": early_after_answer["revision"]},
         )

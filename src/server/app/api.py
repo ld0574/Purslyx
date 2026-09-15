@@ -1258,7 +1258,11 @@ def parse_document(
     )
     if not existed:
         db.commit()
-        task_result: dict[str, Any] = {}
+        task_result: dict[str, Any] = {
+            "resource_type": "document",
+            "resource_id": document.public_id,
+            "path": f"/api/v1/documents/{document.public_id}",
+        }
 
         def work() -> Any:
             content_text = document.raw_text
@@ -2302,7 +2306,19 @@ def create_rewrite(payload: RewriteRequest, request: Request, account: WebAccoun
                 db.add(RewriteEvidence(account_id=account.id, rewrite_segment_id=row.id, source_type=str(evidence.get("source_type") or "fact"), source_id=source_id, quote=evidence.get("fact_text") or evidence.get("quote")))
 
     try:
-        run_local_task(db, task, reservation, work, on_success=save_result, feature="rewrite")
+        run_local_task(
+            db,
+            task,
+            reservation,
+            work,
+            on_success=save_result,
+            feature="rewrite",
+            task_result={
+                "resource_type": "rewrite",
+                "resource_id": item.public_id,
+                "path": f"/api/v1/rewrites/{item.public_id}",
+            },
+        )
     except Exception as exc:
         LOGGER.exception("rewrite task failed")
         db.rollback()
@@ -2611,7 +2627,13 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
             None,
             work,
             on_success=save_result,
-            task_result={"export_id": export.public_id, "file_ready": True},
+            task_result={
+                "resource_type": "export",
+                "resource_id": export.public_id,
+                "path": f"/api/v1/exports/{export.public_id}",
+                "export_id": export.public_id,
+                "file_ready": True,
+            },
         )
     except Exception as exc:
         db.rollback()
@@ -3105,7 +3127,19 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
     try:
         from .services import run_local_task
 
-        run_local_task(db, task, reservation, work, on_success=save_result, feature="analysis")
+        run_local_task(
+            db,
+            task,
+            reservation,
+            work,
+            on_success=save_result,
+            feature="analysis",
+            task_result={
+                "resource_type": "analysis",
+                "resource_id": analysis.public_id,
+                "path": f"/api/v1/analyses/{analysis.public_id}",
+            },
+        )
     except Exception as exc:
         # 本地执行失败时，任务服务已经把次数释放并把任务置为 failed；业务结果也必须
         # 同步落为失败，否则岗位和报告会永久停在 queued，前端无法给出重试入口。
@@ -3519,7 +3553,19 @@ def start_interview(payload: InterviewStartRequest, request: Request, account: W
         item.usage_settled = True
 
     try:
-        run_local_task(db, task, reservation, work, on_success=save_questions, feature="interview")
+        run_local_task(
+            db,
+            task,
+            reservation,
+            work,
+            on_success=save_questions,
+            feature="interview",
+            task_result={
+                "resource_type": "interview",
+                "resource_id": item.public_id,
+                "path": f"/api/v1/interviews/{item.public_id}",
+            },
+        )
     except Exception as exc:
         item.status = "opening_failed"
         db.commit()
@@ -3558,15 +3604,18 @@ def _public_question_id(db: Session, account_id: int, value: str) -> InterviewQu
     return row
 
 
-def _finish_interview_summary(db: Session, account: Account, item: Interview, completion_type: str) -> None:
+def _interview_summary_input(db: Session, item: Interview) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == item.id).order_by(InterviewQuestion.position_no)).all()
     answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == item.id).order_by(InterviewAnswer.created_at)).all()
     question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
     answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
-    value = get_model_provider().summary(question_values, answer_values, completion_type).value
+    return question_values, answer_values
+
+
+def _save_interview_summary(db: Session, item: Interview, completion_type: str, value: dict[str, Any]) -> None:
     summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id))
     if summary is None:
-        db.add(InterviewSummary(account_id=account.id, interview_id=item.id, completion_type=completion_type, content=value))
+        db.add(InterviewSummary(account_id=item.account_id, interview_id=item.id, completion_type=completion_type, content=value))
     else:
         summary.completion_type = completion_type
         summary.content = value
@@ -3574,6 +3623,22 @@ def _finish_interview_summary(db: Session, account: Account, item: Interview, co
     item.status = "completed" if completion_type == "full" else "ended_early"
     item.current_question_id = None
     item.revision += 1
+
+
+def _finish_interview_summary(db: Session, account: Account, item: Interview, completion_type: str) -> None:
+    """保留完整回答流程的内联汇总入口；提前结束使用独立总结任务。"""
+
+    question_values, answer_values = _interview_summary_input(db, item)
+    value = get_model_provider().summary(question_values, answer_values, completion_type).value
+    _save_interview_summary(db, item, completion_type, value)
+
+
+def _validate_interview_summary_replay(task: Task, interview_id: str) -> None:
+    """幂等重放只能指向创建原任务的同一个面试。"""
+
+    task_input = task.input_data or {}
+    if task_input.get("interview_id") != interview_id or task_input.get("completion_type") != "early":
+        raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的任务输入不同", 409)
 
 
 @router.post("/interviews/{interview_id}/answers", tags=["interviews"])
@@ -3618,7 +3683,11 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
     )
     db.commit()
     if not existed:
-        task_result: dict[str, Any] = {}
+        task_result: dict[str, Any] = {
+            "resource_type": "interview",
+            "resource_id": item.public_id,
+            "path": f"/api/v1/interviews/{item.public_id}",
+        }
 
         def work() -> Any:
             return get_model_provider().feedback(
@@ -3718,8 +3787,19 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
 def finish_interview(payload: FinishInterviewRequest, request: Request, account: WebAccount, interview_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _write_guard(request, account)
     require_seeker(account)
-    _idempotency_key(request)
+    key = _idempotency_key(request)
     item = _interview(db, account.id, interview_id, lock=True)
+    existing_summary_task = db.scalar(
+        select(Task).where(
+            Task.account_id == account.id,
+            Task.task_type == "interview_summary",
+            Task.idempotency_key == key,
+            Task.deleted_at.is_(None),
+        )
+    )
+    if existing_summary_task is not None:
+        _validate_interview_summary_replay(existing_summary_task, item.public_id)
+        return _ok(request, _interview_view(db, item), code=202)
     if item.status in {"completed", "ended_early"}:
         return _ok(request, _interview_view(db, item))
     if item.status != "awaiting_answer":
@@ -3728,9 +3808,56 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
         raise DomainError("INTERVIEW_ROUND_CONFLICT", "会话轮次已变化，请刷新后重试", 409, "refresh")
     for row in db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == item.id, InterviewQuestion.status == "awaiting_answer")).all():
         row.status = "skipped"
-    _finish_interview_summary(db, account, item, "early")
+    item.status = "processing"
+    item.revision += 1
+    task, _, existed = create_task(
+        db,
+        account,
+        "interview_summary",
+        {"interview_id": item.public_id, "completion_type": "early"},
+        idempotency_key=key,
+        input_refs=[
+            (
+                "interview",
+                item.public_id,
+                item.revision,
+                payload_hash({"status": item.status, "completion_type": "early"}),
+            )
+        ],
+    )
     db.commit()
-    return _ok(request, _interview_view(db, item))
+    if not existed:
+
+        def work() -> Any:
+            question_values, answer_values = _interview_summary_input(db, item)
+            return get_model_provider().summary(question_values, answer_values, "early")
+
+        def save_result(value: dict[str, Any]) -> None:
+            _save_interview_summary(db, item, "early", value)
+
+        try:
+            run_local_task(
+                db,
+                task,
+                None,
+                work,
+                on_success=save_result,
+                cost_feature="interview_summary",
+                task_result={
+                    "resource_type": "interview",
+                    "resource_id": item.public_id,
+                    "path": f"/api/v1/interviews/{item.public_id}",
+                },
+            )
+        except Exception as exc:
+            db.rollback()
+            failed_item = _interview(db, account.id, interview_id)
+            failed_item.status = "summary_failed"
+            failed_item.revision += 1
+            db.commit()
+            raise DomainError("INTERVIEW_SUMMARY_FAILED", "面试总结失败，请重试", 503, "retry") from exc
+    db.refresh(item)
+    return _ok(request, _interview_view(db, item), code=202)
 
 
 # ------------------------------------ 任务、用量与反馈 ------------------------------------
@@ -5062,7 +5189,13 @@ def create_log_export(payload: LogExportRequest, request: Request, account: WebA
             None,
             lambda: _log_export_work(db, item),
             on_success=save_result,
-            task_result={"export_id": item.public_id, "file_ready": True},
+            task_result={
+                "resource_type": "log_export",
+                "resource_id": item.public_id,
+                "path": f"/api/v1/admin/log-exports/{item.public_id}",
+                "export_id": item.public_id,
+                "file_ready": True,
+            },
         )
     except Exception:
         db.rollback()
