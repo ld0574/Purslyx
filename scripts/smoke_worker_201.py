@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""验证 201 PostgreSQL Worker 的最小 HTTP 闭环。
+"""验证 201 PostgreSQL Worker 的完整 HTTP 闭环。
 
 运行前需用 ``PURSLYX_EXECUTION_MODE=worker scripts/start_201_local.sh`` 启动服务。
 脚本不输出访问令牌、数据库密码或业务正文。
@@ -397,7 +397,12 @@ def main() -> None:
             raise RuntimeError("worker 模式下 PDF 导出没有保持 queued")
         export_task = _run_worker_until(client, headers, export_result["task"]["id"])
         export = _expect(client.get(f"{BASE_URL}/api/v1/exports/{export_result['export']['id']}", headers=headers), 200)["data"]
-        if export_task["status"] != "succeeded" or export.get("status") != "available" or not export.get("file_available"):
+        if (
+            export_task["status"] != "succeeded"
+            or export.get("status") != "available"
+            or not export.get("file_available")
+            or not isinstance(export.get("page_count"), int)
+        ):
             raise RuntimeError("Worker 没有生成可下载 PDF")
         pdf = client.get(f"{BASE_URL}/api/v1/exports/{export['id']}/file", headers=headers)
         if pdf.status_code != 200 or not pdf.content.startswith(b"%PDF"):

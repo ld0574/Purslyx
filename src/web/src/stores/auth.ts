@@ -40,7 +40,7 @@ export const useAuthStore = defineStore("auth", {
       this.account = result.account;
       this.persist();
     },
-    async register(email: string, password: string, registrationRole: RegistrationRole) {
+    async register(email: string, password: string, registrationRole: RegistrationRole): Promise<boolean> {
       const registration = await api<JsonMap>("/api/v1/auth/register", {
         method: "POST",
         body: { email, password, registration_role: registrationRole },
@@ -48,7 +48,11 @@ export const useAuthStore = defineStore("auth", {
       if (registration.verification_token) {
         await api("/api/v1/auth/verify-email", { method: "POST", body: { token: registration.verification_token } });
       }
-      await this.login(email, password);
+      if (registration.verification_token || registration.local_auto_verified) {
+        await this.login(email, password);
+        return true;
+      }
+      return false;
     },
     async logout() {
       try {

@@ -174,7 +174,7 @@
           if (response.status >= 200 && response.status < 300) resolve(body.data);
           else reject(new Error(body?.error?.message || `服务返回 ${response.status}`));
         },
-        onerror: () => reject(new Error("无法连接 201 PostgreSQL 对应的 Purslyx 服务"))
+        onerror: () => reject(new Error("无法连接 Purslyx 服务，请稍后重试"))
       });
     });
   }

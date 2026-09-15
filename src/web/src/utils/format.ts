@@ -34,6 +34,9 @@ const STATUS_LABELS: Record<string, string> = {
   hybrid: "混合",
   remote: "远程",
   unknown: "未披露",
+  analysis: "分析",
+  rewrite: "改写",
+  interview: "面试",
 };
 
 const TASK_LABELS: Record<string, string> = {

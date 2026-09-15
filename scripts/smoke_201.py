@@ -1,4 +1,4 @@
-"""在 201 PostgreSQL 上跑一遍可复核的 Purslyx 最小正式链路。
+"""在 201 PostgreSQL 上跑一遍可复核的 Purslyx 求职端完整链路。
 
 脚本只通过 HTTP 操作，不读取或打印密码。服务端的 DATABASE_URL、PGPASSWORD、
 PURSLYX_TOKEN_SECRET 和本地开发开关由【本地开发环境.md】对应的进程环境注入。
@@ -573,6 +573,15 @@ def main() -> None:
         edited_segment = (data_of(edited_body)["rewrite"].get("segments") or [None])[0]
         if edited_segment.get("current_decision") != "adopt" or edited_segment.get("decision_no") != adopted_segment.get("decision_no") + 1:
             raise RuntimeError("编辑后采用没有替换旧决定")
+        _, restored_rewrite_body = call(
+            client,
+            "GET",
+            f"/api/v1/rewrites/{rewrite['id']}",
+            headers=web_headers,
+        )
+        restored_segment = (data_of(restored_rewrite_body).get("segments") or [None])[0]
+        if not restored_segment or restored_segment.get("edited_text") != edited_text:
+            raise RuntimeError("刷新改写结果后没有恢复用户编辑文本")
         _, stats_after_rewrite_body = call(client, "GET", "/api/v1/stats/me", headers=web_headers)
         if data_of(stats_after_rewrite_body).get("summary", {}).get("adopted_rewrites", 0) < 1:
             raise RuntimeError("当前采用改写没有进入个人统计")
@@ -603,6 +612,11 @@ def main() -> None:
         ]
         if edited_text not in variant_texts:
             raise RuntimeError("岗位版简历没有使用编辑后采用的文字")
+        saved_layout = {
+            **initial_version["layout"],
+            "font_family": "source_han_serif",
+            "bold_segment_keys": [segments[0]["segment_key"]],
+        }
         _, saved_variant_body = call(
             client,
             "POST",
@@ -612,7 +626,7 @@ def main() -> None:
             json={
                 "base_revision": variant["revision"],
                 "content": initial_version["content"],
-                "layout": initial_version["layout"],
+                "layout": saved_layout,
                 "template_version": initial_version["template_version"],
             },
         )
@@ -628,7 +642,7 @@ def main() -> None:
             json={
                 "base_revision": variant["revision"],
                 "content": initial_version["content"],
-                "layout": initial_version["layout"],
+                "layout": saved_layout,
                 "template_version": initial_version["template_version"],
             },
         )
@@ -644,11 +658,20 @@ def main() -> None:
             json={"resume_variant_version_id": variant_version},
         )
         export = data_of(export_body)["export"]
-        if not export.get("file_available"):
-            raise RuntimeError("PDF 导出没有生成文件")
+        if not export.get("file_available") or not isinstance(export.get("page_count"), int):
+            raise RuntimeError("PDF 导出没有生成文件或最终页数")
         export_file = client.get(f"{BASE_URL}/api/v1/exports/{export['id']}/file", headers=web_headers)
         if export_file.status_code != 200 or not export_file.content.startswith(b"%PDF"):
             raise RuntimeError("PDF 下载结果无效")
+        _, restored_variant_body = call(
+            client,
+            "GET",
+            f"/api/v1/resumes/{variant['id']}",
+            headers=web_headers,
+        )
+        restored_exports = data_of(restored_variant_body).get("exports") or []
+        if not restored_exports or restored_exports[0].get("id") != export["id"]:
+            raise RuntimeError("刷新岗位版后没有恢复最近 PDF 成品")
 
         browser_nonce = f"{suffix}-{uuid.uuid4().hex}"
         _, browser_code_body = call(

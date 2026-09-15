@@ -103,11 +103,15 @@ function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
       reject(new DOMException("任务等待已取消", "AbortError"));
       return;
     }
-    const timer = window.setTimeout(resolve, delayMs);
-    signal?.addEventListener("abort", () => {
+    const onAbort = () => {
       window.clearTimeout(timer);
       reject(new DOMException("任务等待已取消", "AbortError"));
-    }, { once: true });
+    };
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, delayMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 

@@ -29,6 +29,8 @@ from server.app.api import (  # noqa: E402
     _log_export_datetime,
     _log_export_view,
     _pool_by_pk,
+    _rewrite_view,
+    _validate_admin_status_change,
     _validate_interview_summary_replay,
 )
 from server.app.errors import DomainError, NotFoundError  # noqa: E402
@@ -41,6 +43,9 @@ from server.app.models import (  # noqa: E402
     InterviewSummary,
     JobPoolItem,
     LogExport,
+    Rewrite,
+    RewriteDecision,
+    RewriteSegment,
     StoredFile,
 )
 
@@ -92,6 +97,27 @@ def test_interview_summary_replay_rejects_a_different_interview() -> None:
         _validate_interview_summary_replay(task, "interview-2")  # type: ignore[arg-type]
 
     assert error.value.code == "IDEMPOTENCY_CONFLICT"
+
+
+def test_admin_status_change_cannot_bypass_email_verification() -> None:
+    target = SimpleNamespace(id=8, status="pending_verification", revision=1)
+
+    with pytest.raises(DomainError) as error:
+        _validate_admin_status_change(target, 7, "active", 1)  # type: ignore[arg-type]
+
+    assert error.value.code == "ADMIN_USER_STATUS_INVALID"
+
+
+def test_admin_status_change_rejects_noop_and_self_lockout() -> None:
+    target = SimpleNamespace(id=8, status="active", revision=2)
+
+    with pytest.raises(DomainError) as unchanged:
+        _validate_admin_status_change(target, 7, "active", 2)  # type: ignore[arg-type]
+    assert unchanged.value.code == "ADMIN_USER_STATUS_UNCHANGED"
+
+    with pytest.raises(DomainError) as self_lockout:
+        _validate_admin_status_change(target, 8, "suspended", 2)  # type: ignore[arg-type]
+    assert self_lockout.value.code == "ADMIN_SELF_LOCKOUT"
 
 
 @pytest.mark.parametrize(
@@ -221,6 +247,75 @@ def test_browser_draft_confirmation_rejects_uncontrolled_fields() -> None:
     with pytest.raises(DomainError) as error:
         _browser_draft_confirmation(draft, {"corrections": {"source_url": "https://evil.example"}})
     assert error.value.code == "POOL_SOURCE_INVALID"
+
+
+class _RewriteViewSession:
+    def __init__(
+        self,
+        segment: RewriteSegment,
+        decisions: list[RewriteDecision],
+    ) -> None:
+        self.segment = segment
+        self.decisions = decisions
+
+    def scalars(self, statement: Any) -> _Rows:
+        entity = statement.column_descriptions[0]["entity"]
+        if entity is RewriteSegment:
+            return _Rows([self.segment])
+        if entity is RewriteDecision:
+            return _Rows(self.decisions)
+        # 当前测试段落没有证据，因此证据查询返回空集合。
+        return _Rows([])
+
+    def get(self, model: Any, row_id: int) -> None:
+        return None
+
+
+def test_rewrite_view_restores_latest_custom_text() -> None:
+    rewrite = Rewrite(
+        id=3,
+        public_id="rewrite-1",
+        account_id=7,
+        analysis_id=9,
+        resume_version_id=11,
+        status="available",
+    )
+    segment = RewriteSegment(
+        id=4,
+        public_id="segment-1",
+        account_id=7,
+        rewrite_id=3,
+        segment_key="experience-1",
+        original_text="原文",
+        suggested_text="建议文本",
+        rationale="更贴合岗位",
+        current_decision="adopt",
+        current_decision_no=2,
+    )
+    decisions = [
+        RewriteDecision(
+            id=5,
+            account_id=7,
+            rewrite_id=3,
+            segment_key="experience-1",
+            decision="adopt",
+            edited_text="第一版编辑",
+            decision_no=1,
+        ),
+        RewriteDecision(
+            id=6,
+            account_id=7,
+            rewrite_id=3,
+            segment_key="experience-1",
+            decision="adopt",
+            edited_text="刷新后应恢复的文本",
+            decision_no=2,
+        ),
+    ]
+
+    view = _rewrite_view(_RewriteViewSession(segment, decisions), rewrite)  # type: ignore[arg-type]
+
+    assert view["segments"][0]["edited_text"] == "刷新后应恢复的文本"
 
 
 def test_match_report_exposes_verification_items_and_targeted_questions() -> None:

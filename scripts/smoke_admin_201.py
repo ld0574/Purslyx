@@ -168,10 +168,14 @@ def main() -> None:
         target_rows = [item for item in users["items"] if item["id"] == target_account["id"]]
         if len(target_rows) != 1:
             raise RuntimeError("管理员用户检索没有唯一找到目标账号")
+        if not isinstance(target_rows[0].get("balances"), list) or "recent_activity_at" not in target_rows[0]:
+            raise RuntimeError("管理员用户列表缺少用量或最近活动概要")
         detail = _data(
             client.get(f"{BASE_URL}/api/v1/admin/users/{target_account['id']}", headers=admin_headers),
             200,
         )
+        if not isinstance(detail.get("summary", {}).get("counts", {}).get("tasks"), int):
+            raise RuntimeError("管理员用户详情缺少资料与任务数量概要")
 
         roles_payload = _data(client.get(f"{BASE_URL}/api/v1/admin/roles", headers=admin_headers), 200)
         if len(roles_payload.get("permission_catalog") or []) != len(required_permissions):
@@ -313,9 +317,33 @@ def main() -> None:
             ),
             200,
         )
+        suspended_replay = _data(
+            client.put(
+                f"{BASE_URL}/api/v1/admin/users/{target_account['id']}/status",
+                headers=_write_headers(admin_headers, f"suspend-{suffix}"),
+                json={
+                    "status": "suspended",
+                    "reason": "验证暂停与会话撤销",
+                    "base_revision": current_detail["account"]["revision"],
+                },
+            ),
+            200,
+        )
+        if suspended_replay["account"]["revision"] != suspended["account"]["revision"]:
+            raise RuntimeError("账号暂停幂等重放改变了 revision")
         revoked_response = client.get(f"{BASE_URL}/api/v1/me", headers=restricted_headers)
         if revoked_response.status_code != 401:
             raise RuntimeError("暂停账号后旧会话仍可访问")
+        recovery = _data(
+            client.post(
+                f"{BASE_URL}/api/v1/auth/request-account-recovery",
+                json={"email": target_email},
+            ),
+            202,
+        )
+        recovery_token = recovery.get("recovery_token")
+        if not recovery_token:
+            raise RuntimeError("暂停账号重新申请后没有生成本地恢复令牌")
         restored = _data(
             client.put(
                 f"{BASE_URL}/api/v1/admin/users/{target_account['id']}/status",
@@ -330,6 +358,14 @@ def main() -> None:
         )
         if restored["account"]["status"] != "active":
             raise RuntimeError("管理员没有恢复目标账号")
+        _expect_error(
+            client.post(
+                f"{BASE_URL}/api/v1/auth/recover-account",
+                json={"token": recovery_token},
+            ),
+            410,
+            "AUTH_TOKEN_INVALID_OR_EXPIRED",
+        )
 
         before_balance = next(
             item["available"] for item in current_detail["usage"]["balances"] if item["feature"] == "analysis"

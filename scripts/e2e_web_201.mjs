@@ -204,7 +204,7 @@ async function publicHome(client) {
     return {
       hasLogin: Boolean(document.querySelector('a[href="/app/login"]')),
       hasRegister: Boolean(document.querySelector('a[href="/app/register"]')),
-      roles: ["求职工作台", "招聘工作台", "授权管理端"].every(value => text.includes(value)),
+      roles: ["求职工作台", "招聘工作台", "授权管理"].every(value => text.includes(value)),
     };
   })()`);
   assert(contract.hasLogin && contract.hasRegister, "产品首页缺少登录或注册入口");
@@ -288,6 +288,8 @@ async function seekerFlow(client, suffix) {
     title: "E2E 前端简历",
     text: "负责 Vue 与 TypeScript 前端项目开发，完成组件设计、性能优化和自动化测试。",
   });
+  await setValue(client, '#preference-form [name="display_name"]', "E2E 前端岗位期望");
+  await setValue(client, '#preference-form [name="job_title"]', "高级前端工程师");
   await submit(client, "#preference-form");
   try {
     await waitForSelector(client, '[data-action="edit-preference"]');
@@ -296,7 +298,13 @@ async function seekerFlow(client, suffix) {
     throw new Error(`${error.message}${pageError ? `：${pageError}` : ""}`);
   }
 
-  await openWorkbenchPage(client, "/app/seeker/pool", "保存一份手动岗位");
+  await openWorkbenchPage(client, "/app/seeker/pool", "保存手动岗位");
+  await setValue(client, '#pool-form [name="job_title"]', "高级前端工程师");
+  await setValue(client, '#pool-form [name="company_name"]', "E2E 测试公司");
+  await setValue(client, '#pool-form [name="location_text"]', "杭州");
+  await setValue(client, '#pool-form [name="work_mode"]', "hybrid");
+  await setValue(client, '#pool-form [name="salary_text"]', "20-30K/月");
+  await setValue(client, '#pool-form [name="job_text"]', "负责 Vue 与 TypeScript 工程化开发，要求组件设计、性能优化和自动化测试经验。");
   await submit(client, "#pool-form");
   try {
     await waitForSelector(client, 'a[href*="/report?analysis_id="]', 20000);

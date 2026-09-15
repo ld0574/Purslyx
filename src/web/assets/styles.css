@@ -47,17 +47,19 @@
       .topbar-spacer { flex: 1; }
       .eyebrow { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
       .topbar .eyebrow { color: var(--muted); letter-spacing: 0.08em; }
-      .health-chip, .tag { display: inline-flex; align-items: center; gap: 6px; width: fit-content; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
-      .health-chip { color: #176a4c; background: var(--success-soft); }
-      .health-chip.loading { color: #735500; background: var(--opportunity-soft); }
-      .health-chip.error { color: #964016; background: var(--attention-soft); }
-      .health-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+      .tag { display: inline-flex; align-items: center; gap: 6px; width: fit-content; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
       .tag.brand { color: var(--brand); background: var(--brand-soft); }
       .tag.opportunity { color: #735500; background: var(--opportunity-soft); }
       .tag.success { color: #176a4c; background: var(--success-soft); }
       .tag.attention { color: #964016; background: var(--attention-soft); }
       .tag.neutral { color: var(--muted); background: #eef4f7; }
       .top-actions { display: flex; align-items: center; gap: 10px; }
+      .account-menu { position: relative; }
+      .account-menu > summary { list-style: none; }
+      .account-menu > summary::-webkit-details-marker { display: none; }
+      .account-popover { position: absolute; top: calc(100% + 9px); right: 0; z-index: 30; display: grid; gap: 10px; width: min(280px, calc(100vw - 28px)); padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: var(--shadow); }
+      .account-popover strong, .account-popover small { overflow-wrap: anywhere; }
+      .account-popover small { color: var(--muted); }
 
       .public-main, .workspace-main { max-width: 1180px; margin: 0 auto; padding: 56px 28px 84px; }
       .hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(310px, 0.85fr); gap: 46px; align-items: center; padding: 18px 0 58px; }
@@ -339,8 +341,7 @@
       @media (max-width: 680px) {
         .topbar { gap: 8px; min-height: 62px; overflow: hidden; }
         .brand-button { flex: 0 0 auto; font-size: 16px; }
-        [data-page="home"] .health-chip, [data-page="home"] .top-actions .button.soft { display: none; }
-        .health-chip { padding: 6px 8px; font-size: 10px; }
+        [data-page="home"] .top-actions .button.soft { display: none; }
         .topbar .button { min-height: 36px; padding: 0 10px; font-size: 11px; }
         .hero, .hero-copy, .hero-visual, .visual-window { width: 100%; min-width: 0; }
         .hero h1 { max-width: 100%; overflow-wrap: anywhere; font-size: clamp(36px, 11vw, 42px); }

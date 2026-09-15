@@ -34,6 +34,9 @@ const previewStyle = computed(() => ({
   "--resume-line-height": String(Number(currentVersion.value?.layout?.line_height || 1.4)),
   "--resume-section-spacing": `${Number(currentVersion.value?.layout?.section_spacing_pt || 8)}pt`,
   "--preview-page-height": `${previewPageHeight.value}px`,
+  fontFamily: currentVersion.value?.layout?.font_family === "source_han_serif"
+    ? '"Songti SC", "STSong", serif'
+    : '"PingFang SC", "Microsoft YaHei", sans-serif',
   minHeight: `${previewPageHeight.value * previewPageCount.value}px`,
 }));
 const previewRisk = computed(() => {
@@ -69,6 +72,7 @@ function prepareVersion(version: JsonMap) {
 
 function selectVariant(value: JsonMap) {
   selected.value = value;
+  lastExport.value = value.exports?.[0] || null;
   if (currentVersion.value) {
     prepareVersion(currentVersion.value);
     savedSnapshot.value = versionSnapshot(currentVersion.value);
@@ -131,7 +135,6 @@ async function openVariant(id: string) {
   error.value = "";
   try {
     selectVariant(await api<JsonMap>(`/api/v1/resumes/${encodeURIComponent(id)}`));
-    lastExport.value = null;
   } catch (value) {
     message(value);
   }
@@ -299,8 +302,8 @@ onBeforeUnmount(() => previewObserver?.disconnect());
     <div v-if="activeTask" class="callout opportunity task-inline-state"><span class="spinner" />{{ taskLabel(activeTask.task_type) }}：{{ statusLabel(activeTask.status) }} · {{ activeTask.current_step || "等待执行" }}</div>
 
     <div v-if="!loading" class="grid-2">
-      <section class="card"><div class="card-head"><div><h3>岗位版记录</h3><p>每次保存都会追加不可变版本，原始简历不被覆盖。</p></div><span class="tag neutral">{{ variants.length }} 份</span></div><div class="card-body data-list"><div v-if="!variants.length" class="empty"><div><strong>还没有岗位版简历</strong><p>从一份完成的岗位报告创建。</p></div></div><article v-for="item in variants" :key="item.id" class="data-row"><div><strong>{{ item.title }}</strong><small>最新 v{{ item.versions?.[0]?.version_no || 1 }} · revision {{ item.revision }}</small></div><div class="item-actions"><button class="button soft small" type="button" @click="openVariant(item.id)">编辑与预览</button><button class="button link-button small" :disabled="busy" type="button" @click="deleteVariant(item)">删除</button></div></article></div></section>
-      <section class="card"><div class="card-head"><div><h3>PDF 成品</h3><p>由服务端按 A4 自动分页，PDF 文件不依赖浏览器字体。</p></div></div><div class="card-body"><div v-if="lastExport" class="callout" :class="lastExport.file_available ? 'success' : 'opportunity'">PDF {{ lastExport.id }} · {{ lastExport.file_available ? "可下载" : statusLabel(lastExport.status) }}</div><a v-if="lastExport?.file_available" class="button primary" :href="`/api/v1/exports/${lastExport.id}/file`" target="_blank">下载 PDF</a><div v-else class="empty"><div><strong>尚无可下载成品</strong><p>选择岗位版，保存修改后生成 PDF。</p></div></div></div></section>
+      <section class="card"><div class="card-head"><div><h3>岗位版记录</h3><p>每次保存都会追加不可变版本，原始简历不被覆盖。</p></div><span class="tag neutral">{{ variants.length }} 份</span></div><div class="card-body data-list"><div v-if="!variants.length" class="empty"><div><strong>还没有岗位版简历</strong><p>从一份完成的岗位报告创建。</p></div></div><article v-for="item in variants" :key="item.id" class="data-row"><div><strong>{{ item.title }}</strong><small>最新 v{{ item.versions?.[0]?.version_no || 1 }} · 版本 {{ item.revision }}</small></div><div class="item-actions"><button class="button soft small" type="button" @click="openVariant(item.id)">编辑与预览</button><button class="button link-button small" :disabled="busy" type="button" @click="deleteVariant(item)">删除</button></div></article></div></section>
+      <section class="card"><div class="card-head"><div><h3>PDF 成品</h3><p>由服务端按 A4 自动分页，刷新页面后仍可继续下载。</p></div></div><div class="card-body"><div v-if="lastExport" class="callout" :class="lastExport.file_available ? 'success' : 'opportunity'">PDF {{ lastExport.id }} · {{ lastExport.file_available ? `${lastExport.page_count || "?"} 页，可下载` : statusLabel(lastExport.status) }}</div><a v-if="lastExport?.file_available" class="button primary" :href="`/api/v1/exports/${lastExport.id}/file`" target="_blank">下载 PDF</a><div v-else class="empty"><div><strong>尚无可下载成品</strong><p>选择岗位版，保存修改后生成 PDF。</p></div></div></div></section>
     </div>
 
     <section v-if="selected && currentVersion" class="card variant-workbench" style="margin-top:18px">
@@ -311,7 +314,7 @@ onBeforeUnmount(() => previewObserver?.disconnect());
             <div class="field-group"><label>字号</label><input v-model.number="currentVersion.layout.font_size_pt" class="field" type="number" min="9" max="12" step="0.5" /></div>
             <div class="field-group"><label>行距</label><input v-model.number="currentVersion.layout.line_height" class="field" type="number" min="1.2" max="1.8" step="0.1" /></div>
             <div class="field-group"><label>模块间距</label><input v-model.number="currentVersion.layout.section_spacing_pt" class="field" type="number" min="4" max="16" step="1" /></div>
-            <div class="field-group"><label>字体</label><select v-model="currentVersion.layout.font_family" class="select"><option value="noto_sans_sc">中文无衬线</option></select></div>
+            <div class="field-group"><label>字体</label><select v-model="currentVersion.layout.font_family" class="select"><option value="noto_sans_sc">中文无衬线</option><option value="source_han_serif">中文宋体</option></select></div>
           </div>
           <p class="micro">拖动模块左上角的手柄排序；加粗按完整段落控制，导出的 PDF 使用相同设置。</p>
           <div class="variant-sections">

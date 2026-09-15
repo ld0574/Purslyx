@@ -21,14 +21,12 @@ const role = computed(() => auth.role || "seeker");
 const mainNav = computed<NavItem[]>(() => role.value === "seeker"
   ? [
       { label: "工作台", to: "/app/seeker/dashboard", hint: "概览" }, { label: "简历", to: "/app/seeker/resume", hint: "资料与期望" },
-      { label: "匹配池", to: "/app/seeker/pool", hint: "岗位与报告" }, { label: "事实与改写", to: "/app/seeker/rewrite", hint: "真实表达" },
-      { label: "岗位版简历", to: "/app/seeker/variants", hint: "排版与 PDF" }, { label: "面试", to: "/app/seeker/interview", hint: "逐轮练习" },
+      { label: "匹配池", to: "/app/seeker/pool", hint: "岗位与报告" }, { label: "面试", to: "/app/seeker/interview", hint: "逐轮练习" },
       { label: "用量", to: "/app/seeker/usage", hint: "次数流水" },
       { label: "统计", to: "/app/seeker/stats", hint: "反馈与结果" },
     ]
   : [
       { label: "工作台", to: "/app/recruiter/dashboard", hint: "概览" }, { label: "候选人资料", to: "/app/recruiter/materials", hint: "JD 与简历" },
-      { label: "单人报告", to: "/app/recruiter/report", hint: "证据与条件" },
       { label: "用量", to: "/app/recruiter/usage", hint: "次数流水" }, { label: "统计", to: "/app/recruiter/stats", hint: "反馈与结果" },
     ]);
 const adminNav = computed(() => {
@@ -42,6 +40,7 @@ const adminNav = computed(() => {
   ];
   return items.filter((item) => item.visible);
 });
+const adminEntry = computed(() => adminNav.value[0]?.to || "");
 
 async function logout() {
   await auth.logout();
@@ -54,9 +53,15 @@ async function logout() {
     <RouterLink class="brand-button" to="/"><span class="brand-mark">P</span><span>Purslyx</span></RouterLink>
     <span class="eyebrow">{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</span>
     <span class="topbar-spacer" />
-    <span class="health-chip"><i class="health-dot" />201 PostgreSQL</span>
-    <span class="micro">{{ auth.account?.email }}</span>
-    <button class="button soft small" type="button" @click="logout">退出</button>
+    <details class="account-menu">
+      <summary class="button soft small">账号</summary>
+      <div class="account-popover">
+        <strong>{{ auth.account?.email }}</strong>
+        <small>{{ role === "seeker" ? "求职账号" : "招聘账号" }} · 身份不可切换</small>
+        <RouterLink v-if="adminEntry" class="button outline small full" :to="adminEntry">进入管理端</RouterLink>
+        <button class="button soft small full" type="button" @click="logout">退出登录</button>
+      </div>
+    </details>
   </header>
   <div class="workspace-layout" data-workspace-loaded="true">
     <aside class="sidebar">

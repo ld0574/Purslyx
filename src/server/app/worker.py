@@ -474,7 +474,7 @@ class TaskWorker:
 
         def work() -> dict[str, Any]:
             render_path.unlink(missing_ok=True)
-            render_resume_pdf(version.content, version.layout, render_path, "岗位版简历")
+            page_count = render_resume_pdf(version.content, version.layout, render_path, "岗位版简历")
             byte_size = render_path.stat().st_size
             ensure_storage_capacity(db, byte_size)
             render_path.replace(output_path)
@@ -484,11 +484,13 @@ class TaskWorker:
                 "file_path": storage_key(output_path, settings.data_dir),
                 "byte_size": byte_size,
                 "content_hash": sha256_bytes(output_path.read_bytes()),
+                "page_count": page_count,
             }
 
         def save_result(value: dict[str, Any]) -> None:
             export.file_path = value["file_path"]
             export.content_hash = value["content_hash"]
+            export.page_count = int(value["page_count"])
             export.status = "available"
             export.completed_at = utcnow()
             db.add(

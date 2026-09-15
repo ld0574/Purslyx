@@ -1,7 +1,7 @@
 """Purslyx 正式 API 的可运行纵向实现。
 
-接口按已评审的 API 索引组织，当前使用本地确定性模型同步完成任务，但所有计次任务
-仍会写入 Task、输入快照、outbox、预留和结算事实，后续接 Celery 时无需改变业务契约。
+接口按已评审的 API 索引组织。默认 inline 模式会在请求后完成任务，独立 Worker 模式
+使用同一套 Task、输入快照、outbox、预留、重试和结算契约。
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from .budget import settle_budget
 from .config import settings
 from .db import get_db
+from .email_delivery import deliver_account_action_email
 from .errors import DomainError, NotFoundError
 from .model_provider import get_model_provider
 from .models import (
@@ -785,9 +786,13 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
             "status": "verification_requested",
             "message": "如果该邮箱可以注册，我们会发送验证邮件。",
         }
-        if existing.email_verified_at is None and settings.debug:
-            data["verification_token"] = _create_one_time_token(db, existing.id, "verify_email")
+        verification_token = None
+        if existing.email_verified_at is None:
+            verification_token = _create_one_time_token(db, existing.id, "verify_email")
+            if settings.debug:
+                data["verification_token"] = verification_token
             db.commit()
+            deliver_account_action_email(existing.email, "verify_email", verification_token)
         return _ok(request, data, code=202)
     account = Account(
         email=email,
@@ -804,6 +809,8 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         verification_token = _create_one_time_token(db, account.id, "verify_email")
     grants = grant_trial_if_needed(db, account) if settings.auto_verify_local else []
     db.commit()
+    if verification_token:
+        deliver_account_action_email(account.email, "verify_email", verification_token)
     data: dict[str, Any] = {
         "status": "verification_requested",
         "message": "如果该邮箱可以注册，我们会发送验证邮件。",
@@ -811,6 +818,9 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     # 只在本地 debug 返回一次性 token，线上由邮件服务发送，避免 token 进入业务日志。
     if settings.debug and verification_token:
         data["verification_token"] = verification_token
+    if settings.debug and settings.auto_verify_local:
+        # 仅供本地前端判断能否直接登录；线上保持中性注册响应，避免账号枚举。
+        data["local_auto_verified"] = True
     # 本地自动验证仍然发放试用次数，但不把账号投影带入公开注册响应。
     _ = grants
     return _ok(request, data, code=202)
@@ -838,6 +848,7 @@ def verify_email(payload: TokenRequest, request: Request, db: Session = Depends(
     account.email_verified_at = now_utc()
     account.status = "active"
     grants = grant_trial_if_needed(db, account)
+    db.add(SecurityEvent(account_id=account.id, event_type="email_verified", outcome="succeeded", client_type="web"))
     db.commit()
     return _ok(
         request,
@@ -855,11 +866,13 @@ def resend_verification(payload: RecoveryRequest, request: Request, db: Session 
     _rate_limit(db, request, "auth.resend_verification", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，验证邮件将发送到注册邮箱。"}
+    token = None
     if account and account.email_verified_at is None:
         token = _create_one_time_token(db, account.id, "verify_email")
         if settings.debug:
             data["verification_token"] = token
         db.commit()
+        deliver_account_action_email(account.email, "verify_email", token)
     return _ok(request, {"status": "verification_requested", **data}, code=202)
 
 
@@ -872,7 +885,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         db.commit()
         raise DomainError("AUTH_INVALID_CREDENTIALS", "邮箱或密码不正确", 401)
     if account.status == "suspended":
-        raise DomainError("AUTH_ACCOUNT_SUSPENDED", "账号已暂停", 403)
+        raise DomainError("AUTH_ACCOUNT_SUSPENDED", "账号已暂停，可通过注册邮箱申请恢复", 403, "recover_account")
     if account.email_verified_at is None:
         raise DomainError("AUTH_EMAIL_UNVERIFIED", "请先完成邮箱验证", 403, "verify_email")
     _, raw, csrf = _create_web_session(db, account)
@@ -922,11 +935,13 @@ def forgot_password(payload: RecoveryRequest, request: Request, db: Session = De
     _rate_limit(db, request, "auth.forgot_password", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，重置邮件将发送到注册邮箱。"}
+    token = None
     if account:
         token = _create_one_time_token(db, account.id, "reset_password")
         if settings.debug:
             data["reset_token"] = token
         db.commit()
+        deliver_account_action_email(account.email, "reset_password", token)
     return _ok(request, {"status": "reset_requested", **data}, code=202)
 
 
@@ -952,11 +967,14 @@ def request_account_recovery(payload: RecoveryRequest, request: Request, db: Ses
     _rate_limit(db, request, "auth.request_account_recovery", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，将发送账号恢复说明。"}
+    token = None
     if account and account.status == "suspended":
         token = _create_one_time_token(db, account.id, "recover_account")
+        db.add(SecurityEvent(account_id=account.id, event_type="account_recovery_requested", outcome="succeeded", client_type="web"))
         if settings.debug:
             data["recovery_token"] = token
         db.commit()
+        deliver_account_action_email(account.email, "recover_account", token)
     return _ok(request, {"status": "recovery_requested", **data}, code=202)
 
 
@@ -1817,10 +1835,11 @@ def create_preference(payload: PreferenceRequest, request: Request, account: Web
             if existing.request_hash != request_digest:
                 raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的岗位期望不同", 409)
             return _ok(request, _preference_view(db, existing, include_versions=True))
-    item = Preference(account_id=account.id, subject_document_id=subject_id, display_name=payload.display_name.strip(), content=content, is_default=payload.is_default, status="active", idempotency_key=key, request_hash=request_digest)
+    source_type = "candidate_disclosed" if payload.context == "candidate" else "self_confirmed"
+    item = Preference(account_id=account.id, subject_document_id=subject_id, display_name=payload.display_name.strip(), content=content, source_type=source_type, is_default=payload.is_default, status="active", idempotency_key=key, request_hash=request_digest)
     db.add(item)
     db.flush()
-    db.add(PreferenceVersion(account_id=account.id, preference_id=item.id, version_no=1, content=content, source_type="candidate_confirmed" if payload.context == "candidate" else "self_confirmed", idempotency_key=key, request_hash=request_digest))
+    db.add(PreferenceVersion(account_id=account.id, preference_id=item.id, version_no=1, content=content, source_type=source_type, idempotency_key=key, request_hash=request_digest))
     if payload.is_default:
         _set_default_preference(db, account.id, item.id)
     db.commit()
@@ -1852,10 +1871,11 @@ def update_preference(payload: PreferenceUpdateRequest, request: Request, accoun
     item.subject_document_id = subject_id
     item.display_name = payload.display_name.strip()
     item.content = content
+    item.source_type = "candidate_disclosed" if payload.context == "candidate" else "self_confirmed"
     item.status = payload.status
     item.revision += 1
     current = db.scalar(select(func.max(PreferenceVersion.version_no)).where(PreferenceVersion.preference_id == item.id)) or 0
-    db.add(PreferenceVersion(account_id=account.id, preference_id=item.id, version_no=int(current) + 1, content=content, source_type="candidate_confirmed" if payload.context == "candidate" else "self_confirmed", idempotency_key=key, request_hash=request_digest))
+    db.add(PreferenceVersion(account_id=account.id, preference_id=item.id, version_no=int(current) + 1, content=content, source_type=item.source_type, idempotency_key=key, request_hash=request_digest))
     if payload.is_default:
         item.is_default = True
         _set_default_preference(db, account.id, item.id)
@@ -2157,8 +2177,8 @@ def _validate_resume_layout(content: dict[str, Any], layout: dict[str, Any] | No
     if layout.get("schema_version", "resume-layout-v1") != "resume-layout-v1":
         raise DomainError("RESUME_LAYOUT_INVALID", "排版 Schema 版本不受支持", 422)
     font_family = layout.get("font_family", "noto_sans_sc")
-    if font_family != "noto_sans_sc":
-        raise DomainError("RESUME_LAYOUT_INVALID", "首版只支持 noto_sans_sc 字体", 422)
+    if font_family not in {"noto_sans_sc", "source_han_serif"}:
+        raise DomainError("RESUME_LAYOUT_INVALID", "岗位版字体不受支持", 422)
 
     def number(name: str, fallback_name: str, default: float, minimum: float, maximum: float) -> str:
         value = layout.get(name, layout.get(fallback_name, default))
@@ -2232,6 +2252,14 @@ def _apply_rewrite_to_content(db: Session, content: dict[str, Any], rewrite: Rew
 
 def _rewrite_view(db: Session, item: Rewrite) -> dict[str, Any]:
     segments = db.scalars(select(RewriteSegment).where(RewriteSegment.rewrite_id == item.id).order_by(RewriteSegment.id)).all()
+    decisions = db.scalars(
+        select(RewriteDecision)
+        .where(RewriteDecision.rewrite_id == item.id)
+        .order_by(RewriteDecision.decision_no, RewriteDecision.id)
+    ).all()
+    latest_decisions: dict[str, RewriteDecision] = {}
+    for decision in decisions:
+        latest_decisions[decision.segment_key] = decision
     return {
         "id": item.public_id,
         "status": item.status,
@@ -2247,6 +2275,13 @@ def _rewrite_view(db: Session, item: Rewrite) -> dict[str, Any]:
                 "rationale": row.rationale,
                 "current_decision": row.current_decision,
                 "decision_no": row.current_decision_no,
+                "edited_text": (
+                    latest_decisions[row.segment_key].edited_text
+                    if row.segment_key in latest_decisions
+                    and latest_decisions[row.segment_key].decision == "adopt"
+                    and latest_decisions[row.segment_key].edited_text
+                    else row.suggested_text
+                ),
                 "evidence": [
                     {"source_type": evidence.source_type, "source_id": evidence.source_id, "quote": evidence.quote}
                     for evidence in db.scalars(select(RewriteEvidence).where(RewriteEvidence.rewrite_segment_id == row.id)).all()
@@ -2463,8 +2498,48 @@ def _variant(db: Session, account_id: int, public_id: str) -> ResumeVariant:
 
 def _variant_view(db: Session, item: ResumeVariant) -> dict[str, Any]:
     versions = db.scalars(select(ResumeVariantVersion).where(ResumeVariantVersion.resume_variant_id == item.id).order_by(ResumeVariantVersion.version_no.desc())).all()
+    version_ids = [row.id for row in versions]
+    exports = (
+        db.scalars(
+            select(Export)
+            .where(Export.account_id == item.account_id, Export.resume_variant_version_id.in_(version_ids))
+            .order_by(Export.created_at.desc(), Export.id.desc())
+        ).all()
+        if version_ids
+        else []
+    )
+    version_public_ids = {row.id: row.public_id for row in versions}
     pool = db.get(JobPoolItem, item.job_pool_item_id)
-    return {"id": item.public_id, "title": item.title, "status": item.status, "revision": item.revision, "job_pool_item_id": pool.public_id if pool else None, "versions": [{"id": row.public_id, "version_no": row.version_no, "content": row.content, "layout": row.layout, "rewrite_id": db.get(Rewrite, row.rewrite_id).public_id if row.rewrite_id and db.get(Rewrite, row.rewrite_id) else None, "template_version": row.template_version, "created_at": row.created_at.isoformat()} for row in versions], "created_at": item.created_at.isoformat(), "updated_at": item.updated_at.isoformat()}
+    return {
+        "id": item.public_id,
+        "title": item.title,
+        "status": item.status,
+        "revision": item.revision,
+        "job_pool_item_id": pool.public_id if pool else None,
+        "versions": [
+            {
+                "id": row.public_id,
+                "version_no": row.version_no,
+                "content": row.content,
+                "layout": row.layout,
+                "rewrite_id": db.get(Rewrite, row.rewrite_id).public_id
+                if row.rewrite_id and db.get(Rewrite, row.rewrite_id)
+                else None,
+                "template_version": row.template_version,
+                "created_at": row.created_at.isoformat(),
+            }
+            for row in versions
+        ],
+        "exports": [
+            {
+                **(_export_view(row) or {}),
+                "resume_variant_version_id": version_public_ids.get(row.resume_variant_version_id),
+            }
+            for row in exports
+        ],
+        "created_at": item.created_at.isoformat(),
+        "updated_at": item.updated_at.isoformat(),
+    }
 
 
 @router.get("/resumes", tags=["resumes"])
@@ -2591,7 +2666,7 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
 
     def work() -> dict[str, Any]:
         render_path.unlink(missing_ok=True)
-        render_resume_pdf(version.content, version.layout, render_path, "岗位版简历")
+        page_count = render_resume_pdf(version.content, version.layout, render_path, "岗位版简历")
         byte_size = render_path.stat().st_size
         ensure_storage_capacity(db, byte_size)
         render_path.replace(output_path)
@@ -2601,11 +2676,13 @@ def create_resume_export(payload: ExportRequest, request: Request, account: WebA
             "file_path": storage_key(output_path, settings.data_dir),
             "byte_size": byte_size,
             "content_hash": sha256_bytes(output_path.read_bytes()),
+            "page_count": page_count,
         }
 
     def save_result(value: dict[str, Any]) -> None:
         export.file_path = value["file_path"]
         export.content_hash = value["content_hash"]
+        export.page_count = int(value["page_count"])
         export.status = "available"
         export.completed_at = now_utc()
         db.add(
@@ -2658,7 +2735,15 @@ def _export_view(item: Export | None) -> dict[str, Any] | None:
     if item is None:
         return None
     file_path = private_path(item.file_path, settings.data_dir) if item.file_path else None
-    return {"id": item.public_id, "status": item.status, "file_available": bool(file_path and file_path.is_file()), "content_hash": item.content_hash, "created_at": item.created_at.isoformat(), "completed_at": item.completed_at.isoformat() if item.completed_at else None}
+    return {
+        "id": item.public_id,
+        "status": item.status,
+        "file_available": bool(file_path and file_path.is_file()),
+        "content_hash": item.content_hash,
+        "page_count": item.page_count,
+        "created_at": item.created_at.isoformat(),
+        "completed_at": item.completed_at.isoformat() if item.completed_at else None,
+    }
 
 
 @router.get("/exports/{export_id}", tags=["exports"])
@@ -4278,6 +4363,77 @@ def _admin_audit(
     )
 
 
+def _admin_user_summary(db: Session, target: Account, *, include_counts: bool = False) -> dict[str, Any]:
+    """返回管理端可见的账号概要，绝不读取业务正文或模型输出。"""
+
+    role_names = db.scalars(
+        select(AdminRole.name)
+        .join(AccountRole, AccountRole.role_id == AdminRole.id)
+        .where(AccountRole.account_id == target.id, AdminRole.status == "active")
+        .order_by(AdminRole.name)
+    ).all()
+    usage = usage_view(db, target, entries_limit=1)
+    recent_values = [
+        target.last_login_at,
+        db.scalar(
+            select(func.max(Document.updated_at)).where(
+                Document.account_id == target.id, Document.deleted_at.is_(None)
+            )
+        ),
+        db.scalar(
+            select(func.max(Task.updated_at)).where(
+                Task.account_id == target.id, Task.deleted_at.is_(None)
+            )
+        ),
+    ]
+    recent_activity_at = max((value for value in recent_values if value is not None), default=None)
+    result: dict[str, Any] = {
+        "admin_role_names": list(role_names),
+        "balances": usage["balances"],
+        "recent_activity_at": recent_activity_at.isoformat() if recent_activity_at else None,
+    }
+    if include_counts:
+        document_counts = {
+            str(document_type): int(count)
+            for document_type, count in db.execute(
+                select(Document.document_type, func.count(Document.id))
+                .where(Document.account_id == target.id, Document.deleted_at.is_(None))
+                .group_by(Document.document_type)
+            ).all()
+        }
+        task_counts = {
+            str(status): int(count)
+            for status, count in db.execute(
+                select(Task.status, func.count(Task.id))
+                .where(Task.account_id == target.id, Task.deleted_at.is_(None))
+                .group_by(Task.status)
+            ).all()
+        }
+        result["counts"] = {
+            "documents": sum(document_counts.values()),
+            "documents_by_type": document_counts,
+            "tasks": sum(task_counts.values()),
+            "tasks_by_status": task_counts,
+            "analyses": int(
+                db.scalar(
+                    select(func.count(Analysis.id)).where(
+                        Analysis.account_id == target.id, Analysis.deleted_at.is_(None)
+                    )
+                )
+                or 0
+            ),
+            "interviews": int(
+                db.scalar(
+                    select(func.count(Interview.id)).where(
+                        Interview.account_id == target.id, Interview.deleted_at.is_(None)
+                    )
+                )
+                or 0
+            ),
+        }
+    return result
+
+
 @router.get("/admin/users", tags=["admin"])
 def admin_users(
     request: Request,
@@ -4300,7 +4456,24 @@ def admin_users(
     if user_status:
         statement = statement.where(Account.status == user_status)
     rows, page = page_rows(db, statement, Account, cursor=cursor, limit=limit, timestamp_field="created_at")
-    return _ok(request, {"items": [{"id": row.public_id, "email": row.email, "registration_role": row.registration_role, "status": row.status, "email_verified": row.email_verified_at is not None, "created_at": row.created_at.isoformat()} for row in rows], "page": page})
+    return _ok(
+        request,
+        {
+            "items": [
+                {
+                    "id": row.public_id,
+                    "email": row.email,
+                    "registration_role": row.registration_role,
+                    "status": row.status,
+                    "email_verified": row.email_verified_at is not None,
+                    "created_at": row.created_at.isoformat(),
+                    **_admin_user_summary(db, row),
+                }
+                for row in rows
+            ],
+            "page": page,
+        },
+    )
 
 
 @router.get("/admin/users/{user_id}", tags=["admin"])
@@ -4319,8 +4492,27 @@ def admin_user_detail(request: Request, account: WebAccount, user_id: str = Path
             "account": public_account(db, target),
             "usage": usage_view(db, target),
             "admin_roles": [_role_view(db, role) for role in roles],
+            "summary": _admin_user_summary(db, target, include_counts=True),
         },
     )
+
+
+def _validate_admin_status_change(
+    target: Account,
+    operator_account_id: int,
+    new_status: str,
+    base_revision: int | None,
+) -> None:
+    """限制后台状态接口只能执行已验证账号的启用与暂停转换。"""
+
+    if target.id == operator_account_id and new_status == "suspended":
+        raise DomainError("ADMIN_SELF_LOCKOUT", "不能暂停当前正在使用的管理员账号", 409)
+    if base_revision is not None and base_revision != target.revision:
+        raise DomainError("ADMIN_USER_REVISION_CONFLICT", "用户状态已变化，请刷新后重试", 409, "refresh")
+    if target.status not in {"active", "suspended"}:
+        raise DomainError("ADMIN_USER_STATUS_INVALID", "待验证账号必须先完成邮箱验证", 409)
+    if target.status == new_status:
+        raise DomainError("ADMIN_USER_STATUS_UNCHANGED", "账号已经处于该状态", 409)
 
 
 @router.put("/admin/users/{user_id}/status", tags=["admin"])
@@ -4328,10 +4520,6 @@ def admin_update_status(payload: AccountStatusRequest, request: Request, account
     _admin_guard(request, account, db, "admin.users.manage_status", write=True)
     key = _idempotency_key(request)
     target = _account_or_404(db, user_id)
-    if target.id == account.id and payload.status == "suspended":
-        raise DomainError("ADMIN_SELF_LOCKOUT", "不能暂停当前正在使用的管理员账号", 409)
-    if payload.base_revision is not None and payload.base_revision != target.revision:
-        raise DomainError("ADMIN_USER_REVISION_CONFLICT", "用户状态已变化，请刷新后重试", 409, "refresh")
     request_digest = payload_hash({"user_id": user_id, **payload.model_dump(mode="json")})
     if key:
         previous = db.scalar(
@@ -4346,7 +4534,9 @@ def admin_update_status(payload: AccountStatusRequest, request: Request, account
             if (previous.after_value or {}).get("request_hash") != request_digest:
                 raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的用户状态变更不同", 409)
             return _ok(request, {"account": public_account(db, target)})
+    _validate_admin_status_change(target, account.id, payload.status, payload.base_revision)
     before = {"status": target.status}
+    recovery_token = None
     target.status = payload.status
     target.revision += 1
     _admin_audit(
@@ -4377,7 +4567,17 @@ def admin_update_status(payload: AccountStatusRequest, request: Request, account
                 client_type="admin",
             )
         )
+        recovery_token = _create_one_time_token(db, target.id, "recover_account")
+    else:
+        db.query(OneTimeToken).filter(
+            OneTimeToken.account_id == target.id,
+            OneTimeToken.token_type == "recover_account",
+            OneTimeToken.consumed_at.is_(None),
+            OneTimeToken.revoked_at.is_(None),
+        ).update({OneTimeToken.revoked_at: now_utc()}, synchronize_session=False)
     db.commit()
+    if recovery_token:
+        deliver_account_action_email(target.email, "recover_account", recovery_token)
     return _ok(request, {"account": public_account(db, target)})
 
 

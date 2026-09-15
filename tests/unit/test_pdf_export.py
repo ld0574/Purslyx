@@ -39,7 +39,7 @@ def _content(segment_count: int = 2) -> dict:
 
 def test_pdf_renders_chinese_english_and_escaped_content(tmp_path: Path) -> None:
     output = tmp_path / "resume.pdf"
-    render_resume_pdf(
+    page_count = render_resume_pdf(
         _content(),
         {
             "section_order": ["skills", "projects"],
@@ -54,19 +54,32 @@ def test_pdf_renders_chinese_english_and_escaped_content(tmp_path: Path) -> None
     reader = PdfReader(str(output))
     assert output.read_bytes().startswith(b"%PDF")
     assert len(reader.pages) == 1
+    assert page_count == len(reader.pages)
     assert reader.metadata.title == "张三 Zhang San"
     assert "Purslyx" in (reader.pages[0].extract_text() or "")
 
 
 def test_long_pdf_flows_to_multiple_pages_without_truncation(tmp_path: Path) -> None:
     output = tmp_path / "long-resume.pdf"
-    render_resume_pdf(_content(140), {}, output, "Long Resume")
+    page_count = render_resume_pdf(_content(140), {}, output, "Long Resume")
     reader = PdfReader(str(output))
     assert len(reader.pages) >= 3
+    assert page_count == len(reader.pages)
     extracted = "\n".join(page.extract_text() or "" for page in reader.pages)
     assert "Long Resume" in extracted
     assert "Purslyx" in extracted
     assert all(f"{page_no}" in extracted for page_no in range(1, len(reader.pages) + 1))
+
+
+def test_pdf_supports_serif_font_option(tmp_path: Path) -> None:
+    output = tmp_path / "serif-resume.pdf"
+
+    page_count = render_resume_pdf(
+        _content(), {"font_family": "source_han_serif"}, output, "宋体岗位版简历"
+    )
+
+    assert page_count == 1
+    assert output.read_bytes().startswith(b"%PDF")
 
 
 @pytest.mark.parametrize(

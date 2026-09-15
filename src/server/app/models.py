@@ -509,6 +509,7 @@ class Export(Base):
     resume_variant_version_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     file_path: Mapped[str | None] = mapped_column(String(1024))
     content_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    page_count: Mapped[int | None] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(24), default="queued", index=True, nullable=False)
     task_id: Mapped[int | None] = mapped_column(Integer, index=True)
     failure_code: Mapped[str | None] = mapped_column(String(80))

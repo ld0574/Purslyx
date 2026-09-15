@@ -6,16 +6,21 @@ import { useAuthStore } from "@/stores/auth";
 import MaterialsView from "@/views/MaterialsView.vue";
 
 const apiMock = vi.hoisted(() => vi.fn());
+const routerPushMock = vi.hoisted(() => vi.fn());
 vi.mock("@/services/api", () => ({
   api: apiMock,
   deleteWithImpact: vi.fn(),
   idempotencyKey: () => "preference-idem",
   waitForTask: vi.fn(),
 }));
+vi.mock("vue-router", () => ({
+  useRouter: () => ({ push: routerPushMock }),
+}));
 
 describe("岗位期望编辑器", () => {
   beforeEach(() => {
     apiMock.mockReset();
+    routerPushMock.mockReset();
     apiMock.mockImplementation((path: string, options?: Record<string, unknown>) => {
       if (path === "/api/v1/documents") return Promise.resolve({ items: [] });
       if (path === "/api/v1/preferences" && !options) return Promise.resolve({ items: [] });
