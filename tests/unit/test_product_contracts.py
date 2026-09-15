@@ -23,6 +23,7 @@ if not settings.database_url:
 
 from server.app import api as api_module  # noqa: E402
 from server.app.api import (  # noqa: E402
+    _browser_draft_confirmation,
     _escape_csv_formula,
     _finish_interview_summary,
     _log_export_datetime,
@@ -33,6 +34,7 @@ from server.app.api import (  # noqa: E402
 from server.app.errors import DomainError, NotFoundError  # noqa: E402
 from server.app.matching import build_match_result  # noqa: E402
 from server.app.models import (  # noqa: E402
+    BrowserJobDraft,
     Interview,
     InterviewAnswer,
     InterviewQuestion,
@@ -161,6 +163,64 @@ def test_variant_pool_lookup_uses_internal_pk_with_isolation_predicates() -> Non
     missing = _PoolSession(None)
     with pytest.raises(NotFoundError):
         _pool_by_pk(missing, account_id=7, pool_id=42)
+
+
+def test_browser_draft_confirmation_freezes_user_corrections() -> None:
+    draft = BrowserJobDraft(
+        account_id=7,
+        platform="boss",
+        source_url="https://www.zhipin.com/job_detail/example.html",
+        source_url_hash="a" * 64,
+        content_hash="b" * 64,
+        job_title="旧标题",
+        company_name="旧公司",
+        location_text=None,
+        work_mode=None,
+        salary_text=None,
+        job_description_text="旧标题\n负责旧内容",
+        captured_payload={},
+        missing_field_codes=[],
+        status="awaiting_confirmation",
+    )
+
+    fields, confirmed_text = _browser_draft_confirmation(
+        draft,
+        {
+            "corrections": {
+                "job_title": "高级前端工程师",
+                "company_name": "示例科技",
+                "location_text": "杭州、上海",
+                "work_mode": "hybrid",
+                "salary_text": "20-30K/月",
+                "job_description_text": "高级前端工程师\n负责 Vue 与 TypeScript 工程化交付",
+            }
+        },
+    )
+
+    assert confirmed_text.endswith("负责 Vue 与 TypeScript 工程化交付")
+    assert fields["title"] == "高级前端工程师"
+    assert fields["locations"] == ["杭州", "上海"]
+    assert fields["work_mode"] == "hybrid"
+    assert fields["salary"]["status"] == "specified"
+    assert fields["salary"]["min"] == "20000.0"
+
+
+def test_browser_draft_confirmation_rejects_uncontrolled_fields() -> None:
+    draft = BrowserJobDraft(
+        account_id=7,
+        platform="boss",
+        source_url="https://www.zhipin.com/job_detail/example.html",
+        source_url_hash="a" * 64,
+        content_hash="b" * 64,
+        job_description_text="前端工程师\n负责 Vue 开发",
+        captured_payload={},
+        missing_field_codes=[],
+        status="awaiting_confirmation",
+    )
+
+    with pytest.raises(DomainError) as error:
+        _browser_draft_confirmation(draft, {"corrections": {"source_url": "https://evil.example"}})
+    assert error.value.code == "POOL_SOURCE_INVALID"
 
 
 def test_match_report_exposes_verification_items_and_targeted_questions() -> None:

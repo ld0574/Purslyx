@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { api, deleteWithImpact, SESSION_KEY } from "@/services/api";
+import { api, deleteWithImpact, SESSION_KEY, waitForTask } from "@/services/api";
 
 describe("API 客户端", () => {
   it("为写请求携带 Bearer、CSRF 和幂等键并解包 data", async () => {
@@ -42,5 +42,30 @@ describe("API 客户端", () => {
       method: "DELETE",
       headers: expect.objectContaining({ "If-Match": '"impact-2"', "X-CSRF-Token": "csrf-token" }),
     });
+  });
+
+  it("轮询异步任务直到 Worker 交付结果", async () => {
+    const updates: string[] = [];
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: "task-1", status: "running", poll_after_ms: 1 } }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { id: "task-1", status: "succeeded", result: { resource_id: "report-1" } } }), {
+        status: 200, headers: { "Content-Type": "application/json" },
+      }));
+
+    const task = await waitForTask(
+      { id: "task-1", status: "queued", poll_after_ms: 1 },
+      { pollIntervalMs: 1, onUpdate: (value) => updates.push(value.status) },
+    );
+
+    expect(task).toMatchObject({ status: "succeeded", result: { resource_id: "report-1" } });
+    expect(updates).toEqual(["queued", "running", "succeeded"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("把任务失败原因返回给发起页面", async () => {
+    await expect(waitForTask({ id: "task-2", status: "failed", failure: { message: "模型暂时不可用" } }))
+      .rejects.toMatchObject({ message: "模型暂时不可用", task: { id: "task-2", status: "failed" } });
   });
 });

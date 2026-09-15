@@ -5,9 +5,9 @@ import { useRoute } from "vue-router";
 import AppShell from "@/components/AppShell.vue";
 import AsyncState from "@/components/AsyncState.vue";
 import PageHeader from "@/components/PageHeader.vue";
-import { api, idempotencyKey } from "@/services/api";
+import { api, idempotencyKey, waitForTask } from "@/services/api";
 import type { JsonMap } from "@/types";
-import { errorMessage, formatDate, statusClass, statusLabel, summaryText, textList } from "@/utils/format";
+import { errorMessage, formatDate, statusClass, statusLabel, summaryText, taskLabel, textList } from "@/utils/format";
 
 const route = useRoute();
 const loading = ref(true);
@@ -17,6 +17,7 @@ const success = ref("");
 const interviews = ref<JsonMap[]>([]);
 const poolItems = ref<JsonMap[]>([]);
 const selected = ref<JsonMap | null>(null);
+const activeTask = ref<JsonMap | null>(null);
 const startForm = reactive({ pool_id: "", title: "岗位面试练习" });
 const answerText = ref("");
 let pollingTimer: number | undefined;
@@ -25,6 +26,20 @@ const availablePools = computed(() => poolItems.value.filter((item) => item.late
 const currentQuestion = computed(() => selected.value?.questions?.find((item: JsonMap) => item.id === selected.value?.current_question_id)
   || selected.value?.questions?.find((item: JsonMap) => item.status === "awaiting_answer") || null);
 const shouldPoll = computed(() => ["opening", "processing"].includes(String(selected.value?.status || "")));
+
+async function settleInterview(response: JsonMap, interviewId?: string): Promise<JsonMap> {
+  const view = response.interview || response;
+  selected.value = view;
+  const task = response.task || view.task;
+  const targetId = interviewId || view.id;
+  if (task && ["queued", "running", "retry_wait"].includes(String(task.status))) {
+    activeTask.value = task;
+    await waitForTask(task, { onUpdate: (value) => { activeTask.value = value; } });
+    selected.value = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(targetId)}`);
+  }
+  activeTask.value = null;
+  return selected.value || view;
+}
 
 async function load(selectId?: string) {
   loading.value = true; error.value = "";
@@ -64,9 +79,10 @@ async function startInterview() {
         confirm_usage: true,
       },
     });
-    selected.value = result.interview;
-    success.value = result.interview ? "面试题目已准备好，本次已结算 1 场" : "面试开场任务已受理，请稍后刷新";
-    await load(result.interview?.id);
+    success.value = "面试开场任务已受理，正在准备 3 道主问题";
+    const view = await settleInterview(result, result.interview?.id);
+    success.value = view.usage_settled ? "3 道主问题已准备好，本次结算 1 场" : "面试题目已准备好";
+    await load(view.id);
   } catch (value) { error.value = errorMessage(value); }
   finally { busy.value = false; }
 }
@@ -82,9 +98,9 @@ async function submitAnswer() {
         base_revision: selected.value.revision,
       },
     });
-    selected.value = result.interview;
+    const view = await settleInterview(result, selected.value.id);
     answerText.value = "";
-    success.value = selected.value?.status === "completed" ? "三道主问题已经完成，练习总结已生成" : "回答与本轮反馈已保存";
+    success.value = view.status === "completed" ? "三道主问题已经完成，练习总结已生成" : "回答与本轮反馈已保存";
   } catch (value) { error.value = errorMessage(value); }
   finally { busy.value = false; }
 }
@@ -93,9 +109,11 @@ async function finishInterview() {
   if (!selected.value || !window.confirm("提前结束后，未回答题目会标记为跳过并按已有回答生成总结。确认继续？")) return;
   busy.value = true; error.value = "";
   try {
-    selected.value = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(selected.value.id)}/finish`, {
+    const interviewId = selected.value.id;
+    const result = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(interviewId)}/finish`, {
       method: "POST", idempotencyKey: idempotencyKey("interview-finish"), body: { base_revision: selected.value.revision },
     });
+    await settleInterview(result, interviewId);
     success.value = "已提前结束并生成总结";
   } catch (value) { error.value = errorMessage(value); }
   finally { busy.value = false; }
@@ -106,10 +124,13 @@ async function retryTask() {
   if (!taskId) return;
   busy.value = true; error.value = "";
   try {
-    await api(`/api/v1/tasks/${encodeURIComponent(taskId)}/retry`, {
+    const result = await api<JsonMap>(`/api/v1/tasks/${encodeURIComponent(taskId)}/retry`, {
       method: "POST", idempotencyKey: idempotencyKey("interview-retry"), body: { reason: "resume_interview_generation" },
     });
-    success.value = "重试已受理";
+    activeTask.value = result.task;
+    success.value = "重试已受理，正在恢复原任务";
+    await waitForTask(result.task, { onUpdate: (value) => { activeTask.value = value; } });
+    activeTask.value = null;
     await load(selected.value?.id);
   } catch (value) { error.value = errorMessage(value); }
   finally { busy.value = false; }
@@ -147,6 +168,7 @@ onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); })
       <button class="button outline small" type="button" @click="load()">刷新</button>
     </PageHeader>
     <AsyncState :loading="loading" :error="error" :success="success" />
+    <div v-if="activeTask" class="callout opportunity task-inline-state"><span class="spinner" />{{ taskLabel(activeTask.task_type) }}：{{ statusLabel(activeTask.status) }} · {{ activeTask.current_step || "等待执行" }}</div>
 
     <section v-if="!loading" class="card" style="margin-bottom:18px">
       <div class="card-head"><div><h3>开始一场新练习</h3><p>开场题目成功保存后结算 1 场，后续回答与恢复不重复扣减。</p></div></div>

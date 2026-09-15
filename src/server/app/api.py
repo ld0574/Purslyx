@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -96,6 +96,7 @@ from .parsing import (
     extract_file_text,
     normalize_text,
     parse_job_text,
+    parse_salary_text,
     sha256_bytes,
 )
 from .pdf_export import render_resume_pdf
@@ -2766,6 +2767,54 @@ def _job_fields_from_draft(draft: BrowserJobDraft) -> dict[str, Any]:
     return fields
 
 
+def _browser_draft_confirmation(draft: BrowserJobDraft, source: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """把 Web 端人工修正写入确认版本，同时保留原浏览器草稿作为采集来源。"""
+
+    corrections = source.get("corrections")
+    if corrections is None:
+        return _job_fields_from_draft(draft), draft.job_description_text or ""
+    if not isinstance(corrections, dict):
+        raise DomainError("POOL_SOURCE_INVALID", "浏览器岗位修正内容必须是对象", 422)
+    allowed = {"job_title", "company_name", "location_text", "work_mode", "salary_text", "job_description_text"}
+    if set(corrections) - allowed:
+        raise DomainError("POOL_SOURCE_INVALID", "浏览器岗位修正包含不支持的字段", 422)
+
+    description = normalize_text(str(corrections.get("job_description_text") or draft.job_description_text or ""))
+    if not description or len(description) > MAX_TEXT_CHARS:
+        raise DomainError("POOL_SOURCE_INVALID", "确认入池前需要完整且未超限的岗位正文", 422)
+    fields = dict(parse_job_text(description).get("job_fields") or {})
+
+    def optional_text(name: str, maximum: int) -> str | None:
+        raw = corrections[name] if name in corrections else getattr(draft, name)
+        value = normalize_text(str(raw or ""))
+        if len(value) > maximum:
+            raise DomainError("POOL_SOURCE_INVALID", f"{name} 超过长度限制", 422)
+        return value or None
+
+    title = optional_text("job_title", 200)
+    company = optional_text("company_name", 200)
+    location_text = optional_text("location_text", 300)
+    salary_text = optional_text("salary_text", 300)
+    work_mode = corrections.get("work_mode", draft.work_mode)
+    if work_mode not in {None, "onsite", "hybrid", "remote"}:
+        raise DomainError("POOL_SOURCE_INVALID", "办公方式不合法", 422)
+    locations = [item.strip() for item in re.split(r"[/／、,，|]", location_text) if item.strip()] if location_text else []
+    fields.update(
+        {
+            "title": title or fields.get("title"),
+            "company_name": company or fields.get("company_name"),
+            "location_text": location_text,
+            "locations": locations,
+            "work_mode": work_mode,
+            "salary_text": salary_text,
+            "salary": parse_salary_text(salary_text),
+            "source_url": draft.source_url,
+            "source_text": description,
+        }
+    )
+    return fields, description
+
+
 def _browser_draft_view(draft: BrowserJobDraft) -> dict[str, Any]:
     return {
         "id": draft.public_id,
@@ -3204,8 +3253,8 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
             browser_draft.status = "expired"
             db.commit()
             raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
-        fields = _job_fields_from_draft(browser_draft)
-        document = Document(account_id=account.id, document_type="job_description", subject_type="job_description", title=browser_draft.job_title or "浏览器岗位", source_type="text", status="confirmed", raw_text=browser_draft.job_description_text, draft_content={"schema_version": "document-content-v1", "sections": [], "job_fields": fields})
+        fields, confirmed_text = _browser_draft_confirmation(browser_draft, source)
+        document = Document(account_id=account.id, document_type="job_description", subject_type="job_description", title=fields.get("title") or "浏览器岗位", source_type="text", status="confirmed", raw_text=confirmed_text, draft_content={"schema_version": "document-content-v1", "sections": [], "job_fields": fields})
         db.add(document)
         db.flush()
         db.add(DocumentDraft(account_id=account.id, document_id=document.id, content=document.draft_content, status="confirmed", confirmed_at=now_utc(), expires_at=now_utc() + timedelta(days=7)))
@@ -4823,6 +4872,8 @@ def _log_items(
     task_type: str | None = None,
     task_status: str | None = None,
     retry_count_min: int | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
     cursor: str | None = None,
     limit: int = 20,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -4895,18 +4946,32 @@ def _log_items(
         statement = statement.where(Task.status == task_status)
     if retry_count_min is not None and log_type == "tasks":
         statement = statement.where(Task.retry_count >= retry_count_min)
+    if (resource_type or resource_id) and log_type == "tasks":
+        ref_conditions: list[Any] = []
+        result_conditions: list[Any] = []
+        if resource_type:
+            ref_conditions.append(TaskInputRef.resource_type == resource_type)
+            result_conditions.append(Task.result["resource_type"].as_string() == resource_type)
+        if resource_id:
+            ref_conditions.append(TaskInputRef.resource_public_id == resource_id)
+            result_conditions.append(Task.result["resource_id"].as_string() == resource_id)
+        input_tasks = select(TaskInputRef.task_id).where(*ref_conditions)
+        statement = statement.where(or_(Task.id.in_(input_tasks), and_(*result_conditions)))
     rows, page = page_rows(db, statement, model, cursor=cursor, limit=limit, timestamp_field="created_at")
     items: list[dict[str, Any]] = []
     for row in rows:
         if log_type == "operations":
+            operator_account = db.get(Account, row.operator_account_id) if row.operator_account_id else None
             target_account = db.get(Account, row.target_account_id) if row.target_account_id else None
-            items.append({"id": row.public_id, "category": "operations", "action": row.action, "outcome": row.outcome, "reason": row.reason, "target_account": _masked_email(target_account.email if target_account else None), "target_account_id": target_account.public_id if target_account else None, "request_id": row.request_id, "created_at": row.created_at.isoformat()})
+            items.append({"id": row.public_id, "category": "operations", "action": row.action, "outcome": row.outcome, "reason": row.reason, "operator": _masked_email(operator_account.email if operator_account else None), "operator_id": operator_account.public_id if operator_account else None, "target_type": "account" if target_account else None, "target_account": _masked_email(target_account.email if target_account else None), "target_account_id": target_account.public_id if target_account else None, "request_id": row.request_id, "created_at": row.created_at.isoformat()})
         elif log_type == "security":
             event_account = db.get(Account, row.account_id) if row.account_id else None
             items.append({"id": row.public_id, "category": "security", "event_type": row.event_type, "outcome": row.outcome, "reason_code": row.reason_code, "account": _masked_email(event_account.email if event_account else None), "account_id": event_account.public_id if event_account else None, "request_id": row.request_id, "client_type": row.client_type, "created_at": row.created_at.isoformat()})
         else:
             failure = row.failure or {}
-            items.append({"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "retry_count": row.retry_count, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None})
+            task_account = db.get(Account, row.account_id)
+            result_ref = row.result if isinstance(row.result, dict) else {}
+            items.append({"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "account": _masked_email(task_account.email if task_account else None), "account_id": task_account.public_id if task_account else None, "resource_type": result_ref.get("resource_type"), "resource_id": result_ref.get("resource_id"), "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "retry_count": row.retry_count, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None})
     return items, page
 
 
@@ -4963,12 +5028,14 @@ def admin_task_logs(
     task_type: str | None = Query(default=None, max_length=40),
     task_status: str | None = Query(default=None, max_length=24),
     retry_count_min: int | None = Query(default=None, ge=0),
+    resource_type: str | None = Query(default=None, max_length=64),
+    resource_id: str | None = Query(default=None, max_length=64),
     cursor: str | None = Query(default=None, max_length=512),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     _admin_guard(request, account, db, "admin.logs.tasks.read")
-    items, page = _log_items(db, "tasks", created_from=created_from, created_to=created_to, account_id=account_id, result=result, request_id=request_id, task_type=task_type, task_status=task_status, retry_count_min=retry_count_min, cursor=cursor, limit=limit)
+    items, page = _log_items(db, "tasks", created_from=created_from, created_to=created_to, account_id=account_id, result=result, request_id=request_id, task_type=task_type, task_status=task_status, retry_count_min=retry_count_min, resource_type=resource_type, resource_id=resource_id, cursor=cursor, limit=limit)
     return _ok(request, {"items": items, "page": page})
 
 
@@ -4991,7 +5058,8 @@ def admin_log_detail(request: Request, account: WebAccount, log_type: str, log_i
         if row:
             failure = row.failure or {}
             calls = db.scalars(select(ModelCall).where(ModelCall.task_id == row.id).order_by(ModelCall.created_at)).all()
-            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": float(call.cost_usd) if call.cost_usd is not None else None, "cost_usd_exact": f"{call.cost_usd:.8f}" if call.cost_usd is not None else None, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id"}) else None}
+            task_account = db.get(Account, row.account_id)
+            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "account": {"id": task_account.public_id, "email_masked": _masked_email(task_account.email)} if task_account else None, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": float(call.cost_usd) if call.cost_usd is not None else None, "cost_usd_exact": f"{call.cost_usd:.8f}" if call.cost_usd is not None else None, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id", "followup_id"}) else None}
         else:
             value = None
     if value is None:
@@ -5041,6 +5109,11 @@ def _log_export_work(db: Session, item: LogExport) -> dict[str, Any]:
         "task_type": filters.get("task_type"),
         "task_status": filters.get("task_status"),
         "retry_count_min": filters.get("retry_count_min"),
+        "operator_id": filters.get("operator_id"),
+        "target_id": filters.get("target_id"),
+        "target_type": filters.get("target_type"),
+        "resource_type": filters.get("resource_type"),
+        "resource_id": filters.get("resource_id"),
     }
     rows: list[dict[str, Any]] = []
     cursor: str | None = None

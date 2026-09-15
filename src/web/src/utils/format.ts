@@ -28,6 +28,12 @@ const STATUS_LABELS: Record<string, string> = {
   archived: "已归档",
   downloadable: "可下载",
   expired: "已过期",
+  exporting: "正在导出",
+  awaiting_requirements: "待补齐条件",
+  onsite: "现场",
+  hybrid: "混合",
+  remote: "远程",
+  unknown: "未披露",
 };
 
 const TASK_LABELS: Record<string, string> = {

@@ -13,6 +13,23 @@ export class ApiError extends Error {
   }
 }
 
+export class TaskExecutionError extends Error {
+  constructor(
+    message: string,
+    public task: JsonMap,
+  ) {
+    super(message);
+    this.name = "TaskExecutionError";
+  }
+}
+
+export interface TaskWaitOptions {
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  onUpdate?: (task: JsonMap) => void;
+  pollIntervalMs?: number;
+}
+
 export function idempotencyKey(scope: string): string {
   return `${scope}-${crypto.randomUUID()}`;
 }
@@ -78,6 +95,53 @@ export async function deleteWithImpact(
     headers: { "If-Match": `"${impact.impact_version}"` },
   });
   return true;
+}
+
+function wait(delayMs: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("任务等待已取消", "AbortError"));
+      return;
+    }
+    const timer = window.setTimeout(resolve, delayMs);
+    signal?.addEventListener("abort", () => {
+      window.clearTimeout(timer);
+      reject(new DOMException("任务等待已取消", "AbortError"));
+    }, { once: true });
+  });
+}
+
+/**
+ * 等待服务端异步任务完成。页面只轮询任务摘要，成功后再按结果引用读取业务资源，
+ * 因而在 inline 与独立 Worker 两种部署方式下使用同一套交互。
+ */
+export async function waitForTask(initialTask: JsonMap, options: TaskWaitOptions = {}): Promise<JsonMap> {
+  if (!initialTask?.id) throw new TaskExecutionError("服务没有返回可跟踪的任务", initialTask || {});
+  const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000;
+  const startedAt = Date.now();
+  let task = initialTask;
+
+  while (["queued", "running", "retry_wait"].includes(String(task.status))) {
+    options.onUpdate?.(task);
+    if (Date.now() - startedAt >= timeoutMs) {
+      throw new TaskExecutionError("任务仍在后台执行，可稍后从发起页面或任务记录继续查看", task);
+    }
+    const serverDelay = Number(task.poll_after_ms || 2000);
+    const delayMs = options.pollIntervalMs ?? Math.min(10_000, Math.max(250, serverDelay));
+    await wait(delayMs, options.signal);
+    task = await api<JsonMap>(`/api/v1/tasks/${encodeURIComponent(task.id)}`);
+  }
+
+  options.onUpdate?.(task);
+  if (task.status === "succeeded") return task;
+  const failure = task.failure || {};
+  const required = Array.isArray(task.required_actions)
+    ? task.required_actions.map((item: JsonMap) => item.message || item.action).filter(Boolean).join("；")
+    : "";
+  throw new TaskExecutionError(
+    failure.message || required || (task.status === "cancelled" ? "任务已取消" : "任务未能完成"),
+    task,
+  );
 }
 
 export { SESSION_KEY };

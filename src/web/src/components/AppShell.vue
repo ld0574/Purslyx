@@ -23,12 +23,12 @@ const mainNav = computed<NavItem[]>(() => role.value === "seeker"
       { label: "工作台", to: "/app/seeker/dashboard", hint: "概览" }, { label: "简历", to: "/app/seeker/resume", hint: "资料与期望" },
       { label: "匹配池", to: "/app/seeker/pool", hint: "岗位与报告" }, { label: "事实与改写", to: "/app/seeker/rewrite", hint: "真实表达" },
       { label: "岗位版简历", to: "/app/seeker/variants", hint: "排版与 PDF" }, { label: "面试", to: "/app/seeker/interview", hint: "逐轮练习" },
-      { label: "任务", to: "/app/seeker/tasks", hint: "执行恢复" }, { label: "用量", to: "/app/seeker/usage", hint: "次数流水" },
+      { label: "用量", to: "/app/seeker/usage", hint: "次数流水" },
       { label: "统计", to: "/app/seeker/stats", hint: "反馈与结果" },
     ]
   : [
       { label: "工作台", to: "/app/recruiter/dashboard", hint: "概览" }, { label: "候选人资料", to: "/app/recruiter/materials", hint: "JD 与简历" },
-      { label: "单人报告", to: "/app/recruiter/report", hint: "证据与条件" }, { label: "任务", to: "/app/recruiter/tasks", hint: "执行恢复" },
+      { label: "单人报告", to: "/app/recruiter/report", hint: "证据与条件" },
       { label: "用量", to: "/app/recruiter/usage", hint: "次数流水" }, { label: "统计", to: "/app/recruiter/stats", hint: "反馈与结果" },
     ]);
 const adminNav = computed(() => {
