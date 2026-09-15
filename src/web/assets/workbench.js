@@ -803,7 +803,7 @@
         function rewriteSegmentItem(item) {
           const decision = item.current_decision || "未决定";
           const editId = `rewrite-edit-${item.id}`;
-          return `<article class="rewrite-row"><div style="min-width:0;flex:1"><div class="item-title"><strong>${esc(item.source_segment_key)}</strong><span class="tag ${decision === "adopt" ? "success" : decision === "keep_original" ? "neutral" : "opportunity"}">${esc(decision === "adopt" ? "已采用" : decision === "keep_original" ? "保留原文" : decision)}</span></div><div class="rewrite-compare"><div class="compare-pane original"><h4>原文</h4><p>${esc(item.original_text)}</p></div><div class="compare-pane suggested"><h4>建议</h4><p>${esc(item.suggested_text || "暂无建议")}</p></div></div><div class="field-group" style="margin-top:12px"><label for="${esc(editId)}">编辑后采用（可选）</label><textarea id="${esc(editId)}" class="textarea" style="min-height:88px">${esc(item.suggested_text || item.original_text || "")}</textarea></div><div class="item-actions"><button class="button primary small" data-action="decide-rewrite" data-decision="adopt" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">采用建议</button><button class="button soft small" data-action="decide-rewrite" data-decision="edited" data-edit-id="${esc(editId)}" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">采用编辑</button><button class="button outline small" data-action="decide-rewrite" data-decision="keep_original" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">保留原文</button></div>${item.evidence?.length ? `<div class="evidence">依据：${esc(item.evidence.map((evidence) => evidence.quote).join("；"))}</div>` : `<div class="evidence missing">当前建议没有额外事实依据，采用前请人工核对。</div>`}</div></article>`;
+          return `<article class="rewrite-row"><div style="min-width:0;flex:1"><div class="item-title"><strong>${esc(item.source_segment_key)}</strong><span class="tag ${decision === "adopt" ? "success" : decision === "keep_original" ? "neutral" : "opportunity"}" data-rewrite-state>${esc(decision === "adopt" ? "已采用" : decision === "keep_original" ? "保留原文" : decision)}</span></div><div class="rewrite-compare"><div class="compare-pane original"><h4>原文</h4><p>${esc(item.original_text)}</p></div><div class="compare-pane suggested"><h4>建议</h4><p>${esc(item.suggested_text || "暂无建议")}</p></div></div><div class="field-group" style="margin-top:12px"><label for="${esc(editId)}">编辑后采用（可选）</label><textarea id="${esc(editId)}" class="textarea" style="min-height:88px" data-rewrite-editor data-adopted="${decision === "adopt" ? "true" : "false"}">${esc(item.suggested_text || item.original_text || "")}</textarea></div><div class="item-actions"><button class="button primary small" data-action="decide-rewrite" data-decision="adopt" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">采用建议</button><button class="button soft small" data-action="decide-rewrite" data-decision="edited" data-edit-id="${esc(editId)}" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">采用编辑</button><button class="button outline small" data-action="decide-rewrite" data-decision="keep_original" data-rewrite-id="${esc(state.workspace.selectedRewrite?.id || "")}" data-segment-id="${esc(item.id)}" data-base-decision-no="${esc(String(item.decision_no || 0))}">保留原文</button></div>${item.evidence?.length ? `<div class="evidence">依据：${esc(item.evidence.map((evidence) => evidence.quote).join("；"))}</div>` : `<div class="evidence missing">当前建议没有额外事实依据，采用前请人工核对。</div>`}</div></article>`;
         }
 
         function rewritePage() {
@@ -1908,6 +1908,17 @@
           if (event.target.id === "auth-email") state.auth.email = event.target.value;
           if (event.target.id === "auth-password") state.auth.password = event.target.value;
           if (event.target.id === "auth-token") state.auth.token = event.target.value;
+          const rewriteEditor = event.target.closest?.("[data-rewrite-editor]");
+          if (rewriteEditor?.dataset.adopted === "true") {
+            // 已采用文字一旦再次编辑，立即撤回视觉完成态，等待用户重新确认。
+            rewriteEditor.dataset.adopted = "false";
+            const badge = rewriteEditor.closest(".rewrite-row")?.querySelector("[data-rewrite-state]");
+            if (badge) {
+              badge.classList.remove("success");
+              badge.classList.add("opportunity");
+              badge.textContent = "已修改，待重新确认";
+            }
+          }
         });
 
         document.addEventListener("change", (event) => {

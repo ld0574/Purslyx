@@ -3896,7 +3896,8 @@ def personal_stats(
     analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]), Analysis.completed_at >= day_start, Analysis.completed_at < day_end)) or 0
     interview_count = db.scalar(select(func.count(Interview.id)).where(Interview.account_id == account.id, Interview.deleted_at.is_(None))) or 0
     apply_count = db.scalar(select(func.count(ApplyClick.id)).where(ApplyClick.account_id == account.id, ApplyClick.metric_date == metric_date)) or 0
-    adopted_count = db.scalar(select(func.count(RewriteDecision.id)).where(RewriteDecision.account_id == account.id, RewriteDecision.decision.in_(["adopted", "edited"]))) or 0
+    # 个人统计读取每个段落的当前决定；已撤回或保留原文的旧采用事件不能继续计数。
+    adopted_count = db.scalar(select(func.count(RewriteSegment.id)).where(RewriteSegment.account_id == account.id, RewriteSegment.current_decision == "adopt")) or 0
     if account.registration_role == "seeker":
         metrics = [{"key": "go_to_apply_clicks", "label": "去投递点击数", "value": apply_count, "definition": "Purslyx 成功记录并发起原岗位跳转的次数。"}]
     else:

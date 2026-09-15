@@ -80,3 +80,5 @@ def test_shared_workbench_assets_are_executable_contract() -> None:
     assert "function routeFor" in script_text
     assert "async function loadWorkspace" in script_text
     assert "localStorage.getItem(SESSION_KEY)" in script_text
+    assert "data-rewrite-editor" in script_text
+    assert "已修改，待重新确认" in script_text

@@ -86,6 +86,13 @@ PYTHONPATH=src .venv/bin/python scripts/smoke_201.py
 PURSLYX_BASE_URL=http://127.0.0.1:8001 node scripts/e2e_web_201.mjs
 ```
 
+提交前的统一测试命令如下；Pytest 会同时执行篡改猴脚本的 Node 隔离 DOM 测试：
+
+```bash
+uvx ruff check src scripts tests migrations
+PYTHONPATH=src .venv/bin/python -m pytest
+```
+
 看到 `"database": {"backend": "postgresql"...}`、`"analysis_status": "available"` 即可
 进入浏览器打开 <http://127.0.0.1:8001/>。第二条命令会用本机 Chrome 自动完成公共首页、求职注册、资料确认、
 期望、入池与报告，以及招聘资料和单人报告，并检查五个管理端独立入口；测试账号和密码均为随机本地数据，

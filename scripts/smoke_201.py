@@ -453,7 +453,7 @@ def main() -> None:
         first_rewrite_segment = (rewrite.get("segments") or [None])[0]
         if not first_rewrite_segment:
             raise RuntimeError("改写没有返回段落结果")
-        call(
+        _, adopted_body = call(
             client,
             "POST",
             f"/api/v1/rewrites/{rewrite['id']}/segments/{first_rewrite_segment['id']}/decisions",
@@ -461,6 +461,26 @@ def main() -> None:
             headers={**web_headers, "Idempotency-Key": f"rewrite-decision-{suffix}"},
             json={"decision": "adopted"},
         )
+        adopted_segment = (data_of(adopted_body)["rewrite"].get("segments") or [None])[0]
+        edited_text = "负责前端组件交付，并完成本人确认的接口联调与自动化测试。"
+        _, edited_body = call(
+            client,
+            "POST",
+            f"/api/v1/rewrites/{rewrite['id']}/segments/{first_rewrite_segment['id']}/decisions",
+            expected=(200,),
+            headers={**web_headers, "Idempotency-Key": f"rewrite-edited-decision-{suffix}"},
+            json={
+                "decision": "edited",
+                "edited_text": edited_text,
+                "base_decision_no": adopted_segment["decision_no"],
+            },
+        )
+        edited_segment = (data_of(edited_body)["rewrite"].get("segments") or [None])[0]
+        if edited_segment.get("current_decision") != "adopt" or edited_segment.get("decision_no") != adopted_segment.get("decision_no") + 1:
+            raise RuntimeError("编辑后采用没有替换旧决定")
+        _, stats_after_rewrite_body = call(client, "GET", "/api/v1/stats/me", headers=web_headers)
+        if data_of(stats_after_rewrite_body).get("summary", {}).get("adopted_rewrites", 0) < 1:
+            raise RuntimeError("当前采用改写没有进入个人统计")
 
         _, variant_body = call(
             client,
@@ -472,6 +492,7 @@ def main() -> None:
                 "job_pool_item_id": pool["id"],
                 "source_resume_version_id": resume_version["id"],
                 "title": "杭州前端岗位版简历",
+                "rewrite_id": rewrite["id"],
             },
         )
         variant = data_of(variant_body)
@@ -480,6 +501,13 @@ def main() -> None:
             raise RuntimeError("岗位版简历没有版本")
         # 覆盖岗位版编辑保存这条回归链路：内部岗位主键不能被误当成 public_id。
         initial_version = (variant.get("versions") or [])[0]
+        variant_texts = [
+            segment.get("text")
+            for section in initial_version["content"].get("sections", [])
+            for segment in section.get("segments", [])
+        ]
+        if edited_text not in variant_texts:
+            raise RuntimeError("岗位版简历没有使用编辑后采用的文字")
         _, saved_variant_body = call(
             client,
             "POST",
