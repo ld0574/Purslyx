@@ -18,11 +18,12 @@ import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Annotated, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Header, Path as PathParam, Query, Request, Response, status
+from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import case, func, select
@@ -33,7 +34,6 @@ from .budget import settle_budget
 from .config import settings
 from .db import get_db
 from .errors import DomainError, NotFoundError
-from .matching import build_match_result
 from .model_provider import get_model_provider
 from .models import (
     Account,
@@ -45,12 +45,12 @@ from .models import (
     AnalysisDimensionScore,
     AnalysisEvidence,
     AnalysisRequirementResult,
-    AuditEvent,
     ApplyClick,
-    BudgetReservation,
+    AuditEvent,
     BrowserAuthCode,
     BrowserJobDraft,
     BrowserSession,
+    BudgetReservation,
     Document,
     DocumentDraft,
     DocumentVersion,
@@ -65,7 +65,6 @@ from .models import (
     InterviewSummary,
     JobPoolItem,
     LogExport,
-    MetricRollup,
     ModelCall,
     OneTimeToken,
     Preference,
@@ -82,15 +81,22 @@ from .models import (
     StoredFile,
     Task,
     TaskAttempt,
-    TaskInputRef,
     TaskOutbox,
     UsageGrant,
     UsageLedger,
     UsageReservation,
-    WorkflowCheckpointRef,
     WebSession,
+    WorkflowCheckpointRef,
 )
-from .parsing import MAX_FILE_BYTES, MAX_TEXT_CHARS, detect_source_type, extract_file_text, normalize_text, parse_job_text, sha256_bytes
+from .parsing import (
+    MAX_FILE_BYTES,
+    MAX_TEXT_CHARS,
+    detect_source_type,
+    extract_file_text,
+    normalize_text,
+    parse_job_text,
+    sha256_bytes,
+)
 from .pdf_export import render_resume_pdf
 from .security import (
     browser_account,
@@ -111,25 +117,26 @@ from .security import (
     session_expiry,
     verify_password,
 )
-from .storage import atomic_write_bytes, ensure_storage_capacity, private_path, safe_download_name, storage_key
 from .services import (
-    FEATURES_BY_ROLE,
-    available_count,
     create_task,
     fail_task,
     grant_feature,
     grant_trial_if_needed,
-    model_call,
     page_rows,
     payload_hash,
     release_feature,
     run_local_task,
-    settle_feature,
     shanghai_date,
     task_view,
     usage_view,
 )
-
+from .storage import (
+    atomic_write_bytes,
+    ensure_storage_capacity,
+    private_path,
+    safe_download_name,
+    storage_key,
+)
 
 router = APIRouter(prefix="/api/v1")
 WebAccount = Annotated[Account, Depends(current_web_account)]

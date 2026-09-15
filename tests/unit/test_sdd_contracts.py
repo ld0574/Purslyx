@@ -30,9 +30,16 @@ from server.app.api import (  # noqa: E402
     _pool_by_pk,
 )
 from server.app.errors import DomainError, NotFoundError  # noqa: E402
-from server.app.models import Account, Interview, InterviewAnswer, InterviewQuestion, JobPoolItem, LogExport, StoredFile  # noqa: E402
-from server.app.matching import build_match_result  # noqa: E402
 from server.app.main import app  # noqa: E402
+from server.app.matching import build_match_result  # noqa: E402
+from server.app.models import (  # noqa: E402
+    Interview,
+    InterviewAnswer,
+    InterviewQuestion,
+    JobPoolItem,
+    LogExport,
+    StoredFile,
+)
 
 
 class _Rows:
@@ -223,7 +230,7 @@ def test_log_export_work_freezes_filters_and_writes_relative_csv(monkeypatch: py
     assert captured["created_to"] == datetime(2026, 9, 15, 9, tzinfo=timezone.utc)
     assert result["row_count"] == 1
     assert result["path"].startswith("exports/")
-    assert not str(tmp_path) in result["path"]
+    assert str(tmp_path) not in result["path"]
     output = (tmp_path / result["path"]).read_text(encoding="utf-8-sig")
     assert "'=HYPERLINK" in output
 

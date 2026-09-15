@@ -15,7 +15,6 @@ import uuid
 
 import httpx
 
-
 BASE_URL = os.getenv("PURSLYX_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
 PASSWORD = "purslyx-worker-smoke-password-2026"
 

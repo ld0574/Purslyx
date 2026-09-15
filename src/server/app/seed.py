@@ -9,9 +9,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import Account, AdminPermission, AdminRole, AccountRole, ModelPriceVersion, RolePermission
+from .models import (
+    Account,
+    AccountRole,
+    AdminPermission,
+    AdminRole,
+    ModelPriceVersion,
+    RolePermission,
+)
 from .security import hash_password, normalize_email
-
 
 PERMISSIONS = [
     ("admin.users.read", "查看用户", "查看账号概要和使用概况"),

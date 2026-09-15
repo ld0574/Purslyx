@@ -22,7 +22,6 @@ from typing import Any
 
 import httpx
 
-
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 BASE_URL = os.getenv("PURSLYX_BASE_URL", "http://127.0.0.1:8001").rstrip("/")
 ADMIN_EMAIL = os.getenv("PURSLYX_ADMIN_EMAIL", "").strip()

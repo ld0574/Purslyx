@@ -6,9 +6,8 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation, ROUND_UP
+from decimal import ROUND_UP, Decimal, InvalidOperation
 from typing import Any
-
 
 MILLION = Decimal("1000000")
 MONEY_QUANTUM = Decimal("0.00000001")

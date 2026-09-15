@@ -15,7 +15,6 @@ from typing import Any
 
 from .errors import DomainError
 
-
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TEXT_CHARS = 100_000
 MAX_PDF_PAGES = 20

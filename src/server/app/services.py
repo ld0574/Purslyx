@@ -14,13 +14,18 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
-from sqlalchemy import and_, func, or_, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
-from .errors import DomainError
-from .budget import actual_cost_from_price, ensure_price_version, release_budget, reserve_budget, settle_budget
+from .budget import (
+    actual_cost_from_price,
+    ensure_price_version,
+    release_budget,
+    reserve_budget,
+    settle_budget,
+)
 from .config import settings
+from .errors import DomainError
 from .model_provider import ModelResult
 from .models import (
     Account,
@@ -34,8 +39,6 @@ from .models import (
     UsageLedger,
     UsageReservation,
 )
-from .security import require_seeker
-
 
 FEATURES_BY_ROLE = {
     "seeker": {"analysis", "rewrite", "interview"},

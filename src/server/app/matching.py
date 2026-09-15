@@ -10,7 +10,6 @@ import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-
 DIMENSION_CONFIG = {
     "engineering": [
         ("technical", "技术能力", 0.40),

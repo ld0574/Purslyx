@@ -7,7 +7,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable
 
@@ -34,10 +33,10 @@ from .models import (
     JobPoolItem,
     LogExport,
     PreferenceVersion,
+    ResumeVariantVersion,
     Rewrite,
     RewriteEvidence,
     RewriteSegment,
-    ResumeVariantVersion,
     StoredFile,
     Task,
     TaskAttempt,
@@ -50,14 +49,12 @@ from .services import (
     claim_outbox_batch,
     claim_task_execution,
     fail_task,
-    finish_task,
     mark_outbox_published,
     recover_expired_leases,
     run_local_task,
     utcnow,
 )
 from .storage import ensure_storage_capacity, private_path, storage_key
-
 
 SUPPORTED_TASK_TYPES = {
     "document_parse",
@@ -232,8 +229,8 @@ class TaskWorker:
             db.commit()
 
     def _mark_business_failed(self, db: Session, task: Task, error: Exception) -> None:
-        code = getattr(error, "code", "TASK_EXECUTION_FAILED")
         data = task.input_data or {}
+        code = getattr(error, "code", "TASK_EXECUTION_FAILED")
         if task.task_type == "document_parse":
             document = db.scalar(select(Document).where(Document.public_id == data.get("document_id"), Document.account_id == task.account_id))
             if document is not None and document.deleted_at is None:
@@ -502,7 +499,6 @@ class TaskWorker:
         _run_model(db, task, attempt, reservation, work, owner=self.owner, feature="interview", cost_feature="interview", on_success=save_questions)
 
     def _handle_interview_feedback(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
-        data = task.input_data or {}
         interview = db.scalar(select(Interview).where(Interview.public_id == _input(task, "interview_id"), Interview.account_id == task.account_id, Interview.deleted_at.is_(None)))
         question = db.scalar(select(InterviewQuestion).where(InterviewQuestion.public_id == _input(task, "question_id"), InterviewQuestion.account_id == task.account_id))
         if interview is None or question is None or question.interview_id != interview.id:

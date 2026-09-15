@@ -12,7 +12,6 @@ import os
 import time
 from pathlib import Path
 
-
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 ENV_FILE = PROJECT_DIR / "docs/02-technical/deployment/本地开发环境.md"
 

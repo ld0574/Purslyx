@@ -2,25 +2,25 @@
 
 from __future__ import annotations
 
-import secrets
 import re
+import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Path as PathParam, Request
+from fastapi import FastAPI, Request
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from .api import router as api_router
 from .config import settings
 from .db import engine, init_db
 from .errors import DomainError, NotFoundError
-from .api import router as api_router
-
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 WEB_PAGE_ROOT = WEB_ROOT / "pages"

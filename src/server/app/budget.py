@@ -17,7 +17,6 @@ from .config import settings
 from .errors import DomainError
 from .pricing import calculate_cost, decimal_value, token_upper_bound
 
-
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 
 
