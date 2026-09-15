@@ -76,7 +76,8 @@ PURSLYX_PORT=8001 scripts/start_201_local.sh
 ```
 
 启动脚本只从被 Git 忽略的 `docs/02-technical/deployment/本地开发环境.md` 读取
-PostgreSQL 密码并注入当前进程；默认监听 8001。端口可以调整，但数据库仍固定为该文件中的 201 PostgreSQL。
+PostgreSQL 密码并注入当前进程；启动 Uvicorn 前会执行 Alembic 向前迁移和幂等种子写入，默认监听
+8001。端口可以调整，但数据库仍固定为该文件中的 201 PostgreSQL。
 
 另开终端执行：
 
@@ -106,6 +107,7 @@ Worker 同样只读取 `本地开发环境.md`，也可用下面的一次性验�
 
 ```bash
 PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_201.py
+PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_recovery_201.py
 ```
 
 管理员日志导出需要部署者显式配置的管理员账号。可额外运行下面的一条可选验收；脚本不读取本地开发环境

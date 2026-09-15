@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from alembic import op
 
-
 revision = "0002_current_contract"
 down_revision = "0001_baseline"
 branch_labels = None

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from alembic import op
 
-from server.app.db import Base
 from server.app import models  # noqa: F401  # 注册全部模型
-
+from server.app.db import Base
 
 revision = "0001_baseline"
 down_revision = None

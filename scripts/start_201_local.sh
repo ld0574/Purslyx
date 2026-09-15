@@ -38,7 +38,7 @@ export DATABASE_URL="$database_url"
 export PGPASSWORD="$postgres_password"
 export PURSLYX_DEBUG="${PURSLYX_DEBUG:-true}"
 export PURSLYX_AUTO_VERIFY_LOCAL="${PURSLYX_AUTO_VERIFY_LOCAL:-true}"
-export PURSLYX_AUTO_CREATE_SCHEMA="${PURSLYX_AUTO_CREATE_SCHEMA:-true}"
+export PURSLYX_AUTO_CREATE_SCHEMA="${PURSLYX_AUTO_CREATE_SCHEMA:-false}"
 export PURSLYX_TOKEN_SECRET="${PURSLYX_TOKEN_SECRET:-purslyx-local-development-secret-2026-change-me}"
 
 if [[ ! -x "$project_dir/.venv/bin/uvicorn" ]]; then
@@ -47,6 +47,10 @@ if [[ ! -x "$project_dir/.venv/bin/uvicorn" ]]; then
 fi
 
 cd "$project_dir"
+# 启动前只做向前迁移和幂等种子写入，避免运行进程用 create_all 隐式修改结构。
+"$project_dir/.venv/bin/python" "$project_dir/scripts/migrate_201.py"
+PYTHONPATH="$project_dir/src${PYTHONPATH:+:$PYTHONPATH}" \
+  "$project_dir/.venv/bin/python" "$project_dir/scripts/init_201.py"
 exec "$project_dir/.venv/bin/uvicorn" server.app.main:app \
   --host "${PURSLYX_HOST:-127.0.0.1}" \
   --port "${PURSLYX_PORT:-8001}"

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from alembic import op
 
-
 revision = "0003_job_pool_idempotency"
 down_revision = "0002_current_contract"
 branch_labels = None

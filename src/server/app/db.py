@@ -46,16 +46,25 @@ def session_scope() -> Generator[Session, None, None]:
 
 
 def init_db() -> None:
-    """创建本地开发所需表并种入固定权限目录。"""
+    """兼容旧开发流程的幂等初始化；正式启动应先执行 Alembic。"""
 
     from . import models  # noqa: F401  # 确保所有模型已注册
-    from .seed import seed_permissions
-
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.file_dir.mkdir(parents=True, exist_ok=True)
     settings.export_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
     _upgrade_legacy_schema()
+    seed_db()
+
+
+def seed_db() -> None:
+    """在已经迁移完成的数据库中写入固定权限和本地开发账号。"""
+
+    from .seed import seed_permissions
+
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    settings.file_dir.mkdir(parents=True, exist_ok=True)
+    settings.export_dir.mkdir(parents=True, exist_ok=True)
     with session_scope() as db:
         seed_permissions(db)
 

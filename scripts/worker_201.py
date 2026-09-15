@@ -54,7 +54,7 @@ def _configure_environment() -> None:
     os.environ["DATABASE_URL"] = expected_url
     os.environ["PGPASSWORD"] = password
     os.environ.setdefault("PURSLYX_DEBUG", "true")
-    os.environ.setdefault("PURSLYX_AUTO_CREATE_SCHEMA", "true")
+    os.environ.setdefault("PURSLYX_AUTO_CREATE_SCHEMA", "false")
     # Worker 自身必须执行任务，即使启动它的 shell 同时把 HTTP 服务设为 worker 模式。
     os.environ["PURSLYX_EXECUTION_MODE"] = "inline"
 
@@ -77,10 +77,11 @@ def main() -> None:
     if args.lease_seconds < 1 or not 0 < args.poll_seconds <= 30:
         raise SystemExit("租约和轮询参数超出允许范围")
 
-    from server.app.db import init_db
+    from server.app.db import seed_db
     from server.app.worker import TaskWorker
 
-    init_db()
+    # Worker 只处理迁移完成后的业务数据，不在运行时隐式修改数据库结构。
+    seed_db()
     worker = TaskWorker(owner=args.owner, batch_size=args.batch_size, lease_seconds=args.lease_seconds)
     if args.once:
         processed = worker.run_once()
