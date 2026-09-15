@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#1264E8" />
-    <title>Purslyx · SDD 最小演示</title>
+    <title>Purslyx · SDD 工作台</title>
     <style>
       :root {
         color-scheme: light;
@@ -281,6 +281,25 @@
       .progress-track i { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
       .admin-tabs { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 16px; }
       .admin-tab.active { color: #fff; background: var(--brand); }
+      .draft-review { border-color: #b9d3f6; background: #f8fbff; }
+      .draft-review .textarea { min-height: 300px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+      .browser-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
+      .browser-summary > div { padding: 12px; border-radius: 11px; background: #fff; }
+      .browser-summary strong { display: block; font-size: 13px; }
+      .browser-summary span { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+      .filter-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+      .filter-grid .field-group { min-width: 0; }
+      .admin-user-detail { border-color: #b9d3f6; background: #f8fbff; }
+      .role-chip-list { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+      .role-chip { display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: 8px; color: var(--brand); background: var(--brand-soft); font-size: 11px; font-weight: 700; }
+      .mini-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+      .mini-table th, .mini-table td { padding: 10px 8px; border-bottom: 1px solid #edf3f6; text-align: left; vertical-align: top; }
+      .mini-table th { color: var(--muted); font-size: 11px; font-weight: 700; }
+      .mini-table td:last-child, .mini-table th:last-child { text-align: right; }
+      .history-list { display: grid; gap: 9px; }
+      .history-row { display: flex; justify-content: space-between; gap: 12px; align-items: center; padding: 12px; border-radius: 11px; background: #f7fafc; }
+      .history-row strong { display: block; font-size: 13px; }
+      .history-row small { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
       .auth-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 14px; }
       .admin-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
       .admin-stat { padding: 16px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
@@ -341,11 +360,13 @@
         .metric-grid, .balance-grid { grid-template-columns: 1fr 1fr; }
         .interview-layout { grid-template-columns: 1fr; }
         .admin-grid, .editor-grid, .rewrite-compare, .permission-grid { grid-template-columns: 1fr; }
+        .browser-summary, .filter-grid { grid-template-columns: 1fr 1fr; }
         .task-row, .admin-row, .fact-row, .rewrite-row { flex-direction: column; }
         .identity-grid, .form-row { grid-template-columns: 1fr; }
         .auth-layout { min-height: 0; }
         .auth-story { padding-top: 4px; }
         .auth-story h1 { font-size: 43px; }
+        .browser-summary, .filter-grid { grid-template-columns: 1fr; }
         .toast { right: 14px; bottom: 14px; left: 14px; max-width: none; }
       }
     </style>
@@ -407,12 +428,23 @@
             rewriteSource: null,
             rewriteSegmentKeys: [],
             pendingDocument: null,
+            pendingDocumentDraft: null,
+            browserDraft: null,
+            browserDraftError: "",
             recruiterSubjectId: "",
+            selectedAdminUser: null,
             adminLogType: "operations",
+            adminLogFormat: "csv",
+            adminLogFilters: { created_from: "", created_to: "", account_id: "", result: "", request_id: "", action: "", event_type: "", task_type: "", task_status: "", retry_count_min: "" },
+            adminMetricFilters: { date_from: "", date_to: "", registration_role: "all", feature: "all" },
+            statsDate: "",
+            selectedFeedback: null,
             selectedRole: null,
             selectedLog: null,
             lastExport: null,
             lastLogExport: null,
+            pollTimer: null,
+            pollInFlight: false,
             data: { documents: [], preferences: [], facts: [], pool: [], analyses: [], interviews: [], variants: [], tasks: [], usage: null, stats: null, admin: { metrics: null, users: [], roles: [], grants: [], costs: null, feedback: [], logs: { operations: [], security: [], tasks: [] } } },
           },
         };
@@ -435,9 +467,38 @@
         }
 
         function clearSession() {
+          if (state.workspace.pollTimer) window.clearTimeout(state.workspace.pollTimer);
+          state.workspace.pollTimer = null;
+          state.workspace.pollInFlight = false;
           state.session = { token: "", csrf: "", account: null };
           saveSession();
+          state.workspace.page = "dashboard";
           state.workspace.loaded = false;
+          state.workspace.loading = false;
+          state.workspace.error = "";
+          state.workspace.requestNo += 1;
+          state.workspace.selectedPool = null;
+          state.workspace.selectedAnalysis = null;
+          state.workspace.selectedInterview = null;
+          state.workspace.selectedVariant = null;
+          state.workspace.selectedPreference = null;
+          state.workspace.selectedRewrite = null;
+          state.workspace.selectedTask = null;
+          state.workspace.selectedTaskEtag = "";
+          state.workspace.rewriteSource = null;
+          state.workspace.rewriteSegmentKeys = [];
+          state.workspace.pendingDocumentDraft = null;
+          state.workspace.browserDraft = null;
+          state.workspace.browserDraftError = "";
+          state.workspace.recruiterSubjectId = "";
+          state.workspace.selectedAdminUser = null;
+          state.workspace.adminMetricFilters = { date_from: "", date_to: "", registration_role: "all", feature: "all" };
+          state.workspace.statsDate = "";
+          state.workspace.selectedFeedback = null;
+          state.workspace.selectedRole = null;
+          state.workspace.selectedLog = null;
+          state.workspace.lastExport = null;
+          state.workspace.lastLogExport = null;
           state.workspace.data = { documents: [], preferences: [], facts: [], pool: [], analyses: [], interviews: [], variants: [], tasks: [], usage: null, stats: null, admin: { metrics: null, users: [], roles: [], grants: [], costs: null, feedback: [], logs: { operations: [], security: [], tasks: [] } } };
         }
 
@@ -497,6 +558,11 @@
             succeeded: "已完成",
             queued: "排队中",
             running: "处理中",
+            retry_wait: "等待重试",
+            needs_input: "待补充",
+            exporting: "导出中",
+            opening: "准备中",
+            opening_failed: "开场失败",
             awaiting_requirements: "待分析",
             failed: "失败",
             completed: "已完成",
@@ -508,9 +574,9 @@
         }
 
         function statusClass(value) {
-          if (["supported", "matched", "available", "succeeded", "completed"].includes(value)) return "success";
+          if (["supported", "matched", "available", "succeeded", "completed", "reviewed", "ended_early"].includes(value)) return "success";
           if (["gap", "conflicted", "failed"].includes(value)) return "attention";
-          if (["needs_confirmation", "unknown", "queued", "running", "awaiting_requirements", "processing", "awaiting_answer"].includes(value)) return "opportunity";
+          if (["needs_confirmation", "unknown", "queued", "running", "retry_wait", "needs_input", "exporting", "opening", "awaiting_requirements", "processing", "awaiting_answer"].includes(value)) return "opportunity";
           return "neutral";
         }
 
@@ -528,7 +594,10 @@
           const headers = { Accept: "application/json", ...(options.headers || {}) };
           const formal = Boolean(options.formal);
           if (formal && state.session.token) headers.Authorization = `Bearer ${state.session.token}`;
-          if (formal && !["GET", "HEAD", "OPTIONS"].includes(method) && state.session.csrf) headers["X-CSRF-Token"] = state.session.csrf;
+          if (formal && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+            const csrf = state.session.csrf || readCookie("purslyx_csrf");
+            if (csrf) headers["X-CSRF-Token"] = csrf;
+          }
           if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
           const init = { method, headers, credentials: "same-origin", cache: "no-store" };
           if (options.formData !== undefined) {
@@ -539,6 +608,12 @@
             init.body = JSON.stringify(options.body);
           }
           return init;
+        }
+
+        function readCookie(name) {
+          const prefix = `${name}=`;
+          const value = document.cookie.split(";").map((item) => item.trim()).find((item) => item.startsWith(prefix));
+          return value ? decodeURIComponent(value.slice(prefix.length)) : "";
         }
 
         async function requestDetailed(path, options = {}) {
@@ -738,12 +813,81 @@
         function workspaceContent() {
           if (state.workspace.loading && !state.workspace.loaded) return `<div class="empty" style="min-height:260px"><div><i class="spinner" style="display:inline-block"></i><p style="margin-top:12px">正在从 201 PostgreSQL 读取工作台…</p></div></div>`;
           const page = state.workspace.page;
-          const content = page === "dashboard" ? dashboardPage() : page === "resume" ? resumePage() : page === "pool" ? poolPage() : page === "report" ? formalReportPage() : page === "rewrite" ? rewritePage() : page === "variants" ? variantsPage() : page === "interview" ? interviewPage() : page === "tasks" ? tasksPage() : page === "usage" ? usagePage() : page === "stats" ? statsPage() : page === "admin-metrics" ? adminMetricsPage() : page === "admin-users" ? adminUsersPage() : page === "admin-roles" ? adminRolesPage() : page === "admin-usage" ? adminUsagePage() : page === "admin-logs" ? adminLogsPage() : dashboardPage();
+          const content = page === "dashboard" ? dashboardPage() : page === "resume" ? resumePage() : page === "pool" ? enhancedPoolPage() : page === "report" ? formalReportPage() : page === "rewrite" ? rewritePage() : page === "variants" ? variantsPage() : page === "interview" ? interviewPage() : page === "tasks" ? tasksPage() : page === "usage" ? usagePage() : page === "stats" ? statsPage() : page === "admin-metrics" ? adminMetricsPage() : page === "admin-users" ? enhancedAdminUsersPage() : page === "admin-roles" ? adminRolesPage() : page === "admin-usage" ? adminUsagePage() : page === "admin-logs" ? adminLogsPageEnhanced() : dashboardPage();
           return `${state.workspace.error ? `<div class="callout attention" style="margin-bottom:18px">${esc(state.workspace.error)}</div>` : ""}${content}`;
         }
 
         function heading(eyebrow, title, description, actions = "") {
           return `<div class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${esc(description)}</p></div>${actions ? `<div class="page-actions">${actions}</div>` : ""}</div>`;
+        }
+
+        function localDateEnd(value) {
+          if (!value) return "";
+          const parsed = new Date(`${value}T00:00:00+08:00`);
+          if (Number.isNaN(parsed.getTime())) return "";
+          parsed.setUTCDate(parsed.getUTCDate() + 1);
+          return parsed.toISOString();
+        }
+
+        function adminLogQuery(type, source = state.workspace.adminLogFilters) {
+          const params = new URLSearchParams();
+          const filters = source || {};
+          if (filters.created_from) params.set("created_from", `${filters.created_from}T00:00:00+08:00`);
+          if (filters.created_to) params.set("created_to", localDateEnd(filters.created_to));
+          if (filters.account_id) params.set("account_id", filters.account_id.trim());
+          if (filters.result) params.set("result", filters.result);
+          if (filters.request_id) params.set("request_id", filters.request_id.trim());
+          if (type === "operations" && filters.action) params.set("action", filters.action.trim());
+          if (type === "security" && filters.event_type) params.set("event_type", filters.event_type.trim());
+          if (type === "tasks") {
+            if (filters.task_type) params.set("task_type", filters.task_type.trim());
+            if (filters.task_status) params.set("task_status", filters.task_status);
+            if (filters.retry_count_min !== "" && filters.retry_count_min !== undefined) params.set("retry_count_min", filters.retry_count_min);
+          }
+          return params;
+        }
+
+        function adminMetricQuery(source = state.workspace.adminMetricFilters) {
+          const params = new URLSearchParams();
+          const filters = source || {};
+          if (filters.date_from) params.set("date_from", filters.date_from);
+          if (filters.date_to) params.set("date_to", filters.date_to);
+          if (filters.registration_role && filters.registration_role !== "all") params.set("registration_role", filters.registration_role);
+          if (filters.feature && filters.feature !== "all") params.set("feature", filters.feature);
+          return params;
+        }
+
+        function personalStatsPath() {
+          const dateValue = state.workspace.statsDate;
+          return dateValue ? `/api/v1/stats/me?date=${encodeURIComponent(dateValue)}` : "/api/v1/stats/me";
+        }
+
+        function missingFieldLabel(value) {
+          return {
+            job_title: "岗位名称",
+            job_location: "地点",
+            job_salary: "薪资",
+            job_requirements: "任职要求",
+            work_mode: "办公方式",
+            job_description: "岗位正文",
+            resume_experience: "简历经历",
+          }[value] || value || "未命名字段";
+        }
+
+        function browserDraftCard(draft, resumes, preferences) {
+          if (!draft) return "";
+          const missing = draft.missing_field_codes || [];
+          const hasRequirements = resumes.length && preferences.length;
+          const selectedResume = draft.resume_version_id || resumes[0]?.latest_version?.id || "";
+          const selectedPreference = draft.preference_version_id || preferences[0]?.version?.id || "";
+          return `<section class="card draft-review" style="margin-bottom:18px"><div class="card-head"><div><div class="eyebrow">BROWSER DRAFT</div><h3>待确认的浏览器岗位</h3><p>来自 ${esc(draft.platform === "liepin" ? "猎聘" : "BOSS 直聘")} 的岗位草稿，先检查采集字段，再决定是否入池和分析。</p></div><span class="tag opportunity">待确认</span></div><div class="browser-summary"><div><strong>${esc(draft.job_title || "未识别岗位")}</strong><span>岗位名称</span></div><div><strong>${esc(draft.company_name || "未识别公司")}</strong><span>公司</span></div><div><strong>${esc(draft.location_text || "未识别地点")}</strong><span>地点 · ${esc(draft.work_mode || "办公方式待确认")}</span></div><div><strong>${esc(draft.salary_text || "未识别薪资")}</strong><span>薪资 · ${esc(date(draft.captured_at))} 采集</span></div></div>${missing.length ? `<div class="callout attention">缺少字段：${esc(missing.map(missingFieldLabel).join("、"))}。可以继续入池，但分析结论会保留待确认。</div>` : `<div class="callout success">关键字段已识别。仍请人工核对 JD 正文和原岗位链接。</div>`}<details class="raw-report"><summary>查看采集原文与字段</summary><pre>${esc(json({ job_fields: draft.job_fields || {}, job_description_text: draft.job_description_text || "", source_url: draft.source_url || "" }))}</pre></details><form id="browser-draft-form" class="form-card" style="margin-top:14px"><input type="hidden" name="browser_draft_id" value="${esc(draft.id)}" /><div class="form-row"><div class="field-group"><label>本次使用的简历版本</label><select class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}" ${item.latest_version.id === selectedResume ? "selected" : ""}>${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先确认一份简历</option>`}</select></div><div class="field-group"><label>本次使用的岗位期望</label><select class="select" name="preference_version_id" ${preferences.length ? "" : "disabled"}>${preferences.map((item) => `<option value="${esc(item.version.id)}" ${item.version.id === selectedPreference ? "selected" : ""}>${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("") || `<option>请先保存岗位期望</option>`}</select></div></div><label class="micro" style="display:flex;gap:8px;align-items:flex-start;margin-top:14px"><input type="checkbox" name="start_now" ${hasRequirements ? "checked" : ""} style="margin-top:3px" /> 确认后立即开始分析（消耗 1 次分析；不勾选则只入池）</label><div class="form-foot"><span class="micro">草稿本身不计次；确认入池后才生成正式岗位版本。</span><button class="button primary small" type="submit">确认并入池</button></div></form></section>`;
+        }
+
+        function documentDraftReview() {
+          const draft = state.workspace.pendingDocumentDraft;
+          if (!draft || !draft.draft_content || draft.latest_draft?.status === "confirmed") return "";
+          const missing = draft.latest_draft?.missing_field_codes || [];
+          return `<section class="card draft-review" style="margin-bottom:18px"><div class="card-head"><div><div class="eyebrow">DRAFT CHECK</div><h3>检查资料解析草稿</h3><p>${esc(draft.title)} · 当前 draft revision ${esc(String(draft.revision || draft.latest_draft?.revision || 1))}。确认后会生成不可变 version。</p></div><span class="tag opportunity">草稿未确认</span></div>${missing.length ? `<div class="callout opportunity">待补充字段：${esc(missing.map(missingFieldLabel).join("、"))}。可以直接在 JSON 中修正，也可以保留未知。</div>` : `<div class="callout success">解析结构完整，请核对字段和段落后确认。</div>`}<form id="document-draft-review" class="form-card"><input type="hidden" name="document_id" value="${esc(draft.id)}" /><input type="hidden" name="draft_id" value="${esc(draft.latest_draft?.id || "")}" /><input type="hidden" name="base_revision" value="${esc(String(draft.revision || draft.latest_draft?.revision || 1))}" /><div class="field-group"><label for="draft-review-title">版本名称</label><input id="draft-review-title" class="field" name="title" value="${esc(draft.title)}" required /></div><div class="field-group" style="margin-top:13px"><label for="draft-review-json">结构化内容 JSON</label><textarea id="draft-review-json" class="textarea" name="draft_json" required>${esc(json(draft.draft_content))}</textarea><span class="micro">只允许 document-content-v1 结构；简历使用 sections，岗位使用 job_fields。提交前会再次由服务端校验。</span></div><div class="form-foot"><button class="button outline small" type="button" data-action="discard-document-draft" data-id="${esc(draft.id)}">放弃这份草稿</button><button class="button primary small" type="submit">确认并生成 version ${esc(String((draft.latest_version?.version_no || 0) + 1))}</button></div></form></section>`;
         }
 
         function dashboardPage() {
@@ -766,12 +910,14 @@
           const seeker = state.session.account?.registration_role === "seeker";
           const documents = state.workspace.data.documents.filter((item) => seeker ? item.document_type === "resume" : ["resume", "job_description"].includes(item.document_type));
           const preferences = state.workspace.data.preferences;
-          return `${heading(seeker ? "RESUME" : "CANDIDATE MATERIALS", seeker ? "简历与岗位期望" : "候选人资料", seeker ? "把简历和每条岗位期望分别确认；分析时只引用本次选中的版本。" : "岗位描述和候选人简历分别确认，再创建一份单人分析。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="two-col"><section class="card"><div class="card-head"><div><h3>${seeker ? "我的确认资料" : "导入资料"}</h3><p>${seeker ? "当前页面的最小可用入口是粘贴文字；文件导入接口已保留。" : "招聘身份可分别导入岗位描述与候选人简历。"}</p></div></div><div class="card-body"><form id="formal-document-form" class="form-card">${!seeker ? `<div class="field-group"><label for="formal-document-type">资料类型</label><select id="formal-document-type" class="select" name="document_type"><option value="resume">候选人简历</option><option value="job_description">岗位 JD</option></select></div>` : `<input type="hidden" name="document_type" value="resume" />`}<div class="field-group"><label for="formal-document-title">名称</label><input id="formal-document-title" class="field" name="title" value="${seeker ? "我的确认简历" : "候选人资料"}" required /></div><div class="field-group"><label for="formal-document-text">正文</label><textarea id="formal-document-text" class="textarea" name="text" placeholder="粘贴文字内容……" required>${seeker ? esc(DEFAULT_RESUME) : ""}</textarea></div><div class="form-foot"><span class="micro">提交后会先生成草稿，再用当前 revision 确认版本。</span><button class="button primary small" type="submit">导入并确认</button></div></form><div style="margin-top:16px">${documents.length ? documents.map((item) => documentItem(item)).join("") : `<div class="empty"><div><strong>还没有资料</strong><p>从右侧表单粘贴一份文字资料，完成后会出现 version 1。</p></div></div>`}</div></div></section>${seeker ? `<section class="card"><div class="card-head"><div><h3>岗位期望</h3><p>未填写不等于不限；每组条件独立保存为版本。</p></div></div><div class="card-body"><form id="preference-form" class="form-card"><div class="field-group"><label for="preference-title">期望岗位</label><input id="preference-title" class="field" name="job_title" value="前端工程师" required /></div><div class="form-row"><div class="field-group"><label for="preference-location">期望地点</label><input id="preference-location" class="field" name="location" value="杭州" required /></div><div class="field-group"><label for="preference-mode">办公方式</label><select id="preference-mode" class="select" name="work_mode"><option value="onsite">现场办公</option><option value="hybrid">混合办公</option><option value="remote">远程</option></select></div></div><div class="form-row"><div class="field-group"><label for="preference-min">月薪下限（K）</label><input id="preference-min" class="field" name="min_salary" inputmode="decimal" value="18" required /></div><div class="field-group"><label for="preference-max">月薪上限（K）</label><input id="preference-max" class="field" name="max_salary" inputmode="decimal" value="28" required /></div></div><div class="form-foot"><span class="micro">示例按税前月薪 CNY 保存。</span><button class="button primary small" type="submit">保存这条期望</button></div></form><div style="margin-top:16px">${preferences.length ? preferences.map((item) => preferenceItem(item)).join("") : `<div class="empty"><div><strong>还没有岗位期望</strong><p>保存后，匹配池会要求明确选择一条。</p></div></div>`}</div></div></section>` : `${recruiterAnalysisSection(documents)}${recruiterPreferenceSection(documents)}`}</div>`;
+          return `${heading(seeker ? "RESUME" : "CANDIDATE MATERIALS", seeker ? "简历与岗位期望" : "候选人资料", seeker ? "把简历和每条岗位期望分别确认；分析时只引用本次选中的版本。" : "岗位描述和候选人简历分别确认，再创建一份单人分析。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${documentDraftReview()}<div class="two-col"><section class="card"><div class="card-head"><div><h3>${seeker ? "我的确认资料" : "导入资料"}</h3><p>${seeker ? "文字或文件都会先进入草稿审核；确认后才生成不可变版本。" : "招聘身份可分别导入岗位描述与候选人简历，确认前可检查解析结构。"}</p></div></div><div class="card-body"><form id="formal-document-form" class="form-card">${!seeker ? `<div class="field-group"><label for="formal-document-type">资料类型</label><select id="formal-document-type" class="select" name="document_type"><option value="resume">候选人简历</option><option value="job_description">岗位 JD</option></select></div>` : `<input type="hidden" name="document_type" value="resume" />`}<div class="field-group"><label for="formal-document-title">名称</label><input id="formal-document-title" class="field" name="title" value="${seeker ? "我的确认简历" : "候选人资料"}" required /></div><div class="field-group"><label for="formal-document-text">正文</label><textarea id="formal-document-text" class="textarea" name="text" placeholder="粘贴文字内容……" required>${seeker ? esc(DEFAULT_RESUME) : ""}</textarea></div><div class="form-foot"><span class="micro">提交后先生成草稿；检查结构化内容后再确认版本。</span><button class="button primary small" type="submit">导入并检查草稿</button></div></form><div style="margin-top:16px">${documents.length ? documents.map((item) => documentItem(item)).join("") : `<div class="empty"><div><strong>还没有资料</strong><p>从这里粘贴文字或上传文件，完成后会出现待检查草稿。</p></div></div>`}</div></div></section>${seeker ? `<section class="card"><div class="card-head"><div><h3>岗位期望</h3><p>未填写不等于不限；每组条件独立保存为版本。</p></div></div><div class="card-body"><form id="preference-form" class="form-card"><div class="field-group"><label for="preference-title">期望岗位</label><input id="preference-title" class="field" name="job_title" value="前端工程师" required /></div><div class="form-row"><div class="field-group"><label for="preference-location">期望地点</label><input id="preference-location" class="field" name="location" value="杭州" required /></div><div class="field-group"><label for="preference-mode">办公方式</label><select id="preference-mode" class="select" name="work_mode"><option value="onsite">现场办公</option><option value="hybrid">混合办公</option><option value="remote">远程</option></select></div></div><div class="form-row"><div class="field-group"><label for="preference-min">月薪下限（K）</label><input id="preference-min" class="field" name="min_salary" inputmode="decimal" value="18" required /></div><div class="field-group"><label for="preference-max">月薪上限（K）</label><input id="preference-max" class="field" name="max_salary" inputmode="decimal" value="28" required /></div></div><div class="form-foot"><span class="micro">示例按税前月薪 CNY 保存。</span><button class="button primary small" type="submit">保存这条期望</button></div></form><div style="margin-top:16px">${preferences.length ? preferences.map((item) => preferenceItem(item)).join("") : `<div class="empty"><div><strong>还没有岗位期望</strong><p>保存后，匹配池会要求明确选择一条。</p></div></div>`}</div></div></section>` : `${recruiterAnalysisSection(documents)}${recruiterPreferenceSection(documents)}${recruiterHistorySection()}`}</div>`;
         }
 
         function documentItem(item) {
           const version = item.latest_version;
-          return `<article class="document-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>${esc(item.document_type === "job_description" ? "岗位 JD" : "简历")}</span><span>revision ${esc(item.revision)}</span><span>${version ? `version ${esc(version.version_no)}` : "待确认版本"}</span></div>${version ? `<div class="micro" style="margin-top:9px">冻结版本：${esc(version.id)}</div>` : ""}<div class="item-actions" style="margin-top:11px">${item.source_type && item.source_type !== "text" ? `<a class="button soft small" href="/api/v1/documents/${esc(item.id)}/file" target="_blank" rel="noreferrer">下载原文件</a>` : ""}<button class="button outline small" data-action="delete-document" data-id="${esc(item.id)}">删除前查看影响</button></div></article>`;
+          const draft = item.latest_draft;
+          const draftPending = draft && draft.status === "unconfirmed";
+          return `<article class="document-item"><div class="item-title"><strong>${esc(item.title)}</strong><span class="tag ${draftPending ? "opportunity" : statusClass(item.status)}">${draftPending ? "待确认草稿" : esc(labelStatus(item.status))}</span></div><div class="item-meta"><span>${esc(item.document_type === "job_description" ? "岗位 JD" : "简历")}</span><span>revision ${esc(item.revision)}</span><span>${version ? `version ${esc(version.version_no)}` : "待确认版本"}</span>${draftPending ? `<span>草稿 revision ${esc(String(draft.revision || 1))}</span>` : ""}</div>${version ? `<div class="micro" style="margin-top:9px">冻结版本：${esc(version.id)}</div>` : ""}<div class="item-actions" style="margin-top:11px">${draftPending ? `<button class="button primary small" data-action="open-document-draft" data-id="${esc(item.id)}">检查草稿</button>` : ""}${item.source_type && item.source_type !== "text" ? `<a class="button soft small" href="/api/v1/documents/${esc(item.id)}/file" target="_blank" rel="noreferrer">下载原文件</a>` : ""}<button class="button outline small" data-action="delete-document" data-id="${esc(item.id)}">删除前查看影响</button></div></article>`;
         }
 
         function preferenceItem(item) {
@@ -806,7 +952,10 @@
           document.querySelectorAll("#preference-form, #recruiter-preference-form").forEach((form) => {
             if (!form.querySelector("[data-preference-controls]")) {
               const subjectId = form.elements.namedItem("subject_document_id")?.value || "";
-              const selected = state.workspace.selectedPreference || state.workspace.data.preferences.find((item) => subjectId && item.subject_document_id === subjectId) || null;
+              const selectedPreference = state.workspace.selectedPreference;
+              const selected = (selectedPreference && (!subjectId || selectedPreference.subject_document_id === subjectId))
+                ? selectedPreference
+                : state.workspace.data.preferences.find((item) => subjectId && item.subject_document_id === subjectId) || null;
               form.insertAdjacentHTML("afterbegin", preferenceControls(selected));
               const content = selected?.version?.content || {};
               const setValue = (name, value) => { const field = form.elements.namedItem(name); if (field && value !== undefined && value !== null) field.value = value; };
@@ -818,6 +967,26 @@
               syncPreferenceStatus(form);
             }
           });
+        }
+
+        function syncRecruiterAnalysisPreferences(form) {
+          const resumeSelect = form?.elements.namedItem("resume_version_id");
+          const preferenceSelect = form?.elements.namedItem("preference_version_id");
+          if (!resumeSelect || !preferenceSelect) return;
+          const selectedOption = resumeSelect.selectedOptions?.[0];
+          const subjectId = selectedOption?.dataset.subjectId || "";
+          [...preferenceSelect.options].forEach((option) => {
+            if (!option.value) { option.hidden = false; option.disabled = false; return; }
+            const available = option.dataset.subjectId === subjectId;
+            option.hidden = !available;
+            option.disabled = !available;
+          });
+          if (preferenceSelect.selectedOptions?.[0]?.disabled) preferenceSelect.value = "";
+        }
+
+        function decorateRecruiterAnalysisForm() {
+          const form = document.querySelector("#recruiter-analysis-form");
+          if (form) syncRecruiterAnalysisPreferences(form);
         }
 
         function decorateDocumentForms() {
@@ -853,21 +1022,33 @@
         function recruiterAnalysisSection(documents) {
           const resumes = documents.filter((item) => item.document_type === "resume" && item.subject_type === "candidate_resume" && item.latest_version);
           const jobs = documents.filter((item) => item.document_type === "job_description" && item.latest_version);
-          return `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>创建单人分析</h3><p>招聘身份不进入求职者匹配池；报告只绑定一位候选人的简历版本和一个岗位版本。</p></div></div><div class="card-body"><form id="recruiter-analysis-form" class="form-card"><div class="field-group"><label>候选人简历版本</label><select class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先导入候选人简历</option>`}</select></div><div class="field-group"><label>岗位版本</label><select class="select" name="job_version_id" ${jobs.length ? "" : "disabled"}>${jobs.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先导入岗位 JD</option>`}</select></div><div class="form-foot"><span class="micro">开始分析确认消耗 1 次分析机会。</span><button class="button primary small" type="submit" ${resumes.length && jobs.length ? "" : "disabled"}>开始分析</button></div></form></div></section>`;
+          const preferences = state.workspace.data.preferences.filter((item) => item.version && item.subject_document_id);
+          return `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>创建单人分析</h3><p>招聘身份不进入求职者匹配池；报告只绑定一位候选人的简历版本、岗位版本和可选的候选人期望。</p></div><span class="tag opportunity">招聘端</span></div><div class="card-body"><form id="recruiter-analysis-form" class="form-card"><div class="field-group"><label>候选人简历版本</label><select class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}" data-subject-id="${esc(item.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先导入候选人简历</option>`}</select></div><div class="field-group"><label>岗位版本</label><select class="select" name="job_version_id" ${jobs.length ? "" : "disabled"}>${jobs.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先导入岗位 JD</option>`}</select></div><div class="field-group"><label>候选人岗位期望（可选）</label><select class="select" name="preference_version_id" data-recruiter-analysis-preference ${preferences.length ? "" : "disabled"}><option value="">不引用候选人期望</option>${preferences.map((item) => `<option value="${esc(item.version.id)}" data-subject-id="${esc(item.subject_document_id)}">${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("")}</select><span class="micro">切换候选人后，只保留指向该候选人的期望版本。</span></div><div class="form-foot"><span class="micro">开始分析确认消耗 1 次分析机会。</span><button class="button primary small" type="submit" ${resumes.length && jobs.length ? "" : "disabled"}>开始分析</button></div></form></div></section>`;
         }
 
-        function poolPage() {
+        function recruiterHistorySection() {
+          const rows = (state.workspace.data.analyses || []).filter((item) => item.context_type === "recruiter_single");
+          return `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>单人分析历史</h3><p>每次分析都保留当时使用的候选人简历、岗位和期望版本。</p></div><span class="tag neutral">${esc(String(rows.length))} 条</span></div><div class="card-body">${rows.length ? `<div class="history-list">${rows.map((item) => `<article class="history-row"><div><strong>${esc(item.job_category || "候选人岗位分析")}</strong><small>${esc(labelStatus(item.status))} · ${esc(number(item.ability_score))} 分 · ${esc(date(item.completed_at || item.created_at))}<br />${esc(item.id)}</small></div><button class="button soft small" data-action="open-analysis" data-id="${esc(item.id)}">打开报告</button></article>`).join("")}</div>` : `<div class="empty"><div><strong>还没有单人分析</strong><p>导入候选人简历和岗位 JD 后，从上方开始一次分析。</p></div></div>`}</div></section>`;
+        }
+
+        function poolAnalysisForm(selected, resumes, preferences) {
+          if (!selected || !["awaiting_requirements", "failed"].includes(selected.analysis_status)) return "";
+          const selectedResume = selected.resume_version_id || resumes[0]?.latest_version?.id || "";
+          return `<form id="pool-analyze-form" class="form-card" style="margin-top:14px"><div class="field-group"><label>分析使用的简历版本</label><select class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}" ${item.latest_version.id === selectedResume ? "selected" : ""}>${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先确认简历</option>`}</select></div><div class="field-group"><label>分析使用的岗位期望版本</label><select class="select" name="preference_version_id" ${preferences.length ? "" : "disabled"}>${preferences.map((item) => `<option value="${esc(item.version.id)}">${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("") || `<option>请先保存岗位期望</option>`}</select></div><label class="micro" style="display:flex;gap:8px;align-items:flex-start;margin-top:13px"><input type="checkbox" name="confirm_usage" checked style="margin-top:3px" /> 我确认消耗 1 次分析机会</label><div class="form-foot"><span class="micro">岗位 revision ${esc(String(selected.revision || 1))}；若页面数据已变化，服务端会要求刷新。</span><button class="button primary small" type="submit" ${resumes.length && preferences.length ? "" : "disabled"}>${selected.analysis_status === "failed" ? "重试分析" : "开始分析"}</button></div></form>`;
+        }
+
+        function enhancedPoolPage() {
           const data = state.workspace.data;
           const resumes = data.documents.filter((item) => item.document_type === "resume" && item.latest_version);
           const preferences = data.preferences.filter((item) => item.version);
           const selected = state.workspace.selectedPool;
-          const selectedActions = selected ? `<section class="card pool-detail"><div class="card-head"><div><h3>${esc(selected.job_title || "岗位详情")}</h3><p>${esc(selected.company_name || "未标注公司")} · ${esc(labelStatus(selected.analysis_status))}</p></div><button class="button link-button small" data-action="close-pool">收起</button></div>${selected.source_url ? `<div class="callout opportunity">原岗位链接已由服务端校验；点击“去投递”只记录跳转意向，不代表平台已投递。</div><div class="item-actions" style="margin-top:12px"><button class="button primary small" data-action="go-apply" data-id="${esc(selected.id)}" data-token="${esc(selected.apply_action?.click_token || "")}">去投递</button></div>` : `<div class="callout">这是手动岗位，暂时没有可跳转的原平台链接。</div>`}<pre>${esc(json(selected.job_content || selected.job_fields || {}))}</pre>${selected.latest_analysis ? `<div class="item-actions"><button class="button primary small" data-action="open-analysis" data-id="${esc(selected.latest_analysis.id)}">打开完整报告</button></div>` : ""}</section>` : "";
-          return `${heading("MATCH POOL", "匹配池", "岗位先保存，选定一条岗位期望并确认消耗后，才生成岗位独立的匹配报告。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${selectedActions}<div class="content-grid"><section class="card"><div class="card-head"><div><h3>保存一份手动岗位</h3><p>浏览器草稿也会落到同一岗位池契约；这里用文字输入完成明天的稳定演示。</p></div><span class="tag opportunity">可选分析</span></div><div class="card-body"><form id="pool-form" class="form-card"><div class="field-group"><label for="pool-title">岗位名称</label><input id="pool-title" class="field" name="job_title" value="前端开发工程师" required /></div><div class="field-group"><label for="pool-company">公司</label><input id="pool-company" class="field" name="company_name" value="示例科技" /></div><div class="field-group"><label for="pool-text">岗位 JD</label><textarea id="pool-text" class="textarea" name="job_text" required>${esc(DEFAULT_JOB)}</textarea></div><div class="field-group"><label for="pool-resume">本次使用的简历版本</label><select id="pool-resume" class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先去简历页确认版本</option>`}</select></div><div class="field-group"><label for="pool-preference">本次使用的岗位期望版本</label><select id="pool-preference" class="select" name="preference_version_id" ${preferences.length ? "" : "disabled"}>${preferences.map((item) => `<option value="${esc(item.version.id)}">${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("") || `<option>请先去简历页保存期望</option>`}</select></div><label class="micro" style="display:flex;gap:8px;align-items:flex-start;margin-top:14px"><input type="checkbox" name="start_now" checked style="margin-top:3px" /> 保存后立即生成报告（确认消耗 1 次分析机会）</label><div class="form-foot"><span class="micro">只保存岗位不会扣次；分析需要简历、期望和余额齐备。</span><button class="button primary small" type="submit">保存岗位</button></div></form></div></section><section class="card"><div class="card-head"><div><h3>岗位列表</h3><p>每个岗位拥有自己的报告和输入版本。</p></div></div><div class="card-body">${data.pool.length ? data.pool.map((item) => poolItem(item)).join("") : `<div class="empty"><div><strong>匹配池还是空的</strong><p>准备好简历和期望后，在左侧保存第一份岗位。</p></div></div>`}</div></section></div>`;
+          const selectedDetail = selected ? `<section class="card pool-detail"><div class="card-head"><div><div class="eyebrow">POOL ITEM</div><h3>${esc(selected.job_title || "岗位详情")}</h3><p>${esc(selected.company_name || "未标注公司")} · ${esc(labelStatus(selected.analysis_status))} · revision ${esc(String(selected.revision || 1))}</p></div><button class="button link-button small" data-action="close-pool">收起</button></div>${selected.blocking_reasons?.length ? `<div class="callout opportunity">当前还不能分析：${esc(selected.blocking_reasons.join("；"))}</div>` : ""}${selected.source_url ? `<div class="callout opportunity">原岗位链接已由服务端校验；“去投递”只记录跳转意向，不代表外部平台已投递。</div><div class="item-actions" style="margin-top:12px"><button class="button primary small" data-action="go-apply" data-id="${esc(selected.id)}" data-token="${esc(selected.apply_action?.click_token || "")}">去投递</button></div>` : `<div class="callout">这是手动岗位，暂时没有可跳转的原平台链接。</div>`}<div class="item-meta"><span>来源：${esc(selected.source_type === "browser_capture" ? "浏览器采集" : "手动输入")}</span><span>岗位版本：${esc(selected.job_document_version?.id || "—")}</span><span>简历版本：${esc(selected.resume_version_id || "尚未绑定")}</span></div><details class="raw-report"><summary>查看岗位结构化内容</summary><pre>${esc(json(selected.job_content || selected.job_fields || {}))}</pre></details>${poolAnalysisForm(selected, resumes, preferences)}${selected.latest_analysis ? `<div class="item-actions"><button class="button primary small" data-action="open-analysis" data-id="${esc(selected.latest_analysis.id)}">打开完整报告</button></div>` : ""}${selected.analysis_history?.length ? `<div class="interview-history" style="margin-top:18px"><div class="card-head"><div><h3>分析历史</h3><p>同一岗位可以按新的简历或期望版本重新分析。</p></div></div><div class="history-list" style="margin-top:10px">${selected.analysis_history.map((item) => `<div class="history-row"><div><strong>${esc(labelStatus(item.status))} · ${esc(number(item.ability_score))} 分</strong><small>${esc(item.id)} · ${esc(date(item.completed_at))}</small></div>${item.status === "available" ? `<button class="button link-button small" data-action="open-analysis" data-id="${esc(item.id)}">查看</button>` : ""}</div>`).join("")}</div></div>` : ""}<div class="item-actions" style="margin-top:18px"><button class="button link-button small" data-action="delete-pool" data-id="${esc(selected.id)}">删除岗位（先查看影响）</button></div></section>` : "";
+          return `${heading("MATCH POOL", "匹配池", "岗位先进入待确认状态；浏览器草稿和手动 JD 统一落到岗位池，分析可以立即开始，也可以稍后显式触发。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${browserDraftCard(state.workspace.browserDraft, resumes, preferences)}${state.workspace.browserDraftError ? `<div class="callout attention" style="margin-bottom:18px">${esc(state.workspace.browserDraftError)}</div>` : ""}${selectedDetail}<div class="content-grid"><section class="card"><div class="card-head"><div><h3>保存一份手动岗位</h3><p>用于没有浏览器采集或需要现场补录的岗位；确认版本后再选择是否分析。</p></div><span class="tag opportunity">可选分析</span></div><div class="card-body"><form id="pool-form" class="form-card"><div class="field-group"><label for="pool-title">岗位名称</label><input id="pool-title" class="field" name="job_title" value="前端开发工程师" required /></div><div class="field-group"><label for="pool-company">公司</label><input id="pool-company" class="field" name="company_name" value="示例科技" /></div><div class="field-group"><label for="pool-text">岗位 JD</label><textarea id="pool-text" class="textarea" name="job_text" required>${esc(DEFAULT_JOB)}</textarea></div><div class="field-group"><label for="pool-resume">本次使用的简历版本</label><select id="pool-resume" class="select" name="resume_version_id" ${resumes.length ? "" : "disabled"}>${resumes.map((item) => `<option value="${esc(item.latest_version.id)}">${esc(item.title)} · v${esc(item.latest_version.version_no)}</option>`).join("") || `<option>请先去简历页确认版本</option>`}</select></div><div class="field-group"><label for="pool-preference">本次使用的岗位期望版本</label><select id="pool-preference" class="select" name="preference_version_id" ${preferences.length ? "" : "disabled"}>${preferences.map((item) => `<option value="${esc(item.version.id)}">${esc(item.display_name)} · v${esc(item.version.version_no)}</option>`).join("") || `<option>请先去简历页保存期望</option>`}</select></div><label class="micro" style="display:flex;gap:8px;align-items:flex-start;margin-top:14px"><input type="checkbox" name="start_now" checked style="margin-top:3px" /> 保存后立即生成报告（确认消耗 1 次分析机会）</label><div class="form-foot"><span class="micro">只保存岗位不会扣次；开始分析前会再次确认余额。</span><button class="button primary small" type="submit">保存岗位</button></div></form></div></section><section class="card"><div class="card-head"><div><h3>我的岗位</h3><p>每个岗位有独立的分析状态、历史和去投递入口。</p></div><span class="tag neutral">${esc(String(data.pool.length))} 条</span></div><div class="card-body">${data.pool.length ? data.pool.map((item) => poolItem(item)).join("") : `<div class="empty"><div><strong>匹配池还是空的</strong><p>先在左侧保存岗位，或从浏览器草稿确认入池。</p></div></div>`}</div></section></div>`;
         }
 
         function poolItem(item) {
           const latest = item.latest_analysis;
-          return `<article class="pool-item"><div class="item-title"><strong>${esc(item.job_title || "未命名岗位")}</strong><span class="tag ${statusClass(item.analysis_status)}">${esc(labelStatus(item.analysis_status))}</span></div><div class="item-meta"><span>${esc(item.company_name || "未标注公司")}</span><span>${latest ? `综合分 ${esc(number(latest.ability_score))}` : "尚无报告"}</span><span>${esc(date(item.updated_at))}</span></div><div class="item-actions"><button class="button soft small" data-action="open-pool" data-id="${esc(item.id)}">查看岗位</button>${latest ? `<button class="button outline small" data-action="open-analysis" data-id="${esc(latest.id)}">完整报告</button>` : ""}<button class="button link-button small" data-action="delete-pool" data-id="${esc(item.id)}">删除</button></div></article>`;
+          return `<article class="pool-item"><div class="item-title"><strong>${esc(item.job_title || "未命名岗位")}</strong><span class="tag ${statusClass(item.analysis_status)}">${esc(labelStatus(item.analysis_status))}</span></div><div class="item-meta"><span>${esc(item.company_name || "未标注公司")}</span><span>${esc(item.source_type === "browser_capture" ? "浏览器采集" : "手动输入")}</span><span>${latest ? `综合分 ${esc(number(latest.ability_score))}` : "尚无报告"}</span><span>${esc(date(item.updated_at))}</span></div><div class="item-actions"><button class="button soft small" data-action="open-pool" data-id="${esc(item.id)}">查看岗位</button>${latest ? `<button class="button outline small" data-action="open-analysis" data-id="${esc(latest.id)}">完整报告</button>` : item.analysis_status === "awaiting_requirements" || item.analysis_status === "failed" ? `<button class="button outline small" data-action="open-pool" data-id="${esc(item.id)}">开始分析</button>` : ""}<button class="button link-button small" data-action="delete-pool" data-id="${esc(item.id)}">删除</button></div></article>`;
         }
 
         function formalReportPage() {
@@ -1001,18 +1182,42 @@
           return `${heading("FACTS & REWRITE", "事实与逐段改写", "先补充可核对事实，再选择需要改写的简历段落；每段都可以单独采用、编辑采用或保留原文。", `<button class="button outline small" data-page="report">回到报告</button>`)}<div class="callout opportunity">本次改写固定引用简历版本 ${esc(source.version.id)}；任务和日志只保留版本引用，不复制正文。</div><div class="editor-grid"><section class="card"><div class="card-head"><div><h3>选择简历段落</h3><p>当前版本共 ${esc(String(segments.length))} 个可用段落。</p></div></div><div class="card-body"><div class="fact-list">${segments.map((segment) => `<label class="fact-row" style="cursor:pointer"><div><strong>${esc(segment.section_title)} · ${esc(segment.segment_key)}</strong><small>${esc(segment.text)}</small></div><input type="checkbox" data-rewrite-segment="${esc(segment.segment_key)}" ${selectedKeys.has(segment.segment_key) ? "checked" : ""} /></label>`).join("") || `<div class="empty"><div><strong>版本没有可改写段落</strong><p>请确认简历解析结果包含正文段落。</p></div></div>`}</div><form id="rewrite-form" class="form-card" style="margin-top:16px"><div class="field-group"><label>本次引用的已确认事实</label><div class="fact-list">${facts.length ? facts.map((fact) => `<label class="permission-option"><input type="checkbox" name="fact_version_id" value="${esc(fact.version?.id || "")}" data-rewrite-fact /> <span>${esc(fact.fact_category)}：${esc(fact.fact_text)}</span></label>`).join("") : `<div class="micro">还没有补充事实；可以先只基于已确认简历生成建议。</div>`}</div></div><div class="form-foot"><span class="micro">开始改写确认消耗 1 次改写。</span><button class="button primary small" type="submit" ${segments.length ? "" : "disabled"}>生成逐段建议</button></div></form></div></section><aside><section class="card"><div class="card-head"><div><h3>补充一个事实</h3><p>事实需挂在当前简历版本和真实段落上。</p></div></div><div class="card-body"><form id="fact-form" class="form-card"><div class="field-group"><label>事实类别</label><input class="field" name="fact_category" value="项目结果" required /></div><div class="field-group"><label>来源段落</label><select class="select" name="source_segment_key">${segments.map((segment) => `<option value="${esc(segment.segment_key)}">${esc(segment.segment_key)}</option>`).join("")}</select></div><div class="field-group"><label>事实内容</label><textarea class="textarea" name="fact_text" style="min-height:100px" placeholder="例如：上线后首屏耗时下降 30%" required></textarea></div><div class="form-foot"><span class="micro">保存后成为事实 version 1。</span><button class="button soft small" type="submit" ${segments.length ? "" : "disabled"}>保存事实</button></div></form></div></section></aside></div>${rewrite ? `<section class="card" style="margin-top:18px"><div class="card-head"><div><h3>改写结果</h3><p>${esc(rewrite.id)} · ${esc(labelStatus(rewrite.status))} · 采用决定会追加流水。</p></div><div class="item-actions"><button class="button primary small" data-action="create-variant-from-rewrite" ${rewrite.status === "available" ? "" : "disabled"}>用采用结果制作岗位版</button></div></div><div class="card-body"><div class="rewrite-list">${(rewrite.segments || []).map(rewriteSegmentItem).join("") || `<div class="empty"><div><strong>还没有段落建议</strong><p>返回上方选择段落并生成建议。</p></div></div>`}</div></div></section>` : ""}`;
         }
 
+        function adminMetricsFilterForm() {
+          const filters = state.workspace.adminMetricFilters || {};
+          return `<section class="card" style="margin-bottom:18px"><form id="admin-metric-filters" class="form-card"><div class="filter-grid"><div class="field-group"><label>开始日期</label><input class="field" type="date" name="date_from" value="${esc(filters.date_from || "")}" /></div><div class="field-group"><label>结束日期（含当天）</label><input class="field" type="date" name="date_to" value="${esc(filters.date_to || "")}" /></div><div class="field-group"><label>注册身份</label><select class="select" name="registration_role"><option value="all" ${filters.registration_role === "all" ? "selected" : ""}>全部身份</option><option value="seeker" ${filters.registration_role === "seeker" ? "selected" : ""}>求职</option><option value="recruiter" ${filters.registration_role === "recruiter" ? "selected" : ""}>招聘</option></select></div><div class="field-group"><label>功能</label><select class="select" name="feature"><option value="all" ${filters.feature === "all" ? "selected" : ""}>全部功能</option><option value="analysis" ${filters.feature === "analysis" ? "selected" : ""}>分析</option><option value="rewrite" ${filters.feature === "rewrite" ? "selected" : ""}>改写</option><option value="interview" ${filters.feature === "interview" ? "selected" : ""}>面试</option><option value="import" ${filters.feature === "import" ? "selected" : ""}>资料导入</option></select></div></div><div class="form-foot"><span class="micro">统计按 Asia/Shanghai 自然日计算，最多查询 93 天。</span><button class="button soft small" type="submit">应用筛选</button></div></form></section>`;
+        }
+
+        function adminFeedbackDetail() {
+          const item = state.workspace.selectedFeedback;
+          if (!item) return "";
+          return `<section class="card admin-user-detail" style="margin-bottom:18px"><div class="card-head"><div><div class="eyebrow">FEEDBACK DETAIL</div><h3>${esc(item.feedback_type || "产品反馈")} · ${esc(String(item.rating || "—"))} 分</h3><p>${esc(item.id)} · ${esc(date(item.created_at))}</p></div><button class="button link-button small" data-action="close-feedback">收起</button></div><div class="card-body"><div class="callout">${esc(item.content || "（未填写文字）")}</div><div class="item-meta"><span>类型：${esc(item.feedback_type || "—")}</span><span>状态：${esc(labelStatus(item.status))}</span><span>上下文：${esc(item.context_type || "general")}</span>${item.context_id ? `<span>关联：${esc(item.context_id)}</span>` : ""}</div></div></section>`;
+        }
+
         function adminMetricsPage() {
           const metrics = state.workspace.data.admin.metrics;
           const costs = state.workspace.data.admin.costs;
           const feedback = state.workspace.data.admin.feedback || [];
           if (!metrics) return `${heading("ADMIN", "站点概况", "当前账号没有读到站点指标；点击刷新重试。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="empty"><div><strong>指标暂不可用</strong><p>服务端会按权限返回管理数据。</p></div></div>`;
-          return `${heading("ADMIN OVERVIEW", "站点概况", "只展示聚合指标和脱敏元数据；成本、反馈和账号操作均留有审计入口。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="admin-grid"><div class="admin-stat"><div class="eyebrow">账号</div><strong>${esc(String(metrics.accounts?.total ?? 0))}</strong><span>求职 ${esc(String(metrics.accounts?.seeker ?? 0))} · 招聘 ${esc(String(metrics.accounts?.recruiter ?? 0))}</span></div><div class="admin-stat"><div class="eyebrow">岗位</div><strong>${esc(String(metrics.job_pool_items ?? 0))}</strong><span>当前未删除岗位</span></div><div class="admin-stat"><div class="eyebrow">报告</div><strong>${esc(String(metrics.analyses ?? 0))}</strong><span>已完成分析</span></div><div class="admin-stat"><div class="eyebrow">面试</div><strong>${esc(String(metrics.interviews ?? 0))}</strong><span>已创建会话</span></div><div class="admin-stat"><div class="eyebrow">去投递</div><strong>${esc(String(metrics.apply_clicks_today ?? 0))}</strong><span>上海自然日 ${esc(metrics.metric_date)}</span></div><div class="admin-stat"><div class="eyebrow">模型成本</div><strong>${costs?.known_cost_usd == null ? "未知" : `$${esc(Number(costs.known_cost_usd).toFixed(4))}`}</strong><span>未知成本调用 ${esc(String(costs?.unknown_cost_calls ?? 0))}</span></div></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>产品反馈</h3><p>正文只在管理员主动打开详情时读取；状态变更会写入审计日志。</p></div></div><div class="card-body">${feedback.length ? `<div class="admin-list">${feedback.map((item) => `<article class="admin-row"><div><strong>${esc(item.feedback_type)} · ${esc(String(item.rating || "—"))} 分</strong><small>${esc(item.id)} · ${esc(item.account_id || "未知账号")} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${item.status === "closed" ? "success" : item.status === "reviewed" ? "opportunity" : "neutral"}">${esc(labelStatus(item.status))}</span>${new Set(state.session.account?.admin_permissions || []).has("admin.stats.read") && item.status !== "closed" ? `<button class="button link-button small" data-action="cycle-feedback" data-id="${esc(item.id)}" data-status="${esc(item.status)}" data-revision="${esc(String(item.revision || 1))}">${item.status === "new" ? "标记已查看" : "关闭反馈"}</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无反馈</strong><p>用户反馈会在这里汇总。</p></div></div>`}</div></section>`;
+          return `${heading("ADMIN OVERVIEW", "站点概况", "按日期、身份和功能筛选聚合指标；成本、反馈和账号操作均留有审计入口。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${adminMetricsFilterForm()}${adminFeedbackDetail()}<div class="admin-grid"><div class="admin-stat"><div class="eyebrow">账号</div><strong>${esc(String(metrics.accounts?.total ?? 0))}</strong><span>求职 ${esc(String(metrics.accounts?.seeker ?? 0))} · 招聘 ${esc(String(metrics.accounts?.recruiter ?? 0))}</span></div><div class="admin-stat"><div class="eyebrow">岗位</div><strong>${esc(String(metrics.job_pool_items ?? 0))}</strong><span>当前未删除岗位</span></div><div class="admin-stat"><div class="eyebrow">报告</div><strong>${esc(String(metrics.analyses ?? 0))}</strong><span>筛选范围内完成分析</span></div><div class="admin-stat"><div class="eyebrow">面试</div><strong>${esc(String(metrics.interviews ?? 0))}</strong><span>筛选范围内会话</span></div><div class="admin-stat"><div class="eyebrow">去投递</div><strong>${esc(String(metrics.apply_clicks_today ?? 0))}</strong><span>统计截至 ${esc(metrics.metric_date)}</span></div><div class="admin-stat"><div class="eyebrow">模型成本</div><strong>${costs?.known_cost_usd == null ? "未知" : `$${esc(Number(costs.known_cost_usd).toFixed(4))}`}</strong><span>未知成本调用 ${esc(String(costs?.unknown_cost_calls ?? 0))}</span></div></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>产品反馈</h3><p>列表先展示脱敏元数据；打开详情才读取反馈正文，状态变更会写入审计日志。</p></div></div><div class="card-body">${feedback.length ? `<div class="admin-list">${feedback.map((item) => `<article class="admin-row"><div><strong>${esc(item.feedback_type)} · ${esc(String(item.rating || "—"))} 分</strong><small>${esc(item.id)} · ${esc(item.account_id || "未知账号")} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${item.status === "closed" ? "success" : item.status === "reviewed" ? "opportunity" : "neutral"}">${esc(labelStatus(item.status))}</span><button class="button link-button small" data-action="open-feedback" data-id="${esc(item.id)}">查看</button>${new Set(state.session.account?.admin_permissions || []).has("admin.stats.read") && item.status !== "closed" ? `<button class="button link-button small" data-action="cycle-feedback" data-id="${esc(item.id)}" data-status="${esc(item.status)}" data-revision="${esc(String(item.revision || 1))}">${item.status === "new" ? "标记已查看" : "关闭反馈"}</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无反馈</strong><p>用户反馈会在这里汇总。</p></div></div>`}</div></section>`;
         }
 
-        function adminUsersPage() {
+        function adminUserDetailCard() {
+          const selected = state.workspace.selectedAdminUser;
+          if (!selected?.account) return "";
+          const account = selected.account;
+          const usage = selected.usage || {};
+          const roles = state.workspace.data.admin.roles || [];
+          const currentRoleIds = new Set((selected.admin_roles || []).map((item) => item.id));
+          const permissions = new Set(state.session.account?.admin_permissions || []);
+          const canAssign = permissions.has("admin.roles.manage") && account.id !== state.session.account?.id;
+          const roleChips = (selected.admin_roles || []).map((role) => `<span class="role-chip">${esc(role.name)} · ${esc(String(role.permissions?.length || 0))} 项权限</span>`).join("");
+          return `<section class="card admin-user-detail" style="margin-bottom:18px"><div class="card-head"><div><div class="eyebrow">USER DETAIL</div><h3>${esc(account.email)}</h3><p>${esc(account.id)} · ${esc(account.registration_role === "seeker" ? "求职身份" : "招聘身份")} · revision ${esc(String(account.revision || 1))}</p></div><button class="button link-button small" data-action="close-admin-user">收起</button></div><div class="item-meta"><span>状态：${esc(accountStatusLabel(account.status))}</span><span>${account.email_verified ? "邮箱已验证" : "邮箱未验证"}</span><span>注册于 ${esc(date(account.created_at))}</span><span>最近登录 ${esc(date(account.last_login_at))}</span></div><div class="role-chip-list">${roleChips || `<span class="micro">当前没有后台角色</span>`}</div><div class="balance-grid" style="margin-top:16px">${(usage.balances || []).map((item) => `<div class="balance"><div class="eyebrow">${esc(item.feature)}</div><strong>${esc(String(item.available))}</strong><small>可用 · 已消耗 ${esc(String(item.settled_total))}</small></div>`).join("") || `<div class="micro">暂无用量余额</div>`}</div>${permissions.has("admin.roles.manage") ? `<form id="admin-user-roles-form" class="form-card" style="margin-top:16px"><div class="field-group"><label>后台角色分配</label><div class="permission-grid">${roles.filter((role) => role.status === "active").map((role) => `<label class="permission-option"><input type="checkbox" name="role_ids" value="${esc(role.id)}" ${currentRoleIds.has(role.id) ? "checked" : ""} ${canAssign ? "" : "disabled"} /> <span><strong>${esc(role.name)}</strong><br />${esc(role.description || "无描述")}</span></label>`).join("") || `<span class="micro">当前还没有可用的角色。</span>`}</div></div><div class="form-foot"><span class="micro">${canAssign ? "保存会替换该账号的后台角色，并增加账号 revision。" : "不能修改当前登录管理员自己的角色。"}</span><button class="button primary small" type="submit" ${canAssign && roles.some((role) => role.status === "active") ? "" : "disabled"}>保存角色</button></div></form>` : `<div class="callout opportunity" style="margin-top:16px">当前账号没有角色分配权限，只能查看账号详情。</div>`}</section>`;
+        }
+
+        function enhancedAdminUsersPage() {
           const users = state.workspace.data.admin.users || [];
           const canManage = new Set(state.session.account?.admin_permissions || []).has("admin.users.manage_status");
-          return `${heading("ADMIN USERS", "用户管理", "按邮箱、注册身份和状态筛选；状态写操作需要服务端权限和当前 CSRF。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<section class="card"><form id="admin-user-search" class="form-card"><div class="form-row"><div class="field-group"><label>邮箱搜索</label><input class="field" name="search" placeholder="可留空" /></div><div class="field-group"><label>注册身份</label><select class="select" name="registration_role"><option value="">全部</option><option value="seeker">求职</option><option value="recruiter">招聘</option></select></div></div><div class="form-foot"><span class="micro">最多返回 200 个账号。</span><button class="button soft small" type="submit">筛选</button></div></form></section><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>账号列表</h3><p>${esc(String(users.length))} 个账号</p></div></div><div class="card-body">${users.length ? `<div class="admin-list">${users.map((item) => `<article class="admin-row"><div><strong>${esc(item.email)}</strong><small>${esc(item.registration_role)} · ${esc(accountStatusLabel(item.status))} · ${item.email_verified ? "已验证" : "未验证"} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${statusClass(item.status === "active" ? "available" : item.status === "suspended" ? "failed" : "unknown")}">${esc(accountStatusLabel(item.status))}</span>${canManage && item.id !== state.session.account?.id ? `<button class="button link-button small" data-action="toggle-user-status" data-id="${esc(item.id)}" data-status="${esc(item.status)}">${item.status === "suspended" ? "恢复" : "暂停"}</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>没有匹配账号</strong><p>调整筛选条件后再试。</p></div></div>`}</div></section>`;
+          return `${heading("ADMIN USERS", "用户管理", "按邮箱、注册身份和状态筛选；打开详情可以查看用量和后台角色。", `<button class="button outline small" data-action="refresh">刷新</button>`)}${adminUserDetailCard()}<section class="card"><form id="admin-user-search" class="form-card"><div class="filter-grid"><div class="field-group"><label>邮箱搜索</label><input class="field" name="search" placeholder="可留空" /></div><div class="field-group"><label>注册身份</label><select class="select" name="registration_role"><option value="">全部</option><option value="seeker">求职</option><option value="recruiter">招聘</option></select></div><div class="field-group"><label>账号状态</label><select class="select" name="status"><option value="">全部</option><option value="active">正常</option><option value="suspended">已暂停</option><option value="pending_verification">待验证</option></select></div></div><div class="form-foot"><span class="micro">列表只返回必要账号元数据；邮箱详情仍受管理员权限保护。</span><button class="button soft small" type="submit">筛选</button></div></form></section><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>账号列表</h3><p>${esc(String(users.length))} 个账号</p></div></div><div class="card-body">${users.length ? `<div class="admin-list">${users.map((item) => `<article class="admin-row"><div><strong>${esc(item.email)}</strong><small>${esc(item.registration_role === "seeker" ? "求职" : "招聘")} · ${esc(accountStatusLabel(item.status))} · ${item.email_verified ? "已验证" : "未验证"} · ${esc(date(item.created_at))}</small></div><div class="item-actions"><span class="tag ${statusClass(item.status === "active" ? "available" : item.status === "suspended" ? "failed" : "unknown")}">${esc(accountStatusLabel(item.status))}</span><button class="button soft small" data-action="open-admin-user" data-id="${esc(item.id)}">查看详情</button>${canManage && item.id !== state.session.account?.id ? `<button class="button link-button small" data-action="toggle-user-status" data-id="${esc(item.id)}" data-status="${esc(item.status)}">${item.status === "suspended" ? "恢复" : "暂停"}</button>` : ""}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>没有匹配账号</strong><p>调整筛选条件后再试。</p></div></div>`}</div></section>`;
         }
 
         function permissionOptions(selected = []) {
@@ -1039,16 +1244,20 @@
           return `<article class="admin-row"><div><strong>${esc(title)}</strong><small>${esc(item.id)} · ${esc(detail)} · ${esc(date(item.created_at))}</small></div><button class="button link-button small" data-action="open-log" data-log-type="${esc(type)}" data-id="${esc(item.id)}">查看</button></article>`;
         }
 
-        function adminLogsPage() {
+        function adminLogsPageEnhanced() {
           const accountPermissions = new Set(state.session.account?.admin_permissions || []);
           const type = state.workspace.adminLogType || "operations";
           const permission = { operations: "admin.logs.operations.read", security: "admin.logs.security.read", tasks: "admin.logs.tasks.read" }[type];
           const rows = state.workspace.data.admin.logs?.[type] || [];
-          const canExport = accountPermissions.has("admin.logs.export");
+          const filters = state.workspace.adminLogFilters || {};
+          const canExport = accountPermissions.has("admin.logs.export") && accountPermissions.has(permission);
           const selectedLog = state.workspace.selectedLog;
-          const exportNotice = state.workspace.lastLogExport ? `<div class="callout success" style="margin-bottom:18px">日志导出已生成：${esc(state.workspace.lastLogExport.id)} · <a href="/api/v1/admin/log-exports/${esc(state.workspace.lastLogExport.id)}/file" target="_blank" rel="noreferrer">下载 JSON</a></div>` : "";
+          const lastExport = state.workspace.lastLogExport;
+          const exportNotice = lastExport ? `<div class="callout ${lastExport.status === "downloadable" ? "success" : lastExport.status === "failed" ? "attention" : "opportunity"}" style="margin-bottom:18px">导出 ${esc(lastExport.id)}：${esc(labelStatus(lastExport.status))}${lastExport.row_count !== null && lastExport.row_count !== undefined ? ` · ${esc(String(lastExport.row_count))} 行` : ""}${lastExport.status === "downloadable" ? ` · <a href="/api/v1/admin/log-exports/${esc(lastExport.id)}/file" target="_blank" rel="noreferrer">下载 ${esc(String(lastExport.format || "jsonl").toUpperCase())}</a>` : lastExport.status === "failed" ? ` · ${esc(lastExport.failure_code || "导出失败")}` : " · 刷新查看状态"}</div>` : "";
+          const resultOptions = type === "tasks" ? `<option value="">全部任务状态</option><option value="queued">排队中</option><option value="running">处理中</option><option value="retry_wait">等待重试</option><option value="needs_input">待补充</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="cancelled">已取消</option>` : `<option value="">全部结果</option><option value="succeeded">成功</option><option value="denied">拒绝</option><option value="failed">失败</option>`;
+          const specific = type === "operations" ? `<div class="field-group"><label>操作类型</label><input class="field" name="action" value="${esc(filters.action || "")}" placeholder="如 role.update" /></div>` : type === "security" ? `<div class="field-group"><label>安全事件类型</label><input class="field" name="event_type" value="${esc(filters.event_type || "")}" placeholder="如 login_failed" /></div>` : `<div class="field-group"><label>任务类型</label><input class="field" name="task_type" value="${esc(filters.task_type || "")}" placeholder="如 analysis" /></div><div class="field-group"><label>任务状态</label><select class="select" name="task_status"><option value="">全部</option><option value="queued" ${filters.task_status === "queued" ? "selected" : ""}>排队中</option><option value="running" ${filters.task_status === "running" ? "selected" : ""}>处理中</option><option value="succeeded" ${filters.task_status === "succeeded" ? "selected" : ""}>已完成</option><option value="failed" ${filters.task_status === "failed" ? "selected" : ""}>失败</option><option value="cancelled" ${filters.task_status === "cancelled" ? "selected" : ""}>已取消</option></select></div><div class="field-group"><label>最小重试次数</label><input class="field" name="retry_count_min" type="number" min="0" value="${esc(filters.retry_count_min ?? "")}" /></div>`;
           const detail = selectedLog ? `<section class="card" style="margin-bottom:18px"><div class="card-head"><div><h3>日志详情</h3><p>${esc(selectedLog.type)} · ${esc(selectedLog.item?.id || "")}</p></div><button class="button link-button small" data-action="close-log">收起</button></div><div class="card-body"><pre class="raw-report">${esc(json(selectedLog.item))}</pre></div></section>` : "";
-          return `${heading("ADMIN LOGS", "日志管理", "操作、安全和任务日志分开授权；详情只展示必要元数据，导出文件同样受权限保护。", `${canExport ? `<button class="button outline small" data-action="export-logs">导出当前日志</button>` : ""}<button class="button outline small" data-action="refresh">刷新</button>`)}${exportNotice}${detail}<div class="admin-tabs">${["operations", "security", "tasks"].map((item) => `<button class="button admin-tab ${type === item ? "active" : ""}" data-action="admin-log-type" data-log-type="${item}" ${accountPermissions.has({ operations: "admin.logs.operations.read", security: "admin.logs.security.read", tasks: "admin.logs.tasks.read" }[item]) ? "" : "disabled"}>${item === "operations" ? "操作" : item === "security" ? "安全" : "任务"}</button>`).join("")}</div>${accountPermissions.has(permission) ? `<section class="card"><div class="card-head"><div><h3>${esc(type)} 日志</h3><p>${esc(String(rows.length))} 条最近记录。</p></div></div><div class="card-body">${rows.length ? `<div class="admin-list">${rows.map((item) => logRow(type, item)).join("")}</div>` : `<div class="empty"><div><strong>暂无日志</strong><p>完成一次操作后会留下必要的元数据。</p></div></div>`}</div></section>` : `<div class="empty"><div><strong>没有该日志类型的权限</strong><p>请切换到当前管理员可以读取的日志。</p></div></div>`}`;
+          return `${heading("ADMIN LOGS", "日志管理", "按日期、账号、结果和类型筛选；导出会冻结当前筛选并生成私有文件。", `${canExport ? `<button class="button outline small" data-action="export-logs">导出当前筛选</button>` : ""}<button class="button outline small" data-action="refresh">刷新</button>`)}${exportNotice}<section class="card" style="margin-bottom:18px"><form id="admin-log-filters" class="form-card"><div class="filter-grid"><div class="field-group"><label>开始日期</label><input class="field" type="date" name="created_from" value="${esc(filters.created_from || "")}" /></div><div class="field-group"><label>结束日期（含当天）</label><input class="field" type="date" name="created_to" value="${esc(filters.created_to || "")}" /></div><div class="field-group"><label>账号 ID</label><input class="field" name="account_id" value="${esc(filters.account_id || "")}" placeholder="可留空" /></div><div class="field-group"><label>请求 ID</label><input class="field" name="request_id" value="${esc(filters.request_id || "")}" placeholder="可留空" /></div><div class="field-group"><label>结果</label><select class="select" name="result">${resultOptions.replace(`value="${esc(filters.result || "")}"`, `value="${esc(filters.result || "")}" selected`)}</select></div>${specific}<div class="field-group"><label>导出格式</label><select class="select" name="export_format"><option value="csv" ${state.workspace.adminLogFormat === "csv" ? "selected" : ""}>CSV</option><option value="jsonl" ${state.workspace.adminLogFormat === "jsonl" ? "selected" : ""}>JSONL</option></select></div></div><div class="form-foot"><span class="micro">日期按 Asia/Shanghai 转换；列表最多显示最近 20 条。</span><button class="button soft small" type="submit">应用筛选</button></div></form></section><div class="admin-tabs">${["operations", "security", "tasks"].map((item) => `<button class="button admin-tab ${type === item ? "active" : ""}" data-action="admin-log-type" data-log-type="${item}" ${accountPermissions.has({ operations: "admin.logs.operations.read", security: "admin.logs.security.read", tasks: "admin.logs.tasks.read" }[item]) ? "" : "disabled"}>${item === "operations" ? "操作" : item === "security" ? "安全" : "任务"}</button>`).join("")}</div>${detail}${accountPermissions.has(permission) ? `<section class="card"><div class="card-head"><div><h3>${type === "operations" ? "操作" : type === "security" ? "安全" : "任务"}日志</h3><p>${esc(String(rows.length))} 条当前筛选结果。</p></div></div><div class="card-body">${rows.length ? `<div class="admin-list">${rows.map((item) => logRow(type, item)).join("")}</div>` : `<div class="empty"><div><strong>暂无匹配日志</strong><p>调整筛选条件或完成一次操作后再试。</p></div></div>`}</div></section>` : `<div class="empty"><div><strong>没有该日志类型的权限</strong><p>请切换到当前管理员可以读取的日志。</p></div></div>`}`;
         }
 
         function render() {
@@ -1062,8 +1271,38 @@
           // 单文件 Web 端在每次局部刷新后重新补上语义化表单控件。
           decoratePreferenceForms();
           decorateDocumentForms();
+          decorateRecruiterAnalysisForm();
           decorateReportPage();
           decorateVariantPage();
+          scheduleWorkspacePoll();
+        }
+
+        function workspaceHasPendingWork() {
+          const pendingTask = (state.workspace.data.tasks || []).some((item) => ["queued", "running", "retry_wait", "exporting", "processing"].includes(item.status));
+          const selectedTaskPending = ["queued", "running", "retry_wait", "exporting", "processing"].includes(state.workspace.selectedTask?.status);
+          const exportPending = ["queued", "exporting", "processing"].includes(state.workspace.lastLogExport?.status);
+          return pendingTask || selectedTaskPending || exportPending;
+        }
+
+        function scheduleWorkspacePoll() {
+          if (state.workspace.pollTimer) window.clearTimeout(state.workspace.pollTimer);
+          state.workspace.pollTimer = null;
+          if (state.workspace.pollInFlight || state.screen !== "formal" || !state.session.account || !state.workspace.loaded || !workspaceHasPendingWork()) return;
+          state.workspace.pollTimer = window.setTimeout(() => {
+            state.workspace.pollTimer = null;
+            void pollWorkspace();
+          }, 2000);
+        }
+
+        async function pollWorkspace() {
+          if (state.workspace.pollInFlight || state.screen !== "formal" || !state.session.account) return;
+          state.workspace.pollInFlight = true;
+          try {
+            await loadWorkspace(true);
+          } finally {
+            state.workspace.pollInFlight = false;
+            scheduleWorkspacePoll();
+          }
         }
 
         function setToast(message) {
@@ -1128,6 +1367,33 @@
           } catch (error) {
             clearSession();
             state.auth.error = error instanceof ApiError ? error.message : "登录状态已失效，请重新登录";
+            render();
+          }
+        }
+
+        async function handleBrowserSync() {
+          const params = new URLSearchParams(window.location.search);
+          if (params.get("purslyx_browser_sync") !== "1") return;
+          const platformOrigin = params.get("origin") || "";
+          const nonce = params.get("nonce") || "";
+          const allowedOrigins = ["https://www.zhipin.com", "https://zhipin.com", "https://www.liepin.com", "https://liepin.com"];
+          window.history.replaceState({}, document.title, window.location.pathname);
+          if (!allowedOrigins.includes(platformOrigin) || !/^[A-Za-z0-9_-]{32,128}$/.test(nonce) || !window.opener) {
+            state.screen = "formal";
+            state.auth.error = "浏览器同步请求无效，请从受支持的平台详情页重新发起。";
+            render();
+            return;
+          }
+          try {
+            const data = await request("/api/v1/auth/browser-codes", { method: "POST", formal: true, body: { origin: platformOrigin, nonce } });
+            window.opener.postMessage({ type: "PURSLYX_BROWSER_CODE", origin: platformOrigin, nonce, authorization_code: data.authorization_code, expires_at: data.expires_at }, platformOrigin);
+            state.screen = "formal";
+            state.auth.notice = "浏览器同步请求已发送，可以关闭此窗口。";
+            render();
+            window.setTimeout(() => window.close(), 450);
+          } catch (error) {
+            state.screen = "formal";
+            state.auth.error = error instanceof ApiError ? `${error.code}：${error.message}` : "请先在此浏览器登录 Purslyx，再重试同步。";
             render();
           }
         }
@@ -1240,6 +1506,16 @@
           }
         }
 
+        async function loadAdminLogs(type = state.workspace.adminLogType) {
+          const permission = { operations: "admin.logs.operations.read", security: "admin.logs.security.read", tasks: "admin.logs.tasks.read" }[type];
+          if (!(state.session.account?.admin_permissions || []).includes(permission)) return;
+          const params = adminLogQuery(type);
+          const path = `/api/v1/admin/logs/${type}${params.toString() ? `?${params.toString()}` : ""}`;
+          const result = await request(path, { formal: true });
+          state.workspace.data.admin.logs[type] = result?.items || [];
+          return result;
+        }
+
         async function loadWorkspace(force = false) {
           if (!state.session.account || (!force && state.workspace.loaded)) return;
           const requestNo = ++state.workspace.requestNo;
@@ -1247,28 +1523,45 @@
           state.workspace.error = "";
           render();
           const seeker = state.session.account.registration_role === "seeker";
+          const queryDraftId = new URLSearchParams(window.location.search).get("browser_draft_id");
+          const failures = [];
+          if (seeker && queryDraftId && (!state.workspace.browserDraft || state.workspace.browserDraft.id !== queryDraftId)) {
+            try {
+              state.workspace.browserDraft = await request(`/api/v1/browser/job-drafts/${encodeURIComponent(queryDraftId)}/web`, { formal: true });
+              state.workspace.browserDraftError = "";
+            } catch (error) {
+              state.workspace.browserDraft = null;
+              state.workspace.browserDraftError = error instanceof ApiError ? `${error.code}：${error.message}` : "浏览器岗位草稿读取失败";
+              failures.push(state.workspace.browserDraftError);
+            }
+          }
           const jobs = [
             ["documents", "/api/v1/documents"],
             ["analyses", "/api/v1/analyses"],
             ["tasks", "/api/v1/tasks"],
             ["usage", "/api/v1/usage"],
-            ["stats", "/api/v1/stats/me"],
+            ["stats", personalStatsPath()],
           ];
           if (seeker) jobs.push(["preferences", "/api/v1/preferences"], ["facts", "/api/v1/facts"], ["pool", "/api/v1/job-pool/items"], ["interviews", "/api/v1/interviews"], ["variants", "/api/v1/resumes"]);
+          else state.workspace.data.preferences = [];
           const permissions = new Set(state.session.account.admin_permissions || []);
-          if (permissions.has("admin.stats.read")) jobs.push(["admin_metrics", "/api/v1/admin/metrics"], ["admin_costs", "/api/v1/admin/costs"], ["admin_feedback", "/api/v1/admin/feedback"]);
+          if (permissions.has("admin.stats.read")) {
+            const metricParams = adminMetricQuery();
+            const metricQuery = metricParams.toString() ? `?${metricParams.toString()}` : "";
+            jobs.push(["admin_metrics", `/api/v1/admin/metrics${metricQuery}`], ["admin_costs", `/api/v1/admin/costs${metricQuery}`], ["admin_feedback", "/api/v1/admin/feedback"]);
+          }
           if (permissions.has("admin.users.read")) jobs.push(["admin_users", "/api/v1/admin/users"]);
           if (permissions.has("admin.roles.manage")) jobs.push(["admin_roles", "/api/v1/admin/roles"]);
           if (permissions.has("admin.usage.grant")) jobs.push(["admin_grants", "/api/v1/admin/usage-grants"]);
-          if (permissions.has("admin.logs.operations.read")) jobs.push(["admin_log_operations", "/api/v1/admin/logs/operations"]);
-          if (permissions.has("admin.logs.security.read")) jobs.push(["admin_log_security", "/api/v1/admin/logs/security"]);
-          if (permissions.has("admin.logs.tasks.read")) jobs.push(["admin_log_tasks", "/api/v1/admin/logs/tasks"]);
+          if (permissions.has("admin.logs.operations.read")) { const params = adminLogQuery("operations"); jobs.push(["admin_log_operations", `/api/v1/admin/logs/operations${params.toString() ? `?${params.toString()}` : ""}`]); }
+          if (permissions.has("admin.logs.security.read")) { const params = adminLogQuery("security"); jobs.push(["admin_log_security", `/api/v1/admin/logs/security${params.toString() ? `?${params.toString()}` : ""}`]); }
+          if (permissions.has("admin.logs.tasks.read")) { const params = adminLogQuery("tasks"); jobs.push(["admin_log_tasks", `/api/v1/admin/logs/tasks${params.toString() ? `?${params.toString()}` : ""}`]); }
+          if (state.workspace.lastLogExport && permissions.has("admin.logs.export")) jobs.push(["admin_log_export", `/api/v1/admin/log-exports/${encodeURIComponent(state.workspace.lastLogExport.id)}`]);
           const results = await Promise.all(jobs.map(async ([name, path]) => {
             try { return { name, value: await request(path, { formal: true }) }; }
             catch (error) { return { name, error }; }
           }));
           if (requestNo !== state.workspace.requestNo) return;
-          const failures = [];
           for (const item of results) {
             if (item.error) { failures.push(item.error instanceof ApiError ? item.error.message : "部分数据读取失败"); continue; }
             if (item.name === "usage" || item.name === "stats") state.workspace.data[item.name] = item.value;
@@ -1276,6 +1569,7 @@
               const admin = state.workspace.data.admin;
               if (item.name === "admin_metrics" || item.name === "admin_costs") admin[item.name.slice(6)] = item.value;
               else if (item.name === "admin_log_operations" || item.name === "admin_log_security" || item.name === "admin_log_tasks") admin.logs[item.name.slice(10)] = item.value?.items || [];
+              else if (item.name === "admin_log_export") state.workspace.lastLogExport = item.value;
               else admin[item.name.slice(6)] = item.value?.items || [];
             } else state.workspace.data[item.name] = item.value?.items || [];
           }
@@ -1321,8 +1615,36 @@
           }
           const created = await request("/api/v1/documents", documentOptions);
           const detail = await request(`/api/v1/documents/${encodeURIComponent(created.id)}`, { formal: true });
-          const version = await request(`/api/v1/documents/${encodeURIComponent(created.id)}/versions`, { method: "POST", formal: true, idempotencyKey: key("document-version"), body: { draft_id: detail.latest_draft.id, base_revision: detail.revision, content: detail.draft_content } });
-          return { document: created, version };
+          state.workspace.pendingDocumentDraft = detail;
+          state.workspace.page = "resume";
+          return { document: created, draft: detail };
+        }
+
+        async function confirmDocumentDraft(form) {
+          const values = new FormData(form);
+          const documentId = String(values.get("document_id") || "").trim();
+          const draftId = String(values.get("draft_id") || "").trim();
+          const baseRevision = Number(values.get("base_revision"));
+          const title = String(values.get("title") || "").trim();
+          let content;
+          try {
+            content = JSON.parse(String(values.get("draft_json") || ""));
+          } catch (_) {
+            throw new Error("结构化内容不是有效 JSON，请检查后再确认");
+          }
+          if (!documentId || !draftId || !Number.isFinite(baseRevision)) throw new Error("草稿信息不完整，请刷新后重试");
+          const version = await request(`/api/v1/documents/${encodeURIComponent(documentId)}/versions`, { method: "POST", formal: true, idempotencyKey: key("document-version"), body: { draft_id: draftId, base_revision: baseRevision, content, title } });
+          state.workspace.pendingDocumentDraft = null;
+          setToast(`资料已确认，已生成 version ${version.version_no}`);
+          await loadWorkspace(true);
+        }
+
+        async function discardDocumentDraft(id) {
+          const deleted = await deleteResource(`/api/v1/documents/${encodeURIComponent(id)}`, "资料草稿");
+          if (!deleted) return;
+          state.workspace.pendingDocumentDraft = null;
+          setToast("资料草稿已放弃");
+          await loadWorkspace(true);
         }
 
         function preferenceContentFromForm(values) {
@@ -1365,7 +1687,7 @@
             data = await request("/api/v1/preferences", { method: "POST", formal: true, idempotencyKey: key("preference"), body: payload });
           }
           state.workspace.recruiterSubjectId = subjectId || state.workspace.recruiterSubjectId;
-          state.workspace.data.preferences = [...state.workspace.data.preferences.filter((item) => item.id !== data.id && (!subjectId || item.subject_document_id !== subjectId)), data];
+          state.workspace.data.preferences = [...state.workspace.data.preferences.filter((item) => item.id !== data.id), data];
           state.workspace.selectedPreference = null;
         }
 
@@ -1429,6 +1751,44 @@
           state.workspace.selectedPool = data.job_pool_item || data;
         }
 
+        async function saveBrowserDraftPool(form) {
+          const values = new FormData(form);
+          const draftId = String(values.get("browser_draft_id") || state.workspace.browserDraft?.id || "").trim();
+          const resumeVersionId = String(values.get("resume_version_id") || "").trim();
+          const preferenceVersionId = String(values.get("preference_version_id") || "").trim();
+          const startNow = values.get("start_now") === "on";
+          if (!draftId) throw new Error("浏览器岗位草稿不存在，请刷新后重试");
+          if (startNow && (!resumeVersionId || !preferenceVersionId)) throw new Error("立即分析需要先选择简历版本和岗位期望版本");
+          const data = await request("/api/v1/job-pool/items", { method: "POST", formal: true, idempotencyKey: key("browser-pool"), body: { source: { type: "browser_draft", browser_draft_id: draftId }, preference_version_id: preferenceVersionId || null, analysis: startNow ? { start_now: true, resume_document_version_id: resumeVersionId, confirm_usage: true } : {} } });
+          state.workspace.browserDraft = null;
+          state.workspace.browserDraftError = "";
+          replaceBrowserDraftUrl();
+          if (data.analysis) state.workspace.selectedAnalysis = data.analysis;
+          state.workspace.selectedPool = data.job_pool_item || data;
+          state.workspace.page = "pool";
+          setToast(startNow ? "浏览器岗位已确认入池，分析已开始" : "浏览器岗位已确认入池，可稍后开始分析");
+        }
+
+        async function analyzePoolItem(form) {
+          const values = new FormData(form);
+          const selected = state.workspace.selectedPool;
+          if (!selected) throw new Error("没有选中的岗位，请刷新后重试");
+          const resumeVersionId = String(values.get("resume_version_id") || "").trim();
+          const preferenceVersionId = String(values.get("preference_version_id") || "").trim();
+          if (!resumeVersionId || !preferenceVersionId) throw new Error("开始分析需要选择简历和岗位期望版本");
+          const data = await request(`/api/v1/job-pool/items/${encodeURIComponent(selected.id)}/analyze`, { method: "POST", formal: true, idempotencyKey: key("pool-analysis"), body: { resume_document_version_id: resumeVersionId, preference_version_id: preferenceVersionId, base_revision: Number(selected.revision || 1), confirm_usage: values.get("confirm_usage") === "on" } });
+          state.workspace.selectedPool = data.job_pool_item || selected;
+          state.workspace.selectedAnalysis = data.analysis || null;
+          setToast("分析已开始，任务状态可在任务中心查看");
+          await loadWorkspace(true);
+        }
+
+        function replaceBrowserDraftUrl() {
+          const url = new URL(window.location.href);
+          url.searchParams.delete("browser_draft_id");
+          window.history.replaceState({}, document.title, `${url.pathname}${url.search}${url.hash}`);
+        }
+
         async function createFormalDocumentFromPool(values) {
           const title = String(values.get("job_title") || "未命名岗位").trim();
           const textValue = String(values.get("job_text") || "").trim();
@@ -1444,7 +1804,8 @@
 
         async function createRecruiterAnalysis(form) {
           const values = new FormData(form);
-          const data = await request("/api/v1/analyses", { method: "POST", formal: true, idempotencyKey: key("analysis"), body: { context_type: "recruiter_single", resume_document_version_id: String(values.get("resume_version_id")), job_document_version_id: String(values.get("job_version_id")), confirm_usage: true } });
+          const preferenceVersionId = String(values.get("preference_version_id") || "").trim();
+          const data = await request("/api/v1/analyses", { method: "POST", formal: true, idempotencyKey: key("analysis"), body: { context_type: "recruiter_single", resume_document_version_id: String(values.get("resume_version_id")), job_document_version_id: String(values.get("job_version_id")), ...(preferenceVersionId ? { preference_version_id: preferenceVersionId } : {}), confirm_usage: true } });
           if (data.analysis) { state.workspace.selectedAnalysis = data.analysis; state.workspace.page = "report"; }
         }
 
@@ -1456,6 +1817,21 @@
             state.workspace.page = "pool";
           } catch (error) {
             state.workspace.error = error instanceof ApiError ? error.message : "岗位读取失败";
+          } finally {
+            state.workspace.loading = false;
+            render();
+          }
+        }
+
+        async function openDocumentDraft(id) {
+          state.workspace.loading = true;
+          state.workspace.error = "";
+          render();
+          try {
+            state.workspace.pendingDocumentDraft = await request(`/api/v1/documents/${encodeURIComponent(id)}`, { formal: true });
+            state.workspace.page = "resume";
+          } catch (error) {
+            state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "资料草稿读取失败";
           } finally {
             state.workspace.loading = false;
             render();
@@ -1727,12 +2103,39 @@
           const params = new URLSearchParams();
           const search = String(values.get("search") || "").trim();
           const registrationRole = String(values.get("registration_role") || "");
+          const status = String(values.get("status") || "");
           if (search) params.set("search", search);
           if (registrationRole) params.set("registration_role", registrationRole);
+          if (status) params.set("status", status);
           const result = await request(`/api/v1/admin/users${params.toString() ? `?${params.toString()}` : ""}`, { formal: true });
           state.workspace.data.admin.users = result?.items || [];
           state.workspace.error = "";
           render();
+        }
+
+        async function openAdminUser(id) {
+          state.workspace.loading = true;
+          state.workspace.error = "";
+          render();
+          try {
+            state.workspace.selectedAdminUser = await request(`/api/v1/admin/users/${encodeURIComponent(id)}`, { formal: true });
+            state.workspace.page = "admin-users";
+          } finally {
+            state.workspace.loading = false;
+            render();
+          }
+        }
+
+        async function saveAdminUserRoles(form) {
+          const selected = state.workspace.selectedAdminUser;
+          if (!selected?.account) throw new Error("没有选中的用户");
+          const values = new FormData(form);
+          const roleIds = values.getAll("role_ids").map((item) => String(item));
+          const data = await request(`/api/v1/admin/users/${encodeURIComponent(selected.account.id)}/roles`, { method: "PUT", formal: true, idempotencyKey: key("admin-user-roles"), body: { role_ids: roleIds, base_revision: selected.account.revision } });
+          selected.account = data.account;
+          selected.admin_roles = (state.workspace.data.admin.roles || []).filter((role) => roleIds.includes(role.id));
+          setToast("账号后台角色已更新");
+          await loadWorkspace(true);
         }
 
         async function toggleUserStatus(id, currentStatus) {
@@ -1786,12 +2189,31 @@
           render();
         }
 
+        async function applyAdminLogFilters(form) {
+          const values = new FormData(form);
+          state.workspace.adminLogFilters = {
+            created_from: String(values.get("created_from") || ""),
+            created_to: String(values.get("created_to") || ""),
+            account_id: String(values.get("account_id") || "").trim(),
+            result: String(values.get("result") || ""),
+            request_id: String(values.get("request_id") || "").trim(),
+            action: String(values.get("action") || "").trim(),
+            event_type: String(values.get("event_type") || "").trim(),
+            task_type: String(values.get("task_type") || "").trim(),
+            task_status: String(values.get("task_status") || ""),
+            retry_count_min: String(values.get("retry_count_min") || ""),
+          };
+          state.workspace.adminLogFormat = String(values.get("export_format") || "csv");
+          state.workspace.selectedLog = null;
+          await loadAdminLogs(state.workspace.adminLogType);
+          setToast("日志筛选已应用");
+        }
+
         async function exportLogs() {
           const type = state.workspace.adminLogType || "operations";
-          const category = { operations: "admin_operations", security: "security", tasks: "task_runs" }[type] || "admin_operations";
-          const data = await request("/api/v1/admin/log-exports", { method: "POST", formal: true, idempotencyKey: key("log-export"), body: { log_category: category, export_format: "jsonl", filter: {} } });
+          const data = await request("/api/v1/admin/log-exports", { method: "POST", formal: true, idempotencyKey: key("log-export"), body: { log_type: type, export_format: state.workspace.adminLogFormat || "csv", filters: Object.fromEntries(adminLogQuery(type)) } });
           state.workspace.lastLogExport = data;
-          setToast("日志导出已生成");
+          setToast(data.status === "downloadable" ? "日志导出已生成，可下载" : "日志导出已排队");
         }
 
         async function handleFormalSubmit(form) {
@@ -1799,10 +2221,13 @@
           if (button) button.disabled = true;
           try {
             if (form.id === "auth-form") return await submitAuth(form);
-            if (form.id === "formal-document-form") { const pendingFile = form.querySelector("input[type=file]")?.files?.[0] || null; state.workspace.pendingDocument = { type: String(form.elements.namedItem("document_type")?.value || "resume"), title: String(form.elements.namedItem("title")?.value || ""), text: String(form.elements.namedItem("text")?.value || ""), file: pendingFile }; await createFormalDocument(form); state.workspace.pendingDocument = null; setToast("资料已确认，已生成不可变版本"); }
+            if (form.id === "formal-document-form") { const pendingFile = form.querySelector("input[type=file]")?.files?.[0] || null; state.workspace.pendingDocument = { type: String(form.elements.namedItem("document_type")?.value || "resume"), title: String(form.elements.namedItem("title")?.value || ""), text: String(form.elements.namedItem("text")?.value || ""), file: pendingFile }; await createFormalDocument(form); state.workspace.pendingDocument = null; setToast("资料草稿已生成，请检查结构化内容后确认"); }
+            else if (form.id === "document-draft-review") await confirmDocumentDraft(form);
             else if (form.id === "preference-form") { await savePreference(form); setToast("岗位期望已保存为独立版本"); }
             else if (form.id === "recruiter-preference-form") { await savePreference(form); setToast("候选人岗位期望已保存"); }
             else if (form.id === "pool-form") { await savePool(form); setToast("岗位已入池，分析结果已可恢复"); }
+            else if (form.id === "browser-draft-form") await saveBrowserDraftPool(form);
+            else if (form.id === "pool-analyze-form") await analyzePoolItem(form);
             else if (form.id === "recruiter-analysis-form") { await createRecruiterAnalysis(form); setToast("单人分析已创建"); }
             else if (form.id === "fact-form") { await saveFact(form); form.reset(); setToast("事实已保存为 version 1"); }
             else if (form.id === "rewrite-form") { await createRewrite(form); setToast("逐段改写建议已生成"); }
@@ -1811,7 +2236,9 @@
             else if (form.id === "answer-form") { await answerInterview(form); setToast("回答已保存，反馈已返回"); }
             else if (form.id === "feedback-form") { await sendFeedback(form); form.reset(); setToast("感谢反馈，已单独记录"); }
             else if (form.id === "admin-user-search") return await searchAdminUsers(form);
+            else if (form.id === "admin-log-filters") return await applyAdminLogFilters(form);
             else if (form.id === "admin-role-form") await saveAdminRole(form);
+            else if (form.id === "admin-user-roles-form") await saveAdminUserRoles(form);
             else if (form.id === "admin-grant-form") await grantUsage(form);
             await loadWorkspace(true);
           } catch (error) {
@@ -1838,6 +2265,13 @@
         document.addEventListener("change", (event) => {
           const form = event.target.closest("#preference-form, #recruiter-preference-form");
           if (form && event.target.matches("[data-preference-status]")) syncPreferenceStatus(form);
+          const recruiterAnalysis = event.target.closest("#recruiter-analysis-form");
+          if (recruiterAnalysis && event.target.name === "resume_version_id") syncRecruiterAnalysisPreferences(recruiterAnalysis);
+          if (event.target.matches("[data-recruiter-subject]")) {
+            state.workspace.recruiterSubjectId = event.target.value;
+            state.workspace.selectedPreference = null;
+            render();
+          }
         });
 
         document.addEventListener("click", (event) => {
@@ -1864,6 +2298,8 @@
           if (action === "retry-task") { void (async () => { try { await retryTask(actionNode.dataset.id); setToast("任务已重新排队"); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "任务重试失败"; render(); } })(); return; }
           if (action === "open-pool") { void openPool(actionNode.dataset.id); return; }
           if (action === "close-pool") { state.workspace.selectedPool = null; render(); return; }
+          if (action === "open-document-draft") { void openDocumentDraft(actionNode.dataset.id); return; }
+          if (action === "discard-document-draft") { void (async () => { try { await discardDocumentDraft(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "草稿放弃失败"; render(); } })(); return; }
           if (action === "edit-preference") { state.workspace.selectedPreference = state.workspace.data.preferences.find((item) => item.id === actionNode.dataset.id) || null; state.workspace.page = "resume"; render(); return; }
           if (action === "default-preference") { void (async () => { try { await setDefaultPreference(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "设置默认期望失败"; render(); } })(); return; }
           if (action === "delete-preference") { void (async () => { try { await deletePreference(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "岗位期望删除失败"; render(); } })(); return; }
@@ -1886,11 +2322,13 @@
           if (action === "finish-interview") { void (async () => { try { await finishInterview(actionNode.dataset.id); setToast("已生成练习总结"); render(); await loadWorkspace(true); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message; render(); } })(); }
           if (action === "cycle-feedback") { void (async () => { try { await cycleFeedback(actionNode.dataset.id, actionNode.dataset.status, actionNode.dataset.revision); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "反馈状态更新失败"; render(); } })(); return; }
           if (action === "toggle-user-status") { void (async () => { try { await toggleUserStatus(actionNode.dataset.id, actionNode.dataset.status); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "账号状态更新失败"; render(); } })(); return; }
+          if (action === "open-admin-user") { void (async () => { try { await openAdminUser(actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "用户详情读取失败"; render(); } })(); return; }
+          if (action === "close-admin-user") { state.workspace.selectedAdminUser = null; render(); return; }
           if (action === "select-role") { state.workspace.selectedRole = state.workspace.data.admin.roles.find((item) => item.id === actionNode.dataset.id) || null; render(); return; }
           if (action === "clear-role") { state.workspace.selectedRole = null; render(); return; }
           if (action === "open-log") { void (async () => { try { await openLog(actionNode.dataset.logType, actionNode.dataset.id); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "日志读取失败"; render(); } })(); return; }
           if (action === "close-log") { state.workspace.selectedLog = null; render(); return; }
-          if (action === "admin-log-type") { state.workspace.adminLogType = actionNode.dataset.logType; state.workspace.selectedLog = null; render(); return; }
+          if (action === "admin-log-type") { void (async () => { try { state.workspace.adminLogType = actionNode.dataset.logType; state.workspace.selectedLog = null; await loadAdminLogs(state.workspace.adminLogType); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "日志读取失败"; render(); } })(); return; }
           if (action === "export-logs") { void (async () => { try { await exportLogs(); render(); } catch (error) { state.workspace.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "日志导出失败"; render(); } })(); return; }
         });
 
@@ -1911,6 +2349,7 @@
         restoreAuthActionFromLink();
         render();
         void loadHealth();
+        void handleBrowserSync();
       })();
     </script>
   </body>

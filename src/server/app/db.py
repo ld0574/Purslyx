@@ -73,6 +73,7 @@ def _upgrade_early_demo_schema() -> None:
         # 201 上可能已经存在上一轮演示表；create_all 不会为已有表补列，所以把
         # 本轮契约新增的幂等字段以可重复执行的 ALTER TABLE 平滑补齐。
         idempotency_columns = {
+            "job_pool_items": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
             "document_versions": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
             "job_preferences": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
             "job_preference_versions": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
@@ -96,6 +97,14 @@ def _upgrade_early_demo_schema() -> None:
                 column_name, column_type = column_values[index : index + 2]
                 if column_name not in columns:
                     connection.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
+        if "job_pool_items" in inspector.get_table_names():
+            connection.execute(
+                text(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS uk_job_pool_account_idempotency "
+                    "ON job_pool_items(account_id, idempotency_key) "
+                    "WHERE idempotency_key IS NOT NULL"
+                )
+            )
         additive_columns = {
             # 201 上的早期演示库可能已经有这些表，但还没有本轮审计字段。
             "accounts": (("revision", "INTEGER DEFAULT 1"),),

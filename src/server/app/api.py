@@ -880,6 +880,16 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         secure=settings.cookie_secure,
         max_age=settings.session_days * 86400,
     )
+    # 仅用于跨标签页的双提交 CSRF；服务端仍以 HttpOnly Web 会话和数据库摘要为准。
+    # 浏览器脚本握手会在新标签页中完成，不能依赖原标签页的 sessionStorage。
+    response.set_cookie(
+        "purslyx_csrf",
+        csrf,
+        httponly=False,
+        samesite="lax",
+        secure=settings.cookie_secure,
+        max_age=settings.session_days * 86400,
+    )
     response.headers["Cache-Control"] = "no-store"
     return response
 
@@ -894,6 +904,7 @@ def logout(request: Request, account: WebAccount, db: Session = Depends(get_db))
     db.commit()
     response = _no_content(request)
     response.delete_cookie("purslyx_session")
+    response.delete_cookie("purslyx_csrf")
     return response
 
 
@@ -2791,6 +2802,35 @@ def get_browser_draft(request: Request, account: BrowserAccount, draft_id: str =
     return _ok(request, _browser_draft_view(draft))
 
 
+@router.get("/browser/job-drafts/{draft_id}/web", tags=["browser"])
+def get_browser_draft_for_web(
+    request: Request,
+    account: WebAccount,
+    draft_id: str = PathParam(min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """让已登录 Web 工作台读取自己的浏览器草稿，不扩大浏览器 Bearer 权限。"""
+
+    require_seeker(account)
+    draft = db.scalar(
+        select(BrowserJobDraft).where(
+            BrowserJobDraft.public_id == draft_id,
+            BrowserJobDraft.account_id == account.id,
+        )
+    )
+    if draft is None:
+        raise NotFoundError("岗位草稿不存在")
+    if draft.expires_at <= now_utc() or draft.status == "expired":
+        draft.status = "expired"
+        db.commit()
+        raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
+    if draft.status != "awaiting_confirmation":
+        raise DomainError("JOB_DRAFT_NOT_CONFIRMABLE", "岗位草稿已经处理，不能重复确认", 409)
+    value = _browser_draft_view(draft)
+    value["job_fields"] = _job_fields_from_draft(draft)
+    return _ok(request, value)
+
+
 def _preference_version(
     db: Session,
     account_id: int,
@@ -3023,6 +3063,36 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
     _write_guard(request, account)
     require_seeker(account)
     key = _idempotency_key(request)
+    request_digest = payload_hash(payload.model_dump(mode="json"))
+    if key:
+        existing = db.scalar(
+            select(JobPoolItem).where(
+                JobPoolItem.account_id == account.id,
+                JobPoolItem.idempotency_key == key,
+                JobPoolItem.deleted_at.is_(None),
+            )
+        )
+        if existing is not None:
+            if existing.request_hash != request_digest:
+                raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的岗位请求不同", 409)
+            existing_view = _pool_view(db, existing)
+            latest_analysis = db.scalar(
+                select(Analysis)
+                .where(Analysis.job_pool_item_id == existing.id, Analysis.deleted_at.is_(None))
+                .order_by(Analysis.created_at.desc())
+            )
+            if latest_analysis is not None:
+                task = db.get(Task, latest_analysis.task_id) if latest_analysis.task_id else None
+                return _ok(
+                    request,
+                    {
+                        "job_pool_item": existing_view,
+                        "analysis": _analysis_view(db, latest_analysis),
+                        "task": task_view(task) if task is not None else None,
+                    },
+                    code=202,
+                )
+            return _ok(request, existing_view)
     source = payload.source
     source_type = source.get("type")
     preference = _preference_version(db, account.id, payload.preference_version_id)
@@ -3055,7 +3125,7 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
         fields = job_version.content.get("job_fields") or {}
     else:
         raise DomainError("POOL_SOURCE_INVALID", "只支持 browser_draft 或 document_version", 422)
-    pool = JobPoolItem(account_id=account.id, source_type="browser_capture" if browser_draft else "manual", platform=browser_draft.platform if browser_draft else None, source_url=browser_draft.source_url if browser_draft else None, source_url_hash=browser_draft.source_url_hash if browser_draft else None, job_title=fields.get("title") or "未命名岗位", company_name=fields.get("company_name"), job_fields=fields, job_document_id=job_version.document_id, job_document_version_id=job_version.id, preference_id=preference.preference_id if preference else None, analysis_status="awaiting_requirements", blocking_reasons=[])
+    pool = JobPoolItem(account_id=account.id, source_type="browser_capture" if browser_draft else "manual", platform=browser_draft.platform if browser_draft else None, source_url=browser_draft.source_url if browser_draft else None, source_url_hash=browser_draft.source_url_hash if browser_draft else None, job_title=fields.get("title") or "未命名岗位", company_name=fields.get("company_name"), job_fields=fields, job_document_id=job_version.document_id, job_document_version_id=job_version.id, preference_id=preference.preference_id if preference else None, analysis_status="awaiting_requirements", blocking_reasons=[], idempotency_key=key, request_hash=request_digest)
     db.add(pool)
     db.flush()
     start_now = bool(payload.analysis.get("start_now"))
@@ -3299,6 +3369,8 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
         "status": item.status,
         "revision": item.revision,
         "usage_settled": item.usage_settled,
+        # 前端必须以服务端当前轮次为准，追问追加到列表末尾时不能自行猜题。
+        "current_question_id": item.current_question_id,
         "task": task_view(db.get(Task, item.task_id)) if item.task_id and db.get(Task, item.task_id) else None,
         "current_action": "answer" if item.status == "awaiting_answer" else ("wait" if item.status == "processing" else "view_summary"),
         "questions": [
@@ -3931,7 +4003,20 @@ def admin_users(
 def admin_user_detail(request: Request, account: WebAccount, user_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.users.read")
     target = _account_or_404(db, user_id)
-    return _ok(request, {"account": public_account(db, target), "usage": usage_view(db, target)})
+    roles = db.scalars(
+        select(AdminRole)
+        .join(AccountRole, AccountRole.role_id == AdminRole.id)
+        .where(AccountRole.account_id == target.id)
+        .order_by(AdminRole.name)
+    ).all()
+    return _ok(
+        request,
+        {
+            "account": public_account(db, target),
+            "usage": usage_view(db, target),
+            "admin_roles": [_role_view(db, role) for role in roles],
+        },
+    )
 
 
 @router.put("/admin/users/{user_id}/status", tags=["admin"])
@@ -4628,39 +4713,30 @@ def _escape_csv_formula(value: Any) -> str:
     return f"'{text_value}" if text_value.startswith(("=", "+", "-", "@")) else text_value
 
 
-@router.post("/admin/log-exports", tags=["logs"], status_code=201)
-def create_log_export(payload: LogExportRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
-    _admin_guard(request, account, db, "admin.logs.export", write=True)
-    key = _idempotency_key(request)
-    normalized_payload = payload.model_dump(mode="json")
-    request_digest = payload_hash(normalized_payload)
-    if key:
-        existing = db.scalar(select(LogExport).where(LogExport.account_id == account.id, LogExport.idempotency_key == key))
-        if existing is not None:
-            if existing.request_hash != request_digest:
-                raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的日志导出不同", 409)
-            return _ok(request, {"id": existing.public_id, "status": existing.status, "format": existing.filters.get("export_format", "jsonl"), "created_at": existing.created_at.isoformat()})
+_LOG_EXPORT_MAX_ROWS = 100_000
 
-    filters = dict(payload.filters or {})
 
-    def optional_datetime(name: str) -> datetime | None:
-        value = filters.get(name)
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise DomainError("LOG_RANGE_INVALID", f"{name} 必须是 ISO 时间", 422)
-        try:
-            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        except ValueError as exc:
-            raise DomainError("LOG_RANGE_INVALID", f"{name} 必须是 ISO 时间", 422) from exc
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+def _log_export_datetime(filters: dict[str, Any], name: str) -> datetime | None:
+    value = filters.get(name)
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise DomainError("LOG_RANGE_INVALID", f"{name} 必须是 ISO 时间", 422)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise DomainError("LOG_RANGE_INVALID", f"{name} 必须是 ISO 时间", 422) from exc
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
-    created_from = optional_datetime("created_from")
-    created_to = optional_datetime("created_to")
-    if created_from and created_to and (created_from >= created_to or created_to - created_from > timedelta(days=31)):
-        raise DomainError("LOG_RANGE_INVALID", "日志导出范围不能超过 31 天且起止顺序必须正确", 422)
-    log_type = payload.log_type or "operations"
-    _admin_guard(request, account, db, _log_permission(log_type), write=True)
+
+def _log_export_work(db: Session, item: LogExport) -> dict[str, Any]:
+    """按导出记录的冻结筛选生成私有文件；inline 与 Worker 共用此实现。"""
+
+    filters = dict(item.filters or {})
+    created_from = _log_export_datetime(filters, "created_from")
+    created_to = _log_export_datetime(filters, "created_to")
+    output_format = str(filters.get("export_format") or "jsonl")
+    log_type = item.log_type
     list_kwargs = {
         "created_from": created_from,
         "created_to": created_to,
@@ -4678,7 +4754,7 @@ def create_log_export(payload: LogExportRequest, request: Request, account: WebA
     while True:
         chunk, page = _log_items(db, log_type, **list_kwargs, cursor=cursor, limit=100)
         rows.extend(chunk)
-        if len(rows) > 100_000:
+        if len(rows) > _LOG_EXPORT_MAX_ROWS:
             raise DomainError("LOG_RANGE_INVALID", "导出结果超过 100,000 行，请缩小范围", 422)
         if not page.get("has_more"):
             break
@@ -4688,13 +4764,11 @@ def create_log_export(payload: LogExportRequest, request: Request, account: WebA
     for row in rows:
         row.pop("category", None)
 
-    output_format = payload.export_format
     output_suffix = "csv" if output_format == "csv" else "jsonl"
     output_path = settings.export_dir.resolve() / f"log-{secrets.token_hex(12)}.{output_suffix}"
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = output_path.with_name(f".{output_path.name}.tmp")
-    published_path: Path | None = None
     try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         if output_format == "csv":
             columns = sorted({key_name for row in rows for key_name in row}) or ["id"]
             buffer = io.StringIO(newline="")
@@ -4708,34 +4782,132 @@ def create_log_export(payload: LogExportRequest, request: Request, account: WebA
         byte_size = temporary_path.stat().st_size
         ensure_storage_capacity(db, byte_size)
         temporary_path.replace(output_path)
-        published_path = output_path
+        return {
+            "path": storage_key(output_path, settings.data_dir),
+            "row_count": len(rows),
+            "byte_size": byte_size,
+            "sha256": sha256_bytes(output_path.read_bytes()),
+        }
     except Exception:
         temporary_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
         raise
-    stored_filters = {**filters, "export_format": output_format, "row_count": len(rows)}
-    try:
-        item = LogExport(account_id=account.id, log_type=log_type, filters=stored_filters, status="downloadable", file_path=storage_key(output_path, settings.data_dir), expires_at=now_utc() + timedelta(days=1), idempotency_key=key, request_hash=request_digest)
-        db.add(item)
+
+
+def _log_export_view(db: Session, item: LogExport) -> dict[str, Any]:
+    task = db.get(Task, item.task_id) if item.task_id else None
+    failure = task.failure if task is not None and isinstance(task.failure, dict) else {}
+    return {
+        "id": item.public_id,
+        "log_type": item.log_type,
+        "status": item.status,
+        "format": (item.filters or {}).get("export_format", "jsonl"),
+        "row_count": (item.filters or {}).get("row_count"),
+        "filters": {key: value for key, value in (item.filters or {}).items() if key not in {"row_count", "export_format"}},
+        "task": task_view(task) if task is not None else None,
+        "failure_code": failure.get("code"),
+        "expires_at": item.expires_at.isoformat() if item.expires_at else None,
+        "created_at": item.created_at.isoformat(),
+    }
+
+
+@router.post("/admin/log-exports", tags=["logs"], status_code=202)
+def create_log_export(payload: LogExportRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+    _admin_guard(request, account, db, "admin.logs.export", write=True)
+    key = _idempotency_key(request)
+    filters = dict(payload.filters or {})
+    normalized_payload = {
+        "log_type": payload.log_type,
+        "export_format": payload.export_format,
+        "filters": filters,
+    }
+    request_digest = payload_hash(normalized_payload)
+    existing = db.scalar(select(LogExport).where(LogExport.account_id == account.id, LogExport.idempotency_key == key))
+    if existing is not None:
+        if existing.request_hash != request_digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的日志导出不同", 409)
+        return _ok(request, _log_export_view(db, existing))
+
+    created_from = _log_export_datetime(filters, "created_from")
+    created_to = _log_export_datetime(filters, "created_to")
+    if created_from and created_to and (created_from >= created_to or created_to - created_from > timedelta(days=31)):
+        raise DomainError("LOG_RANGE_INVALID", "日志导出范围不能超过 31 天且起止顺序必须正确", 422)
+    log_type = payload.log_type or "operations"
+    _admin_guard(request, account, db, _log_permission(log_type), write=True)
+    stored_filters = {**filters, "export_format": payload.export_format}
+    item = LogExport(
+        account_id=account.id,
+        log_type=log_type,
+        filters=stored_filters,
+        status="queued",
+        idempotency_key=key,
+        request_hash=request_digest,
+    )
+    db.add(item)
+    db.flush()
+    task, _, existed = create_task(
+        db,
+        account,
+        "log_export",
+        {"log_export_id": item.public_id},
+        idempotency_key=key,
+        input_refs=[("log_export", item.public_id, None, request_digest)],
+    )
+    if existed:
+        raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的日志导出不同", 409)
+    item.task_id = task.id
+    _admin_audit(
+        db,
+        account,
+        "logs.export",
+        None,
+        request,
+        "创建日志导出",
+        after={"log_type": log_type, "format": payload.export_format, "status": "queued"},
+        idempotency_key=key,
+    )
+    db.commit()
+
+    if settings.execution_mode != "worker":
+        item.status = "exporting"
+
+    def save_result(value: dict[str, Any]) -> None:
+        item.file_path = value["path"]
+        item.filters = {**(item.filters or {}), "row_count": value["row_count"]}
+        item.status = "downloadable"
+        item.expires_at = now_utc() + timedelta(days=1)
         db.add(
             StoredFile(
                 account_id=account.id,
                 purpose="log_export",
-                original_filename=f"purslyx-logs.{output_format}",
-                media_type="text/csv" if output_format == "csv" else "application/x-ndjson",
-                byte_size=byte_size,
-                sha256=sha256_bytes(output_path.read_bytes()),
-                storage_key=storage_key(output_path, settings.data_dir),
+                original_filename=f"purslyx-logs.{payload.export_format}",
+                media_type="text/csv" if payload.export_format == "csv" else "application/x-ndjson",
+                byte_size=int(value["byte_size"]),
+                sha256=value["sha256"],
+                storage_key=value["path"],
                 status="available",
             )
         )
-        _admin_audit(db, account, "logs.export", None, request, "创建日志导出", after={"log_type": log_type, "format": output_format, "row_count": len(rows)}, idempotency_key=key)
-        db.commit()
+
+    try:
+        run_local_task(
+            db,
+            task,
+            None,
+            lambda: _log_export_work(db, item),
+            on_success=save_result,
+            task_result={"export_id": item.public_id, "file_ready": True},
+        )
     except Exception:
         db.rollback()
-        if published_path is not None:
-            published_path.unlink(missing_ok=True)
+        if settings.execution_mode != "worker":
+            failed = db.get(LogExport, item.id)
+            if failed is not None:
+                failed.status = "failed"
+                db.commit()
         raise
-    return _ok(request, {"id": item.public_id, "status": item.status, "format": output_format, "row_count": len(rows), "created_at": item.created_at.isoformat()}, code=201)
+    db.refresh(item)
+    return _ok(request, _log_export_view(db, item), code=202)
 
 
 def _expire_log_export(db: Session, item: LogExport) -> None:
@@ -4761,7 +4933,7 @@ def get_log_export(request: Request, account: WebAccount, export_id: str = PathP
     if item.expires_at and item.expires_at <= now_utc():
         _expire_log_export(db, item)
         raise DomainError("LOG_EXPORT_EXPIRED", "日志导出已过期", 410)
-    return _ok(request, {"id": item.public_id, "log_type": item.log_type, "status": item.status, "format": item.filters.get("export_format", "jsonl"), "row_count": item.filters.get("row_count"), "filters": {key: value for key, value in item.filters.items() if key not in {"row_count", "export_format"}}, "expires_at": item.expires_at.isoformat() if item.expires_at else None})
+    return _ok(request, _log_export_view(db, item))
 
 
 @router.get("/admin/log-exports/{export_id}/file", tags=["logs"])

@@ -1,8 +1,7 @@
-"""Purslyx 最小可演示服务。
+"""Purslyx 可演示服务。
 
-这里刻意只实现一条可落地的纵向链路：文字资料 → 确认版本 → 匹配报告。路由使用
-``/api/v1/demo`` 前缀，方便明天演示 SDD 时把“需求、接口、实现、测试”串起来，也明确
-它不是完整生产账号系统的替代品。
+根路径提供无需构建的 Web 工作台，``/api/v1/demo`` 保留最短 SDD 演示入口，正式业务
+能力统一位于带认证的 ``/api/v1`` 路由下。
 """
 
 from __future__ import annotations
@@ -202,7 +201,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(
     title="Purslyx Demo API",
     version="0.1.0",
-    description="Purslyx SDD 演示用最小纵向切片：资料确认与可复核岗位匹配。",
+    description="Purslyx SDD 演示服务：资料确认、可复核岗位匹配与完整工作台。",
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -240,7 +239,14 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    """提供无构建依赖的演示页面。"""
+    """提供无构建依赖的 Web 工作台。"""
+
+    return FileResponse(WEB_INDEX)
+
+
+@app.get("/job-pool/items", include_in_schema=False)
+def job_pool_page() -> FileResponse:
+    """让浏览器脚本返回的确认链接直接落到同一个单页工作台。"""
 
     return FileResponse(WEB_INDEX)
 

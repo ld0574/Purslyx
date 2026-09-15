@@ -7,10 +7,6 @@
 
 from __future__ import annotations
 
-import csv
-import io
-import json
-import secrets
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Callable
@@ -109,6 +105,7 @@ def _run_model(
     feature: str | None = None,
     cost_feature: str | None,
     on_success: Callable[[dict[str, Any]], None] | None = None,
+    task_result: dict[str, Any] | None = None,
 ) -> None:
     """统一执行模型类任务，保留 provider/token 元数据并结算预算。"""
 
@@ -122,6 +119,7 @@ def _run_model(
         cost_feature=cost_feature,
         attempt=attempt,
         lease_owner=owner,
+        task_result=task_result,
     )
 
 
@@ -259,6 +257,10 @@ class TaskWorker:
             if item is not None:
                 item.status = "failed"
                 item.failure_code = code
+        elif task.task_type == "log_export":
+            item = db.scalar(select(LogExport).where(LogExport.task_id == task.id, LogExport.account_id == task.account_id))
+            if item is not None and item.status != "expired":
+                item.status = "failed"
         elif task.task_type.startswith("interview_"):
             item = db.scalar(select(Interview).where(Interview.task_id == task.id, Interview.account_id == task.account_id))
             if item is not None and item.deleted_at is None:
@@ -572,56 +574,9 @@ class TaskWorker:
         item = db.scalar(select(LogExport).where(LogExport.task_id == task.id, LogExport.account_id == task.account_id))
         if item is None:
             raise DomainError("LOG_EXPORT_NOT_FOUND", "日志导出占位不存在", 409)
+        item.status = "exporting"
         export_format = str((item.filters or {}).get("export_format") or "jsonl")
-        output_suffix = "csv" if export_format == "csv" else "jsonl"
-        output_path = settings.export_dir.resolve() / f"log-{secrets.token_hex(12)}.{output_suffix}"
-        temporary_path = output_path.with_name(f".{output_path.name}.tmp")
-
-        def work() -> dict[str, Any]:
-            from .api import _escape_csv_formula, _log_items
-
-            filters = dict(item.filters or {})
-            log_type = item.log_type
-            rows: list[dict[str, Any]] = []
-            cursor: str | None = None
-            while True:
-                chunk, page = _log_items(
-                    db,
-                    log_type,
-                    created_from=None,
-                    created_to=None,
-                    account_id=filters.get("account_id"),
-                    result=filters.get("result"),
-                    request_id=filters.get("request_id"),
-                    action=filters.get("action"),
-                    event_type=filters.get("event_type"),
-                    task_type=filters.get("task_type"),
-                    task_status=filters.get("task_status"),
-                    retry_count_min=filters.get("retry_count_min"),
-                    cursor=cursor,
-                    limit=100,
-                )
-                rows.extend(chunk)
-                if not page.get("has_more") or len(rows) > 100_000:
-                    break
-                cursor = page.get("next_cursor")
-            for row in rows:
-                row.pop("category", None)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            if export_format == "csv":
-                columns = sorted({key for row in rows for key in row}) or ["id"]
-                buffer = io.StringIO(newline="")
-                writer = csv.DictWriter(buffer, fieldnames=columns, extrasaction="ignore")
-                writer.writeheader()
-                for row in rows:
-                    writer.writerow({key: _escape_csv_formula(row.get(key)) for key in columns})
-                temporary_path.write_text("\ufeff" + buffer.getvalue(), encoding="utf-8")
-            else:
-                temporary_path.write_text("".join(json.dumps({"schema_version": "log-export-v1", **row}, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
-            byte_size = temporary_path.stat().st_size
-            ensure_storage_capacity(db, byte_size)
-            temporary_path.replace(output_path)
-            return {"path": storage_key(output_path, settings.data_dir), "row_count": len(rows), "byte_size": byte_size, "sha256": sha256_bytes(output_path.read_bytes())}
+        from .api import _log_export_work
 
         def save_result(value: dict[str, Any]) -> None:
             item.file_path = value["path"]
@@ -630,12 +585,17 @@ class TaskWorker:
             item.expires_at = utcnow() + timedelta(days=1)
             db.add(StoredFile(account_id=task.account_id, purpose="log_export", original_filename=f"purslyx-logs.{export_format}", media_type="text/csv" if export_format == "csv" else "application/x-ndjson", byte_size=int(value["byte_size"]), sha256=value["sha256"], storage_key=value["path"], status="available"))
 
-        try:
-            _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature=None, on_success=save_result)
-        except Exception:
-            temporary_path.unlink(missing_ok=True)
-            output_path.unlink(missing_ok=True)
-            raise
+        _run_model(
+            db,
+            task,
+            attempt,
+            reservation,
+            lambda: _log_export_work(db, item),
+            owner=self.owner,
+            cost_feature=None,
+            on_success=save_result,
+            task_result={"export_id": item.public_id, "file_ready": True},
+        )
 
 
 def task_status_snapshot(task: Task) -> dict[str, Any]:

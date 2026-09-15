@@ -1,6 +1,7 @@
-# SDD 追溯矩阵：201 最小演示
+# SDD 追溯矩阵：201 完整工作台演示范围
 
-更新时间：2026-09-15。此矩阵只覆盖明日可落地的纵向切片，不把完整首版 P0/P1 误写成已全部交付。
+更新时间：2026-09-15。前端按首版工作台范围完整接通，明日只选择其中一个模块深讲；自动证据仍只对已编入脚本的
+HTTP 主链路负责，不把浏览器截图级回归或生产化能力误写成已完成。
 
 | 需求来源 | 可观察结果 | 接口契约 | 代码／数据 | 自动证据 |
 | --- | --- | --- | --- | --- |
@@ -15,8 +16,10 @@
 | 删除边界 | 删除资料后派生正文与 PDF 立即不可访问，活动任务不再写回 | `GET /documents/{id}/deletion-impact`、`DELETE /documents/{id}` | `api.py::delete_document`、`_mark_tasks_cancelled`；`deleted_at`、`StoredFile` | 正式冒烟断言分析／改写／面试／岗位版 404，导出过期且文件 404 |
 | F07、F13 | 浏览器岗位草稿去重，确认后可安全 303 跳转 | `/browser-auth/*`、`/browser/job-drafts`、`/job-pool/items`、`go-to-apply` | `api.py` 浏览器与跳转路由；`purslyx-job-capture.user.js`；`browser_job_drafts`、`apply_click_events` | 正式冒烟重复草稿命中同 ID、重复点击均 303 |
 | F08 | 面试开场 3 个问题，逐题回答与反馈可恢复；支持完整完成和提前结束总结 | `POST /interviews`、`GET /interviews/{id}`、`POST /interviews/{id}/answers`、`POST /interviews/{id}/finish` | `api.py::start_interview`、`submit_answer`、`finish_interview`；`worker.py`；`interview_*` 表 | 正式冒烟断言 3 题、首题回答后仍可继续，并断言 `completion_type=early`；单元测试锁定 `full/early` 契约 |
-| F10、F11 | 模型调用、反馈、统计和管理日志不把正文写入成本日志；反馈状态可处理 | `GET /usage`、`GET /stats/me`、`POST /feedback`；`GET/PUT /admin/feedback/{id}`；`GET /admin/logs/*`、`POST /admin/log-exports` | `services.py::model_call`；`model_call_attempts`、`product_feedback`、`admin_audit_events`、`log_exports`；`index.html::adminLogsPage` | 正式 API 与管理端页面已接通；日志导出和招聘／管理员端到端复核列为现场补充项 |
+| F10、F11 | 模型调用、反馈、统计和管理日志不把正文写入成本日志；反馈状态可处理 | `GET /usage`、`GET /stats/me`、`POST /feedback`；`GET/PUT /admin/feedback/{id}`；`GET /admin/logs/*`、`POST /admin/log-exports` | `services.py::model_call`；`model_call_attempts`、`product_feedback`、`admin_audit_events`、`log_exports`；`index.html::adminLogsPageEnhanced` | 正式 API 与管理端页面已接通；日志导出有 201 验收脚本（管理员凭据显式注入，未提供时跳过），单元测试覆盖 CSV 防公式注入、相对存储键、Worker 可下载终态；管理员现场 E2E 仍为可选补充项 |
+| 首版工作台页面 | 前端可以从真实账号进入并操作各业务模块，页面状态回到同一份服务端数据 | `/`、`/job-pool/items` SPA 路由；各 `/api/v1/*` 正式接口 | `src/web/index.html`：认证、资料、匹配池、报告、改写、岗位版、面试、任务、用量、统计、招聘和管理员页面；`src/userscript/purslyx-job-capture.user.js` | 内嵌 JavaScript 与篡改猴脚本语法检查通过；HTTP 冒烟覆盖主流程，明日现场从完整工作台挑一个模块演示 |
 
 ## 追溯结论
 
-明日只承诺“需求 → Feature Spec → API → 实现 → 201 实测”的最小链路。未在本矩阵的完整并发竞争、真实邮件、真实平台页面和生产 Worker 验收，不作为本次演示已完成项。
+明日承诺“需求 → Feature Spec → API → 实现 → 201 实测”，并提供可操作的完整前端工作台；现场只需选一个模块深讲。
+未在本矩阵的完整并发竞争、真实邮件、真实平台页面和生产 Worker 验收，不作为本次演示已完成项。

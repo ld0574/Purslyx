@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Float, Index, Integer, Numeric, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
@@ -290,7 +290,16 @@ class UsageLedger(Base):
 
 class JobPoolItem(TimestampMixin, Base):
     __tablename__ = "job_pool_items"
-    __table_args__ = (Index("ix_job_pool_account_status", "account_id", "analysis_status", "updated_at"),)
+    __table_args__ = (
+        Index("ix_job_pool_account_status", "account_id", "analysis_status", "updated_at"),
+        Index(
+            "uk_job_pool_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -308,6 +317,8 @@ class JobPoolItem(TimestampMixin, Base):
     preference_id: Mapped[int | None] = mapped_column(Integer, index=True)
     analysis_status: Mapped[str] = mapped_column(String(32), default="awaiting_requirements", nullable=False)
     blocking_reasons: Mapped[list[str] | None] = mapped_column(JSON)
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), index=True)
+    request_hash: Mapped[str | None] = mapped_column(String(64))
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 

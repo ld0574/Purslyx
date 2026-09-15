@@ -57,12 +57,14 @@ Purslyx/
 
 本项目采用 [Apache License 2.0](LICENSE)。
 
-## 明日可直接演示的最小链路
+## 明日可直接演示的完整工作台
 
-当前先交付一条能落地的纵向切片：提交简历文字和岗位 JD → 确认不可变资料版本 → 生成
-带证据、覆盖率和条件状态的匹配报告。根路径页面使用隔离的 `/api/v1/demo` 短入口，
-正式链路使用带认证的 `/api/v1` 接口，并由 `scripts/smoke_201.py` 复核；页面不需要
-Node.js 构建，默认内联执行不阻塞演示，也可以切换到同一 PostgreSQL outbox 的本地 Worker。
+完整的单文件正式工作台已经接上 `/api/v1` 认证接口：求职端覆盖资料草稿与版本、多个岗位期望、
+匹配池、报告、待核实事项、事实补充、逐段改写、岗位版简历、PDF、面试、用量、统计和反馈；招聘端
+覆盖候选人资料、岗位条件、单人分析和历史；授权账号还可以进入站点概况、用户、角色权限、次数管理
+和日志导出。明天不需要逐页讲完，可以从这套完整页面中挑一个模块深讲，其余页面用菜单和自动化证据
+证明已能落地。根路径仍保留 `/api/v1/demo` 隔离短入口，正式链路由 `scripts/smoke_201.py` 复核；
+页面不需要 Node.js 构建，默认内联执行不阻塞演示，也可以切换到同一 PostgreSQL outbox 的本地 Worker。
 
 数据库固定直连【本地开发环境.md】中的 201 PostgreSQL，禁止 SQLite。密码不要拼进 URL（本
 地密码含 URL 特殊字符），用 `PGPASSWORD` 注入：
@@ -74,8 +76,7 @@ PURSLYX_PORT=8001 scripts/start_201_local.sh
 ```
 
 启动脚本只从被 Git 忽略的 `docs/02-technical/deployment/本地开发环境.md` 读取
-PostgreSQL 密码并注入当前进程；默认监听 8001（如端口空闲，也可用
-`PURSLYX_PORT=8000 scripts/start_201_local.sh`）。
+PostgreSQL 密码并注入当前进程；默认监听 8001。端口可以调整，但数据库仍固定为该文件中的 201 PostgreSQL。
 
 另开终端执行：
 
@@ -100,6 +101,14 @@ Worker 同样只读取 `本地开发环境.md`，也可用下面的一次性验�
 
 ```bash
 PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_201.py
+```
+
+管理员日志导出不是普通求职演示的前置条件。若演示者已在当前进程环境中显式注入管理员凭据，
+可额外运行下面的一条可选验收；脚本不读取本地开发环境文件、不打印密码，未注入凭据时会安全跳过：
+
+```bash
+PURSLYX_ADMIN_EMAIL=... PURSLYX_ADMIN_PASSWORD=... \
+PYTHONPATH=src .venv/bin/python scripts/smoke_log_export_201.py
 ```
 
 演示结束后恢复为不设置 `PURSLYX_EXECUTION_MODE` 的默认内联模式即可。

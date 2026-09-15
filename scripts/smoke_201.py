@@ -595,53 +595,145 @@ def main() -> None:
         if repeat_apply.status_code != 303:
             raise RuntimeError("重复去投递没有保持 303")
 
-        _, interview_body = call(
+        _, full_interview_body = call(
             client,
             "POST",
             "/api/v1/interviews",
             expected=(202,),
-            headers={**web_headers, "Idempotency-Key": f"interview-{suffix}"},
+            headers={**web_headers, "Idempotency-Key": f"interview-full-{suffix}"},
             json={
                 "job_pool_item_id": pool["id"],
                 "analysis_id": analysis["id"],
                 "resume_document_version_id": resume_version["id"],
-                "title": "201 面试练习",
+                "title": "201 完整面试练习",
                 "confirm_usage": True,
             },
         )
-        interview = data_of(interview_body)["interview"]
-        if len(interview.get("questions") or []) != 3 or interview.get("status") != "awaiting_answer":
+        full_interview = data_of(full_interview_body)["interview"]
+        if len(full_interview.get("questions") or []) != 3 or full_interview.get("status") != "awaiting_answer":
             raise RuntimeError("面试没有恢复为 3 个主问题的等待回答状态")
-        _, interview_resume_body = call(client, "GET", f"/api/v1/interviews/{interview['id']}", headers=web_headers)
-        if data_of(interview_resume_body).get("id") != interview.get("id"):
+        if full_interview.get("current_question_id") != full_interview["questions"][0]["id"]:
+            raise RuntimeError("面试没有返回当前可回答的第一道主问题")
+        _, interview_resume_body = call(client, "GET", f"/api/v1/interviews/{full_interview['id']}", headers=web_headers)
+        if data_of(interview_resume_body).get("id") != full_interview.get("id"):
             raise RuntimeError("刷新面试详情没有恢复原会话")
-        first_question = interview["questions"][0]
-        _, interview_after_answer_body = call(
+        first_question = full_interview["questions"][0]
+        _, full_after_first_body = call(
             client,
             "POST",
-            f"/api/v1/interviews/{interview['id']}/answers",
+            f"/api/v1/interviews/{full_interview['id']}/answers",
             expected=(202,),
-            headers={**web_headers, "Idempotency-Key": f"answer-{suffix}"},
+            headers={**web_headers, "Idempotency-Key": f"answer-full-first-{suffix}"},
             json={
                 "question_id": first_question["id"],
-                "answer_text": "我负责需求拆解、组件实现和上线验证，并通过性能优化解决了实际问题。",
-                "base_revision": interview["revision"],
+                # 短回答固定触发一次追问，验证客户端不能按数组顺序猜当前题目。
+                "answer_text": "参与过开发。",
+                "base_revision": full_interview["revision"],
             },
         )
-        interview_after_answer = data_of(interview_after_answer_body)["interview"]
-        if interview_after_answer.get("status") != "awaiting_answer":
-            raise RuntimeError("面试首轮回答后没有回到可恢复的等待状态")
+        full_after_first = data_of(full_after_first_body)["interview"]
+        followups = [question for question in full_after_first.get("questions") or [] if question.get("question_type") == "followup"]
+        if full_after_first.get("status") != "awaiting_answer" or len(followups) != 1:
+            raise RuntimeError("首题短回答没有生成唯一追问")
+        followup = followups[0]
+        if full_after_first.get("current_question_id") != followup.get("id"):
+            raise RuntimeError("面试追问没有成为当前可回答题目")
+
+        _, full_after_followup_body = call(
+            client,
+            "POST",
+            f"/api/v1/interviews/{full_interview['id']}/answers",
+            expected=(202,),
+            headers={**web_headers, "Idempotency-Key": f"answer-full-followup-{suffix}"},
+            json={
+                "question_id": followup["id"],
+                "answer_text": "我补充说明本人负责接口拆分、组件实现和上线验证，最终把页面性能问题定位并修复。",
+                "base_revision": full_after_first["revision"],
+            },
+        )
+        full_after_followup = data_of(full_after_followup_body)["interview"]
+        main_two = next((question for question in full_after_followup.get("questions") or [] if question.get("main_no") == 2 and question.get("question_type") == "main"), None)
+        if full_after_followup.get("current_question_id") != (main_two or {}).get("id"):
+            raise RuntimeError("追问回答后没有进入第二道主问题")
+
+        _, full_after_second_body = call(
+            client,
+            "POST",
+            f"/api/v1/interviews/{full_interview['id']}/answers",
+            expected=(202,),
+            headers={**web_headers, "Idempotency-Key": f"answer-full-second-{suffix}"},
+            json={
+                "question_id": main_two["id"],
+                "answer_text": "我负责需求拆解、组件实现和上线验证，并通过自动化测试保证交付质量。",
+                "base_revision": full_after_followup["revision"],
+            },
+        )
+        full_after_second = data_of(full_after_second_body)["interview"]
+        main_three = next((question for question in full_after_second.get("questions") or [] if question.get("main_no") == 3 and question.get("question_type") == "main"), None)
+        if full_after_second.get("current_question_id") != (main_three or {}).get("id"):
+            raise RuntimeError("第二道主问题回答后没有进入第三道主问题")
+
+        _, full_finished_body = call(
+            client,
+            "POST",
+            f"/api/v1/interviews/{full_interview['id']}/answers",
+            expected=(202,),
+            headers={**web_headers, "Idempotency-Key": f"answer-full-third-{suffix}"},
+            json={
+                "question_id": main_three["id"],
+                "answer_text": "我结合业务目标完成方案设计、代码开发和发布复盘，结果是交付过程更稳定。",
+                "base_revision": full_after_second["revision"],
+            },
+        )
+        full_finished = data_of(full_finished_body)["interview"]
+        full_summary = full_finished.get("summary") or {}
+        if full_finished.get("status") != "completed" or full_summary.get("completion_type") != "full":
+            raise RuntimeError("面试完成全部主问题后没有生成 full 总结")
+        if full_summary.get("content", {}).get("answered_main_count") != 3 or full_summary.get("content", {}).get("answered_followup_count") != 1:
+            raise RuntimeError("full 总结没有统计 3 道主问题和 1 道追问")
+
+        # 另开一场会话保留提前结束分支，确认未完成练习仍能生成 early 总结。
+        _, early_interview_body = call(
+            client,
+            "POST",
+            "/api/v1/interviews",
+            expected=(202,),
+            headers={**web_headers, "Idempotency-Key": f"interview-early-{suffix}"},
+            json={
+                "job_pool_item_id": pool["id"],
+                "analysis_id": analysis["id"],
+                "resume_document_version_id": resume_version["id"],
+                "title": "201 提前结束面试练习",
+                "confirm_usage": True,
+            },
+        )
+        early_interview = data_of(early_interview_body)["interview"]
+        early_first_question = early_interview["questions"][0]
+        _, early_after_answer_body = call(
+            client,
+            "POST",
+            f"/api/v1/interviews/{early_interview['id']}/answers",
+            expected=(202,),
+            headers={**web_headers, "Idempotency-Key": f"answer-early-{suffix}"},
+            json={
+                "question_id": early_first_question["id"],
+                "answer_text": "我负责需求拆解、组件实现和上线验证，并通过性能优化解决了实际问题。",
+                "base_revision": early_interview["revision"],
+            },
+        )
+        early_after_answer = data_of(early_after_answer_body)["interview"]
         _, early_finish_body = call(
             client,
             "POST",
-            f"/api/v1/interviews/{interview['id']}/finish",
+            f"/api/v1/interviews/{early_interview['id']}/finish",
             expected=(200,),
-            headers={**web_headers, "Idempotency-Key": f"finish-{suffix}"},
-            json={"base_revision": interview_after_answer["revision"]},
+            headers={**web_headers, "Idempotency-Key": f"finish-early-{suffix}"},
+            json={"base_revision": early_after_answer["revision"]},
         )
         early_finished = data_of(early_finish_body)
         if early_finished.get("status") != "ended_early" or (early_finished.get("summary") or {}).get("completion_type") != "early":
             raise RuntimeError("提前结束面试没有生成 early 总结")
+        interview_ids = (full_interview["id"], early_interview["id"])
 
         # 用独立 HTTP 客户端验证跨账号隔离，不覆盖主演示账号的 Cookie。
         with httpx.Client(timeout=30, follow_redirects=False) as isolated_client:
@@ -704,9 +796,8 @@ def main() -> None:
             f"/api/v1/documents/{resume['id']}",
             f"/api/v1/analyses/{analysis['id']}",
             f"/api/v1/rewrites/{rewrite['id']}",
-            f"/api/v1/interviews/{interview['id']}",
             f"/api/v1/resumes/{variant['id']}",
-        ):
+        ) + tuple(f"/api/v1/interviews/{interview_id}" for interview_id in interview_ids):
             assert_error(client, "GET", resource_path, 404, "RESOURCE_NOT_FOUND", headers=web_headers)
         _, expired_export_body = call(client, "GET", f"/api/v1/exports/{export['id']}", headers=web_headers)
         expired_export = data_of(expired_export_body)
@@ -745,6 +836,8 @@ def main() -> None:
                 "browser_draft_deduped": True,
                 "apply_status": 303,
                 "interview_status_after_answer": "awaiting_answer",
+                "interview_followup_current": True,
+                "interview_full_summary": full_summary.get("completion_type"),
                 "interview_early_summary": (early_finished.get("summary") or {}).get("completion_type"),
                 "cross_account_isolation": True,
                 "delete_old_entry_blocked": True,
