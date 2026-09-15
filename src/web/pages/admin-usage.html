@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Purslyx · 次数管理</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body data-page="admin-usage" data-role="admin">
+    <!-- 次数管理页独立完成目标用户选择、发放和流水查询。 -->
+    <div id="app">
+      <main class="route-bootstrap" data-route-view="admin-usage">
+        <p class="eyebrow">ADMIN USAGE</p><h1>次数管理</h1><p>按用户身份发放适用功能次数，每笔操作要求原因和幂等键。</p>
+        <div class="route-bootstrap-grid"><section><h2>次数发放</h2><p>选择目标账号、功能、次数和原因。</p></section><section><h2>发放记录</h2><p>核对发放前后余额与管理员审计。</p></section></div>
+      </main>
+    </div>
+    <noscript>请启用 JavaScript 后管理使用次数。</noscript>
+    <script src="/assets/workbench.js" defer></script>
+  </body>
+</html>

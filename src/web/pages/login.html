@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Purslyx · 登录</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body data-page="login" data-auth-mode="login">
+    <!-- 登录页拥有独立认证结构，不依赖公共首页中的页面切换。 -->
+    <div id="app">
+      <main class="route-bootstrap" data-route-view="login">
+        <p class="eyebrow">ACCOUNT</p><h1>登录 Purslyx</h1><p>恢复本账号在 201 PostgreSQL 中保存的资料、岗位与任务。</p>
+        <div class="route-bootstrap-grid"><section><h2>邮箱与密码</h2><p>完成认证后按固定身份进入对应工作台。</p></section><section><h2>会话恢复</h2><p>页面刷新或跨模块跳转不会丢失当前业务状态。</p></section></div>
+      </main>
+    </div>
+    <noscript>请启用 JavaScript 后登录 Purslyx。</noscript>
+    <script src="/assets/workbench.js" defer></script>
+  </body>
+</html>

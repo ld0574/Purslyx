@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Purslyx · 角色权限</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body data-page="admin-roles" data-role="admin">
+    <!-- 角色权限页独立维护自定义角色和权限组合。 -->
+    <div id="app">
+      <main class="route-bootstrap" data-route-view="admin-roles">
+        <p class="eyebrow">ADMIN ROLES</p><h1>角色权限</h1><p>内置超级管理员只读，自定义角色不能超过当前管理员权限。</p>
+        <div class="route-bootstrap-grid"><section><h2>角色列表</h2><p>查看状态、人数和权限组合。</p></section><section><h2>权限编辑</h2><p>保存 revision，并记录操作者与前后值。</p></section></div>
+      </main>
+    </div>
+    <noscript>请启用 JavaScript 后管理角色权限。</noscript>
+    <script src="/assets/workbench.js" defer></script>
+  </body>
+</html>

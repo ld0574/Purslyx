@@ -32,7 +32,37 @@ from .security import hash_password
 
 
 DEMO_EMAIL = "demo@purslyx.local"
-WEB_INDEX = Path(__file__).resolve().parents[2] / "web" / "index.html"
+WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
+WEB_PAGE_ROOT = WEB_ROOT / "pages"
+WEB_ASSET_ROOT = WEB_ROOT / "assets"
+
+# 正式工作台按页面职责拆分入口；页面内部仍复用同一套会话、API 和视觉组件。
+WEB_PAGES = {
+    "home": "home.html",
+    "login": "login.html",
+    "register": "register.html",
+    "seeker-dashboard": "seeker-dashboard.html",
+    "seeker-resume": "seeker-resume.html",
+    "seeker-pool": "seeker-pool.html",
+    "seeker-report": "seeker-report.html",
+    "seeker-rewrite": "seeker-rewrite.html",
+    "seeker-variants": "seeker-variants.html",
+    "seeker-interview": "seeker-interview.html",
+    "seeker-tasks": "seeker-tasks.html",
+    "seeker-usage": "seeker-usage.html",
+    "seeker-stats": "seeker-stats.html",
+    "recruiter-dashboard": "recruiter-dashboard.html",
+    "recruiter-materials": "recruiter-materials.html",
+    "recruiter-report": "recruiter-report.html",
+    "recruiter-tasks": "recruiter-tasks.html",
+    "recruiter-usage": "recruiter-usage.html",
+    "recruiter-stats": "recruiter-stats.html",
+    "admin-metrics": "admin-metrics.html",
+    "admin-users": "admin-users.html",
+    "admin-roles": "admin-roles.html",
+    "admin-usage": "admin-usage.html",
+    "admin-logs": "admin-logs.html",
+}
 
 
 def utcnow() -> datetime:
@@ -239,16 +269,52 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    """提供无构建依赖的 Web 工作台。"""
+    """提供独立的公共首页；正式业务从登录页和各模块页面进入。"""
 
-    return FileResponse(WEB_INDEX)
+    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES["home"], headers={"Cache-Control": "no-store"})
+
+
+@app.get("/app/{page_name}", include_in_schema=False)
+def auth_page(page_name: str = PathParam(min_length=1, max_length=32)) -> FileResponse:
+    """提供登录和注册这两个独立的认证入口。"""
+
+    if page_name not in {"login", "register"}:
+        raise NotFoundError("页面不存在")
+    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES[page_name], headers={"Cache-Control": "no-store"})
+
+
+@app.get("/app/{role}/{page_name}", include_in_schema=False)
+def workbench_page(
+    role: str = PathParam(min_length=1, max_length=32),
+    page_name: str = PathParam(min_length=1, max_length=32),
+) -> FileResponse:
+    """提供求职、招聘和管理端的独立模块页面入口。"""
+
+    page_key = f"{role}-{page_name}"
+    if page_key not in WEB_PAGES:
+        raise NotFoundError("页面不存在")
+    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES[page_key], headers={"Cache-Control": "no-store"})
+
+
+@app.get("/assets/styles.css", include_in_schema=False)
+def web_stylesheet() -> FileResponse:
+    """返回所有页面共享的视觉样式。"""
+
+    return FileResponse(WEB_ASSET_ROOT / "styles.css", media_type="text/css", headers={"Cache-Control": "no-store"})
+
+
+@app.get("/assets/workbench.js", include_in_schema=False)
+def web_workbench_script() -> FileResponse:
+    """返回所有页面共享的 API 客户端和交互逻辑。"""
+
+    return FileResponse(WEB_ASSET_ROOT / "workbench.js", media_type="text/javascript", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/job-pool/items", include_in_schema=False)
 def job_pool_page() -> FileResponse:
-    """让浏览器脚本返回的确认链接直接落到同一个单页工作台。"""
+    """让浏览器脚本返回的确认链接直接落到匹配池独立页面。"""
 
-    return FileResponse(WEB_INDEX)
+    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES["seeker-pool"], headers={"Cache-Control": "no-store"})
 
 
 @app.get("/health", tags=["system"])

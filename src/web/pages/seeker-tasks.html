@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Purslyx · 任务中心</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body data-page="tasks" data-role="seeker">
+    <!-- 求职任务页独立列出耗时操作及其恢复和重试入口。 -->
+    <div id="app">
+      <main class="route-bootstrap" data-route-view="seeker-tasks">
+        <p class="eyebrow">TASK CENTER</p><h1>求职任务中心</h1><p>查看导入、分析、改写、导出和面试任务的服务端状态。</p>
+        <div class="route-bootstrap-grid"><section><h2>任务列表</h2><p>区分排队、执行、待补充、失败与完成。</p></section><section><h2>恢复与重试</h2><p>重复操作回到原任务，失败输入不会丢失。</p></section></div>
+      </main>
+    </div>
+    <noscript>请启用 JavaScript 后恢复任务。</noscript>
+    <script src="/assets/workbench.js" defer></script>
+  </body>
+</html>
