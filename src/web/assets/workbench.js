@@ -203,6 +203,8 @@
             exporting: "导出中",
             opening: "准备中",
             opening_failed: "开场失败",
+            feedback_failed: "反馈失败",
+            summary_failed: "总结失败",
             awaiting_requirements: "待分析",
             failed: "失败",
             completed: "已完成",
@@ -215,7 +217,7 @@
 
         function statusClass(value) {
           if (["supported", "matched", "available", "succeeded", "completed", "reviewed", "ended_early"].includes(value)) return "success";
-          if (["gap", "conflicted", "failed"].includes(value)) return "attention";
+          if (["gap", "conflicted", "failed", "opening_failed", "feedback_failed", "summary_failed"].includes(value)) return "attention";
           if (["needs_confirmation", "unknown", "queued", "running", "retry_wait", "needs_input", "exporting", "opening", "awaiting_requirements", "processing", "awaiting_answer"].includes(value)) return "opportunity";
           return "neutral";
         }
@@ -450,7 +452,14 @@
         }
 
         function heading(eyebrow, title, description, actions = "") {
-          return `<div class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${esc(description)}</p></div>${actions ? `<div class="page-actions">${actions}</div>` : ""}</div>`;
+          let notice = "";
+          const freshness = title === "匹配报告" ? state.workspace.selectedAnalysis?.input_freshness?.preference : null;
+          if (freshness?.status === "outdated") {
+            notice = `<div class="callout opportunity" style="margin-bottom:18px"><strong>岗位期望已有新版本</strong><p>这份报告仍使用期望 v${esc(String(freshness.used_version_no || "—"))}；最新 v${esc(String(freshness.latest_version_no || "—"))} 尚未应用。旧报告不会被覆盖，请回到匹配池明确发起重新分析（消耗 1 次分析）。</p></div>`;
+          } else if (freshness?.status === "source_archived") {
+            notice = `<div class="callout attention" style="margin-bottom:18px"><strong>原岗位期望已归档</strong><p>本报告继续展示生成时冻结的期望版本，不会套用其他期望。</p></div>`;
+          }
+          return `<div class="page-heading"><div><div class="eyebrow">${esc(eyebrow)}</div><h1>${esc(title)}</h1><p>${esc(description)}</p></div>${actions ? `<div class="page-actions">${actions}</div>` : ""}</div>${notice}`;
         }
 
         function localDateEnd(value) {
@@ -750,7 +759,7 @@
           const current = item.questions?.find((question) => question.id === item.current_question_id) || item.questions?.find((question) => question.status === "awaiting_answer");
           const history = (item.questions || []).map((question) => `<article class="interview-question-row"><div class="item-title"><strong>${question.question_type === "followup" ? `第 ${esc(question.main_no)} 题 · 追问` : `第 ${esc(question.main_no || question.position_no)} 题`}</strong><span class="tag ${statusClass(question.status)}">${esc(labelStatus(question.status))}</span></div><p class="micro" style="margin-top:7px">${esc(question.question_text)}</p>${question.answer ? `<div class="compare-pane original" style="margin-top:9px"><h4>我的回答</h4><p>${esc(question.answer.answer_text)}</p></div>` : ""}${question.feedback ? `<div class="feedback-box"><strong>本题反馈</strong><ul>${(question.feedback.content?.strengths || []).map((value) => `<li>${esc(value)}</li>`).join("")}${(question.feedback.content?.gaps || []).map((value) => `<li>${esc(value)}</li>`).join("")}${(question.feedback.content?.suggestions || []).map((value) => `<li>${esc(value)}</li>`).join("")}</ul>${question.feedback.needs_followup ? `<span class="tag opportunity">建议补充一次追问</span>` : ""}</div>` : ""}</article>`).join("");
           const summary = item.summary ? `<div class="summary-box" style="margin-top:18px"><strong>练习总结 · ${esc(item.summary.completion_type === "full" ? "完整完成" : "提前结束")}</strong><p>${esc(item.summary.content?.content?.summary || item.summary.content?.summary || "已根据实际提交的回答生成练习总结。")}</p><p>已回答主问题：${esc(String(item.summary.content?.answered_main_count ?? "—"))}；追问：${esc(String(item.summary.content?.answered_followup_count ?? "—"))}</p><p>下一步：${esc((item.summary.content?.content?.next_steps || item.summary.content?.next_steps || []).join("；"))}</p></div>` : "";
-          return `<div class="question"><div class="item-title"><div><div class="eyebrow">${esc(item.title)}</div><h3>${item.status === "awaiting_answer" && current ? `第 ${esc(current.main_no || current.position_no)} 题：${esc(current.question_text)}` : esc(labelStatus(item.status))}</h3></div><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div>${item.status === "awaiting_answer" && current ? `<form id="answer-form" class="answer-box"><input type="hidden" name="question_id" value="${esc(current.id)}" /><label class="field-label" for="interview-answer">你的回答</label><textarea id="interview-answer" class="textarea" name="answer_text" placeholder="按背景、行动、结果写下真实回答……" required></textarea><div class="form-foot"><span class="micro">本轮提交后会生成反馈；每个主问题最多一次追问。</span><button class="button primary small" type="submit">提交回答</button></div></form><button class="button outline small" style="margin-top:12px" data-action="finish-interview" data-id="${esc(item.id)}">提前结束并生成总结</button>` : item.status === "processing" ? `<div class="callout opportunity" style="margin-top:18px"><i class="spinner" style="display:inline-block;vertical-align:middle;margin-right:7px"></i>正在生成本轮反馈，刷新后继续。</div>` : summary || `<div class="callout opportunity" style="margin-top:18px">当前没有可回答题目，刷新后可继续。</div>`}${history ? `<section class="interview-history" style="margin-top:22px"><div class="card-head"><div><h3>逐题记录</h3><p>主问题和最多一次追问均保留回答与反馈。</p></div></div><div class="card-list" style="margin-top:12px">${history}</div></section>` : ""}<div class="item-actions" style="margin-top:18px"><button class="button link-button small" data-action="delete-interview" data-id="${esc(item.id)}">删除这场练习（先查看影响）</button></div><details class="raw-report"><summary>查看题目与状态 JSON</summary><pre>${esc(json(item))}</pre></details></div>`;
+          return `<div class="question"><div class="item-title"><div><div class="eyebrow">${esc(item.title)}</div><h3>${item.status === "awaiting_answer" && current ? `第 ${esc(current.main_no || current.position_no)} 题：${esc(current.question_text)}` : esc(labelStatus(item.status))}</h3></div><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span></div>${item.status === "awaiting_answer" && current ? `<form id="answer-form" class="answer-box"><input type="hidden" name="question_id" value="${esc(current.id)}" /><label class="field-label" for="interview-answer">你的回答</label><textarea id="interview-answer" class="textarea" name="answer_text" placeholder="按背景、行动、结果写下真实回答……" required></textarea><div class="form-foot"><span class="micro">本轮提交后会生成反馈；每个主问题最多一次追问。</span><button class="button primary small" type="submit">提交回答</button></div></form><button class="button outline small" style="margin-top:12px" data-action="finish-interview" data-id="${esc(item.id)}">提前结束并生成总结</button>` : item.status === "processing" ? `<div class="callout opportunity" style="margin-top:18px"><i class="spinner" style="display:inline-block;vertical-align:middle;margin-right:7px"></i>正在生成本轮反馈，刷新后继续。</div>` : ["feedback_failed", "summary_failed"].includes(item.status) ? `<div class="callout attention" style="margin-top:18px">本轮回答已经安全保存，但后续生成失败。${item.task?.retryable ? `<button class="button outline small" style="margin-left:10px" data-action="retry-task" data-id="${esc(item.task.id)}">重试生成</button>` : "请到任务中心查看失败原因。"}</div>` : summary || `<div class="callout opportunity" style="margin-top:18px">当前没有可回答题目，刷新后可继续。</div>`}${history ? `<section class="interview-history" style="margin-top:22px"><div class="card-head"><div><h3>逐题记录</h3><p>主问题和最多一次追问均保留回答与反馈。</p></div></div><div class="card-list" style="margin-top:12px">${history}</div></section>` : ""}<div class="item-actions" style="margin-top:18px"><button class="button link-button small" data-action="delete-interview" data-id="${esc(item.id)}">删除这场练习（先查看影响）</button></div><details class="raw-report"><summary>查看题目与状态 JSON</summary><pre>${esc(json(item))}</pre></details></div>`;
         }
 
         function usagePage() {
@@ -1939,7 +1948,9 @@
 
         document.addEventListener("click", (event) => {
           const actionNode = event.target.closest("[data-action]");
-          const pageNode = event.target.closest("[data-page]");
+          // body 也携带 data-page 用来声明当前入口；这里只允许真正的导航控件触发跳转，
+          // 否则任意工作台按钮都会向上匹配到 body，导致 data-action 永远无法执行。
+          const pageNode = event.target.closest('a[data-page], button[data-page]');
           if (pageNode) {
             // 菜单使用真实页面跳转；链接保留浏览器原生行为，按钮显式进入对应入口。
             if (pageNode.matches("a[href]")) return;

@@ -348,6 +348,27 @@ def main() -> None:
         preference_version = (preference.get("version") or {}).get("id")
         if not preference_version:
             raise RuntimeError("岗位期望没有生成不可变版本")
+        _, alternate_preference_body = call(
+            client,
+            "POST",
+            "/api/v1/preferences",
+            expected=(201,),
+            headers={**web_headers, "Idempotency-Key": f"preference-alternate-{suffix}"},
+            json={
+                "display_name": "远程后端岗位",
+                "context": "self",
+                "is_default": False,
+                "preference": {
+                    "job_title": {"status": "specified", "value": "后端", "strength": "important"},
+                    "locations": {"status": "specified", "values": ["上海", "远程"], "strength": "prefer"},
+                    "work_mode": {"status": "specified", "value": "remote", "strength": "prefer"},
+                    "salary": {"status": "negotiable", "strength": "prefer"},
+                },
+            },
+        )
+        alternate_preference = data_of(alternate_preference_body)
+        if (alternate_preference.get("version") or {}).get("id") == preference_version:
+            raise RuntimeError("两条独立岗位期望错误地共用了版本")
 
         _, usage_before_body = call(client, "GET", "/api/v1/usage", headers=web_headers)
         usage_before = data_of(usage_before_body)
@@ -402,6 +423,8 @@ def main() -> None:
             raise RuntimeError("正式报告没有待核实事项")
         if not report_payload.get("interview_questions"):
             raise RuntimeError("正式报告没有针对性面试问题")
+        if ((report.get("input_freshness") or {}).get("preference") or {}).get("status") != "current":
+            raise RuntimeError("新报告没有标记当前岗位期望版本")
         analysis_task_id = (analysis.get("task") or {}).get("id")
         if not analysis_task_id:
             raise RuntimeError("分析没有关联可读取的任务")
@@ -411,6 +434,78 @@ def main() -> None:
         if not task_etag:
             raise RuntimeError("任务详情没有返回 ETag")
         call(client, "GET", f"/api/v1/tasks/{analysis_task_id}", expected=(304,), headers={**web_headers, "If-None-Match": task_etag})
+
+        # AC20：修改期望只追加版本，旧报告明确保持旧快照；重新分析才应用新条件并再计一次。
+        updated_preference_payload = {
+            "display_name": "杭州前端岗位",
+            "context": "self",
+            "is_default": True,
+            "status": "active",
+            "base_revision": preference["revision"],
+            "preference": {
+                "job_title": {"status": "specified", "value": "前端", "strength": "important"},
+                "locations": {"status": "specified", "values": ["杭州"], "strength": "important"},
+                "work_mode": {"status": "specified", "value": "hybrid", "strength": "prefer"},
+                "salary": {
+                    "status": "specified",
+                    "min": "20000",
+                    "max": "30000",
+                    "currency": "CNY",
+                    "period": "monthly",
+                    "tax_basis": "gross",
+                    "strength": "important",
+                },
+            },
+        }
+        _, updated_preference_body = call(
+            client,
+            "PUT",
+            f"/api/v1/preferences/{preference['id']}",
+            headers={**web_headers, "Idempotency-Key": f"preference-update-{suffix}"},
+            json=updated_preference_payload,
+        )
+        updated_preference = data_of(updated_preference_body)
+        updated_preference_version = (updated_preference.get("version") or {}).get("id")
+        if not updated_preference_version or updated_preference_version == preference_version:
+            raise RuntimeError("岗位期望修改没有追加不可变版本")
+        _, old_report_body = call(client, "GET", f"/api/v1/analyses/{analysis['id']}", headers=web_headers)
+        old_report = data_of(old_report_body)
+        old_freshness = (old_report.get("input_freshness") or {}).get("preference") or {}
+        if old_freshness.get("status") != "outdated" or not old_freshness.get("reanalysis_required"):
+            raise RuntimeError("旧报告没有提示新岗位期望尚未应用")
+        if not any(
+            item.get("type") == "preference" and item.get("id") == preference_version
+            for item in old_report.get("input_versions") or []
+        ):
+            raise RuntimeError("旧报告没有保留生成时的岗位期望版本")
+        _, current_pool_body = call(client, "GET", f"/api/v1/job-pool/items/{pool['id']}", headers=web_headers)
+        current_pool = data_of(current_pool_body)
+        _, usage_before_reanalysis_body = call(client, "GET", "/api/v1/usage", headers=web_headers)
+        usage_before_reanalysis = data_of(usage_before_reanalysis_body)
+        _, reanalysis_body = call(
+            client,
+            "POST",
+            f"/api/v1/job-pool/items/{pool['id']}/analyze",
+            expected=(202,),
+            headers={**web_headers, "Idempotency-Key": f"analysis-new-preference-{suffix}"},
+            json={
+                "resume_document_version_id": resume_version["id"],
+                "preference_version_id": updated_preference_version,
+                "base_revision": current_pool["revision"],
+                "confirm_usage": True,
+            },
+        )
+        reanalysis = data_of(reanalysis_body)["analysis"]
+        _, reanalysis_report_body = call(client, "GET", f"/api/v1/analyses/{reanalysis['id']}", headers=web_headers)
+        reanalysis_report = data_of(reanalysis_report_body)
+        new_freshness = (reanalysis_report.get("input_freshness") or {}).get("preference") or {}
+        if new_freshness.get("status") != "current" or new_freshness.get("used_version_id") != updated_preference_version:
+            raise RuntimeError("重新分析没有应用最新岗位期望版本")
+        if reanalysis_report.get("ability_score") != old_report.get("ability_score"):
+            raise RuntimeError("只修改岗位条件却改变了能力分")
+        _, usage_after_reanalysis_body = call(client, "GET", "/api/v1/usage", headers=web_headers)
+        if available_usage(usage_before_reanalysis, "analysis") - available_usage(data_of(usage_after_reanalysis_body), "analysis") != 1:
+            raise RuntimeError("使用新期望重新分析没有恰好结算一次")
 
         segments = [
             segment
@@ -807,8 +902,12 @@ def main() -> None:
         )
         cascade_impact = data_of(cascade_impact_body)
         affected = cascade_impact.get("affected") or {}
-        if int(affected.get("versions") or 0) < 1 or int(affected.get("analyses") or 0) < 1:
-            raise RuntimeError("级联删除影响快照没有识别简历版本和分析报告")
+        if (
+            int(affected.get("versions") or 0) < 1
+            or int(affected.get("analyses") or 0) < 1
+            or int(affected.get("job_pool_items") or 0) < 1
+        ):
+            raise RuntimeError("级联删除影响快照没有识别简历版本、匹配池岗位和分析报告")
         cascade_etag = cascade_impact_response.headers.get("ETag")
         if not cascade_etag:
             raise RuntimeError("级联删除影响快照没有返回 ETag")
@@ -821,6 +920,7 @@ def main() -> None:
         )
         for resource_path in (
             f"/api/v1/documents/{resume['id']}",
+            f"/api/v1/job-pool/items/{pool['id']}",
             f"/api/v1/analyses/{analysis['id']}",
             f"/api/v1/rewrites/{rewrite['id']}",
             f"/api/v1/resumes/{variant['id']}",
@@ -853,8 +953,10 @@ def main() -> None:
                 "database": database,
                 "account_role": "seeker",
                 "confirmed_versions": 2,
+                "independent_preferences": 2,
                 "multipart_file_ready": True,
                 "analysis_status": analysis.get("status"),
+                "preference_reanalysis": True,
                 "task_304": True,
                 "ability_score": analysis.get("ability_score"),
                 "evidence_coverage": analysis.get("evidence_coverage"),

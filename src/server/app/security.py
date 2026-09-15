@@ -78,12 +78,10 @@ def browser_expiry(hours: int) -> datetime:
 
 
 def _web_token(request: Request, authorization: str | None) -> str | None:
-    cookie = request.cookies.get("purslyx_session")
-    if cookie:
-        return cookie
+    # 显式 Bearer 代表调用方本次请求选择的会话，不能被同客户端遗留 Cookie 覆盖。
     if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
-    return None
+    return request.cookies.get("purslyx_session")
 
 
 def current_web_account(

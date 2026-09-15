@@ -1,23 +1,15 @@
 <!doctype html>
 <html lang="zh-CN">
   <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#1264E8" />
-    <title>Purslyx · 从真实经历，走到下一步</title>
-    <link rel="stylesheet" href="/assets/styles.css" />
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#1264e8" />
+    <meta name="description" content="Purslyx：有依据的岗位匹配、真实简历表达与面试准备。" />
+    <title>Purslyx · AI that hunts your next opportunity</title>
   </head>
-  <body data-page="home">
-    <!-- 兼容直接打开旧入口；服务端根路径使用 pages/home.html。 -->
-    <div id="app">
-      <main class="route-bootstrap" data-route-view="home">
-        <p class="eyebrow">PURSLYX · AI CAREER COMPANION</p><h1>从真实经历，走到下一步。</h1>
-        <p>围绕确认过的资料完成岗位匹配、简历表达和面试准备。重要结论都能回到原始经历。</p>
-        <div class="hero-actions"><a class="button primary" href="/app/register">创建账号</a><a class="button" href="/app/login">登录工作台</a></div>
-        <div class="route-bootstrap-grid"><section><h2>求职与招聘工作台</h2><p>每个业务模块都有独立页面入口。</p></section><section><h2>可信的分析过程</h2><p>先确认输入版本，再逐条展示依据；未知信息保持未知。</p></section></div>
-      </main>
-    </div>
+  <body>
+    <div id="app"></div>
     <noscript>请启用 JavaScript 后使用 Purslyx 工作台。</noscript>
-    <script src="/assets/workbench.js" defer></script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

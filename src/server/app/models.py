@@ -172,7 +172,16 @@ class AccountRole(Base):
 
 class Document(TimestampMixin, Base):
     __tablename__ = "documents"
-    __table_args__ = (Index("ix_documents_account_status", "account_id", "status", "updated_at"),)
+    __table_args__ = (
+        Index("ix_documents_account_status", "account_id", "status", "updated_at"),
+        Index(
+            "uk_documents_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -195,7 +204,16 @@ class Document(TimestampMixin, Base):
 
 class DocumentVersion(Base):
     __tablename__ = "document_versions"
-    __table_args__ = (UniqueConstraint("document_id", "version_no", name="uk_document_version"),)
+    __table_args__ = (
+        UniqueConstraint("document_id", "version_no", name="uk_document_version"),
+        Index(
+            "uk_document_versions_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -212,6 +230,15 @@ class DocumentVersion(Base):
 
 class Preference(TimestampMixin, Base):
     __tablename__ = "job_preferences"
+    __table_args__ = (
+        Index(
+            "uk_preferences_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -230,6 +257,15 @@ class Preference(TimestampMixin, Base):
 
 class Fact(TimestampMixin, Base):
     __tablename__ = "resume_facts"
+    __table_args__ = (
+        Index(
+            "uk_facts_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -248,7 +284,17 @@ class Fact(TimestampMixin, Base):
 
 class Task(TimestampMixin, Base):
     __tablename__ = "async_tasks"
-    __table_args__ = (Index("ix_tasks_account_status", "account_id", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_tasks_account_status", "account_id", "status", "created_at"),
+        Index(
+            "uk_tasks_account_type_idempotency",
+            "account_id",
+            "task_type",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -378,7 +424,16 @@ class Rewrite(TimestampMixin, Base):
 
 class RewriteDecision(Base):
     __tablename__ = "resume_segment_decisions"
-    __table_args__ = (Index("ix_rewrite_decision_rewrite_segment", "rewrite_id", "segment_key", "decision_no"),)
+    __table_args__ = (
+        Index("ix_rewrite_decision_rewrite_segment", "rewrite_id", "segment_key", "decision_no"),
+        Index(
+            "uk_rewrite_decisions_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -395,6 +450,15 @@ class RewriteDecision(Base):
 
 class ResumeVariant(TimestampMixin, Base):
     __tablename__ = "resume_variants"
+    __table_args__ = (
+        Index(
+            "uk_resume_variants_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -411,7 +475,16 @@ class ResumeVariant(TimestampMixin, Base):
 
 class ResumeVariantVersion(Base):
     __tablename__ = "resume_variant_versions"
-    __table_args__ = (UniqueConstraint("resume_variant_id", "version_no", name="uk_resume_variant_version"),)
+    __table_args__ = (
+        UniqueConstraint("resume_variant_id", "version_no", name="uk_resume_variant_version"),
+        Index(
+            "uk_variant_versions_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -466,6 +539,15 @@ class Interview(TimestampMixin, Base):
 
 class Feedback(TimestampMixin, Base):
     __tablename__ = "product_feedback"
+    __table_args__ = (
+        Index(
+            "uk_feedback_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -522,6 +604,16 @@ class ModelCall(Base):
 
 class AuditEvent(Base):
     __tablename__ = "admin_audit_events"
+    __table_args__ = (
+        Index(
+            "uk_admin_audit_action_idempotency",
+            "operator_account_id",
+            "action",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -553,6 +645,15 @@ class SecurityEvent(Base):
 
 class LogExport(Base):
     __tablename__ = "log_exports"
+    __table_args__ = (
+        Index(
+            "uk_log_exports_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -630,7 +731,16 @@ class PreferenceVersion(Base):
     """完整的岗位期望不可变版本。"""
 
     __tablename__ = "job_preference_versions"
-    __table_args__ = (UniqueConstraint("preference_id", "version_no", name="uk_preference_version"),)
+    __table_args__ = (
+        UniqueConstraint("preference_id", "version_no", name="uk_preference_version"),
+        Index(
+            "uk_preference_versions_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -649,7 +759,16 @@ class FactVersion(Base):
     """补充事实不可变版本。"""
 
     __tablename__ = "resume_fact_versions"
-    __table_args__ = (UniqueConstraint("fact_id", "version_no", name="uk_fact_version"),)
+    __table_args__ = (
+        UniqueConstraint("fact_id", "version_no", name="uk_fact_version"),
+        Index(
+            "uk_fact_versions_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -704,7 +823,16 @@ class BrowserJobDraft(Base):
     """BOSS／猎聘浏览器侧上传的短期岗位草稿。"""
 
     __tablename__ = "browser_job_drafts"
-    __table_args__ = (UniqueConstraint("account_id", "platform", "source_url_hash", "content_hash", name="uk_browser_draft_dedupe"),)
+    __table_args__ = (
+        UniqueConstraint("account_id", "platform", "source_url_hash", "content_hash", name="uk_browser_draft_dedupe"),
+        Index(
+            "uk_browser_drafts_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -805,6 +933,23 @@ class UsageGrant(Base):
     """试用或后台追加的不可变发放事实。"""
 
     __tablename__ = "usage_grants"
+    __table_args__ = (
+        Index(
+            "uk_usage_grant_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index(
+            "uk_usage_grant_trial_batch",
+            "account_id",
+            "feature",
+            "batch_key",
+            unique=True,
+            postgresql_where=text("batch_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -930,6 +1075,7 @@ class TaskAttempt(Base):
     """任务执行代次、租约和结果摘要。"""
 
     __tablename__ = "task_attempts"
+    __table_args__ = (Index("uk_task_attempt_generation", "task_id", "execution_generation", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -994,7 +1140,16 @@ class InterviewAnswer(Base):
     """一道题至多一条最终回答事实。"""
 
     __tablename__ = "interview_answers"
-    __table_args__ = (UniqueConstraint("interview_id", "question_id", name="uk_interview_answer"),)
+    __table_args__ = (
+        UniqueConstraint("interview_id", "question_id", name="uk_interview_answer"),
+        Index(
+            "uk_interview_answers_account_idempotency",
+            "account_id",
+            "idempotency_key",
+            unique=True,
+            postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1011,6 +1166,7 @@ class InterviewFeedback(Base):
     """逐题结构化反馈。"""
 
     __tablename__ = "interview_feedback"
+    __table_args__ = (Index("uk_interview_feedback_question", "interview_id", "question_id", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1027,6 +1183,7 @@ class InterviewSummary(Base):
     """面试完成或提前结束的总结。"""
 
     __tablename__ = "interview_summaries"
+    __table_args__ = (Index("uk_interview_summary", "interview_id", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)

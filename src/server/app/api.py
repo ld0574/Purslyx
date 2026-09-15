@@ -81,6 +81,7 @@ from .models import (
     StoredFile,
     Task,
     TaskAttempt,
+    TaskInputRef,
     TaskOutbox,
     UsageGrant,
     UsageLedger,
@@ -1418,11 +1419,23 @@ def _impact_version(*values: Any) -> str:
 @router.get("/documents/{document_id}/deletion-impact", tags=["documents"])
 def document_deletion_impact(request: Request, account: WebAccount, document_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     item = _document(db, account.id, document_id)
+    document_versions = select(DocumentVersion.id).where(DocumentVersion.document_id == item.id)
     version_count = db.scalar(select(func.count(DocumentVersion.id)).where(DocumentVersion.document_id == item.id, DocumentVersion.deleted_at.is_(None))) or 0
-    analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), (Analysis.resume_version_id.in_(select(DocumentVersion.id).where(DocumentVersion.document_id == item.id)) | Analysis.job_version_id.in_(select(DocumentVersion.id).where(DocumentVersion.document_id == item.id))))) or 0
+    analysis_count = db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), (Analysis.resume_version_id.in_(document_versions) | Analysis.job_version_id.in_(document_versions)))) or 0
+    pool_count = db.scalar(
+        select(func.count(JobPoolItem.id)).where(
+            JobPoolItem.account_id == account.id,
+            JobPoolItem.deleted_at.is_(None),
+            (
+                (JobPoolItem.job_document_id == item.id)
+                | JobPoolItem.job_document_version_id.in_(document_versions)
+                | JobPoolItem.resume_version_id.in_(document_versions)
+            ),
+        )
+    ) or 0
     running_count = db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.status.in_(["queued", "running"]))) or 0
-    version = _impact_version(item.public_id, item.updated_at.isoformat(), version_count, analysis_count, running_count)
-    return _ok(request, {"resource_id": item.public_id, "resource_type": "document", "affected": {"versions": version_count, "analyses": analysis_count, "running_tasks": running_count}, "impact_version": version}, headers={"ETag": f'"{version}"'})
+    version = _impact_version(item.public_id, item.updated_at.isoformat(), version_count, analysis_count, pool_count, running_count)
+    return _ok(request, {"resource_id": item.public_id, "resource_type": "document", "affected": {"versions": version_count, "analyses": analysis_count, "job_pool_items": pool_count, "running_tasks": running_count}, "impact_version": version}, headers={"ETag": f'"{version}"'})
 
 
 @router.delete("/documents/{document_id}", tags=["documents"])
@@ -1442,7 +1455,11 @@ def delete_document(request: Request, account: WebAccount, document_id: str = Pa
         select(JobPoolItem).where(
             JobPoolItem.account_id == account.id,
             JobPoolItem.deleted_at.is_(None),
-            ((JobPoolItem.job_document_id == item.id) | JobPoolItem.job_document_version_id.in_(version_ids)),
+            (
+                (JobPoolItem.job_document_id == item.id)
+                | JobPoolItem.job_document_version_id.in_(version_ids)
+                | JobPoolItem.resume_version_id.in_(version_ids)
+            ),
         )
     ).all() if version_ids else db.scalars(select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.job_document_id == item.id, JobPoolItem.deleted_at.is_(None))).all()
     analysis_ids = {row.id for row in analysis_rows}
@@ -1466,8 +1483,9 @@ def delete_document(request: Request, account: WebAccount, document_id: str = Pa
     task_ids.update(row.id for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all() if _task_references(row, resource_ids))
     version_count = len(version_rows)
     analysis_count = len(analysis_rows)
+    pool_count = len(pool_rows)
     running_count = db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.status.in_(["queued", "running"]))) or 0
-    _require_deletion_match(request, _impact_version(item.public_id, item.updated_at.isoformat(), version_count, analysis_count, running_count))
+    _require_deletion_match(request, _impact_version(item.public_id, item.updated_at.isoformat(), version_count, analysis_count, pool_count, running_count))
     storage_keys = {value for value in [item.file_path, *(row.file_path for row in export_rows)] if value}
     files = _mark_files_deleted(
         db,
@@ -2894,6 +2912,35 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
 def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[str, Any]:
     resume_version = db.get(DocumentVersion, item.resume_version_id)
     job_version = db.get(DocumentVersion, item.job_version_id)
+    preference_version = db.get(PreferenceVersion, item.preference_version_id) if item.preference_version_id else None
+    preference = db.get(Preference, item.preference_id) if item.preference_id else None
+    latest_preference_version = (
+        db.scalar(
+            select(PreferenceVersion)
+            .where(
+                PreferenceVersion.preference_id == preference.id,
+                PreferenceVersion.deleted_at.is_(None),
+            )
+            .order_by(PreferenceVersion.version_no.desc())
+        )
+        if preference is not None and preference.deleted_at is None
+        else None
+    )
+    preference_freshness = None
+    if preference_version is not None:
+        freshness_status = (
+            "source_archived"
+            if latest_preference_version is None
+            else ("current" if latest_preference_version.id == preference_version.id else "outdated")
+        )
+        preference_freshness = {
+            "status": freshness_status,
+            "used_version_id": preference_version.public_id,
+            "used_version_no": preference_version.version_no,
+            "latest_version_id": latest_preference_version.public_id if latest_preference_version else None,
+            "latest_version_no": latest_preference_version.version_no if latest_preference_version else None,
+            "reanalysis_required": freshness_status == "outdated",
+        }
     data = {
         "id": item.public_id,
         "context_type": item.context_type,
@@ -2902,17 +2949,26 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
         "input_versions": [
             value
             for value in [
-                {"type": "resume", "id": resume_version.public_id} if resume_version else None,
-                {"type": "job", "id": job_version.public_id} if job_version else None,
+                {"type": "resume", "id": resume_version.public_id, "version_no": resume_version.version_no}
+                if resume_version
+                else None,
+                {"type": "job", "id": job_version.public_id, "version_no": job_version.version_no}
+                if job_version
+                else None,
                 (
-                    {"type": "preference", "id": db.get(PreferenceVersion, item.preference_version_id).public_id}
-                    if item.preference_version_id and db.get(PreferenceVersion, item.preference_version_id)
+                    {
+                        "type": "preference",
+                        "id": preference_version.public_id,
+                        "version_no": preference_version.version_no,
+                    }
+                    if preference_version
                     else None
                 ),
             ]
             if value is not None
         ],
-        "preference_id": db.get(Preference, item.preference_id).public_id if item.preference_id and db.get(Preference, item.preference_id) else None,
+        "preference_id": preference.public_id if preference else None,
+        "input_freshness": {"preference": preference_freshness},
         "job_category": item.job_category,
         "ability_score": item.ability_score,
         "evidence_coverage": item.evidence_coverage,
@@ -3356,8 +3412,15 @@ class FinishInterviewRequest(BaseModel):
     base_revision: int = Field(ge=1)
 
 
-def _interview(db: Session, account_id: int, public_id: str) -> Interview:
-    item = db.scalar(select(Interview).where(Interview.public_id == public_id, Interview.account_id == account_id, Interview.deleted_at.is_(None)))
+def _interview(db: Session, account_id: int, public_id: str, *, lock: bool = False) -> Interview:
+    statement = select(Interview).where(
+        Interview.public_id == public_id,
+        Interview.account_id == account_id,
+        Interview.deleted_at.is_(None),
+    )
+    if lock:
+        statement = statement.with_for_update()
+    item = db.scalar(statement)
     if item is None:
         raise NotFoundError("面试会话不存在")
     return item
@@ -3370,6 +3433,19 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
     summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id).order_by(InterviewSummary.created_at.desc()))
     answer_map = {row.question_id: row for row in answers}
     feedback_map = {row.question_id: row for row in feedback}
+    related_task = db.scalar(
+        select(Task)
+        .join(TaskInputRef, TaskInputRef.task_id == Task.id)
+        .where(
+            Task.account_id == item.account_id,
+            Task.deleted_at.is_(None),
+            TaskInputRef.account_id == item.account_id,
+            TaskInputRef.resource_type == "interview",
+            TaskInputRef.resource_public_id == item.public_id,
+        )
+        .order_by(Task.created_at.desc(), Task.id.desc())
+    )
+    visible_task = related_task or (db.get(Task, item.task_id) if item.task_id else None)
     return {
         "id": item.public_id,
         "title": item.title,
@@ -3378,8 +3454,12 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
         "usage_settled": item.usage_settled,
         # 前端必须以服务端当前轮次为准，追问追加到列表末尾时不能自行猜题。
         "current_question_id": item.current_question_id,
-        "task": task_view(db.get(Task, item.task_id)) if item.task_id and db.get(Task, item.task_id) else None,
-        "current_action": "answer" if item.status == "awaiting_answer" else ("wait" if item.status == "processing" else "view_summary"),
+        "task": task_view(visible_task) if visible_task else None,
+        "current_action": (
+            "answer"
+            if item.status == "awaiting_answer"
+            else ("wait" if item.status == "processing" else ("retry" if item.status in {"feedback_failed", "summary_failed"} else "view_summary"))
+        ),
         "questions": [
             {
                 "id": row.public_id,
@@ -3484,9 +3564,15 @@ def _finish_interview_summary(db: Session, account: Account, item: Interview, co
     question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
     answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
     value = get_model_provider().summary(question_values, answer_values, completion_type).value
-    db.add(InterviewSummary(account_id=account.id, interview_id=item.id, completion_type=completion_type, content=value))
+    summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id))
+    if summary is None:
+        db.add(InterviewSummary(account_id=account.id, interview_id=item.id, completion_type=completion_type, content=value))
+    else:
+        summary.completion_type = completion_type
+        summary.content = value
     item.summary = value
     item.status = "completed" if completion_type == "full" else "ended_early"
+    item.current_question_id = None
     item.revision += 1
 
 
@@ -3495,7 +3581,8 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
     _write_guard(request, account)
     require_seeker(account)
     key = _idempotency_key(request)
-    item = _interview(db, account.id, interview_id)
+    # 同一会话的回答与提前结束共用这条行锁；并发旧轮次只能有一个请求获胜。
+    item = _interview(db, account.id, interview_id, lock=True)
     request_digest = payload_hash({"interview_id": interview_id, **payload.model_dump(mode="json")})
     existing_by_key = db.scalar(select(InterviewAnswer).where(InterviewAnswer.account_id == account.id, InterviewAnswer.idempotency_key == key))
     if existing_by_key is not None:
@@ -3518,7 +3605,17 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
     item.status = "processing"
     item.revision += 1
     db.flush()
-    task, _, existed = create_task(db, account, "interview_feedback", {"interview_id": item.public_id, "question_id": question.public_id}, idempotency_key=key)
+    task, _, existed = create_task(
+        db,
+        account,
+        "interview_feedback",
+        {"interview_id": item.public_id, "question_id": question.public_id},
+        idempotency_key=key,
+        input_refs=[
+            ("interview", item.public_id, item.revision, payload_hash({"status": item.status, "current_question_id": item.current_question_id})),
+            ("interview_question", question.public_id, question.position_no, payload_hash({"question_text": question.question_text, "answer_text": answer.answer_text})),
+        ],
+    )
     db.commit()
     if not existed:
         task_result: dict[str, Any] = {}
@@ -3530,17 +3627,23 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
             )
 
         def save_feedback(feedback_value: dict[str, Any]) -> None:
-            db.add(
-                InterviewFeedback(
+            feedback = db.scalar(
+                select(InterviewFeedback).where(
+                    InterviewFeedback.interview_id == item.id,
+                    InterviewFeedback.question_id == question.id,
+                )
+            )
+            if feedback is None:
+                feedback = InterviewFeedback(
                     account_id=account.id,
                     interview_id=item.id,
                     question_id=question.id,
-                    status="available",
-                    content=feedback_value.get("content"),
-                    needs_followup=bool(feedback_value.get("needs_followup")),
-                    completed_at=now_utc(),
                 )
-            )
+                db.add(feedback)
+            feedback.status = "available"
+            feedback.content = feedback_value.get("content")
+            feedback.needs_followup = bool(feedback_value.get("needs_followup"))
+            feedback.completed_at = now_utc()
             if feedback_value.get("needs_followup") and question.question_type == "main":
                 existing_followup = db.scalar(
                     select(InterviewQuestion).where(
@@ -3570,6 +3673,7 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                     item.current_question_id = followup.public_id
                     item.status = "awaiting_answer"
                     followup_id = followup.public_id
+                item.revision += 1
                 task_result.update({"question_id": question.public_id, "needs_followup": True, "followup_id": followup_id})
             else:
                 next_main = db.scalar(
@@ -3584,6 +3688,7 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                 if next_main:
                     item.current_question_id = next_main.public_id
                     item.status = "awaiting_answer"
+                    item.revision += 1
                 else:
                     _finish_interview_summary(db, account, item, "full")
                 task_result.update({"question_id": question.public_id, "needs_followup": False})
@@ -3600,7 +3705,9 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
             )
         except Exception as exc:
             item = _interview(db, account.id, interview_id)
-            item.status = "awaiting_answer"
+            # 回答事实已经保存，不能伪装成可再次回答；保留失败任务供任务中心重试。
+            item.status = "feedback_failed"
+            item.revision += 1
             db.commit()
             raise DomainError("INTERVIEW_FEEDBACK_FAILED", "本轮反馈失败，请重试", 503, "retry") from exc
     db.refresh(item)
@@ -3612,7 +3719,7 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
     _write_guard(request, account)
     require_seeker(account)
     _idempotency_key(request)
-    item = _interview(db, account.id, interview_id)
+    item = _interview(db, account.id, interview_id, lock=True)
     if item.status in {"completed", "ended_early"}:
         return _ok(request, _interview_view(db, item))
     if item.status != "awaiting_answer":
@@ -3694,7 +3801,7 @@ class RoleRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=80)
     description: str = Field(default="", max_length=300)
-    permission_keys: list[str] = Field(default_factory=list, max_length=50)
+    permission_keys: list[str] = Field(min_length=1, max_length=50)
     status: Literal["active", "archived"] = "active"
     base_revision: int | None = Field(default=None, ge=1)
     reason: str = Field(default="后台角色变更", min_length=1, max_length=300)
@@ -3712,8 +3819,15 @@ class RetryRequest(BaseModel):
     reason: str = Field(default="user_retry", min_length=1, max_length=120)
 
 
-def _task(db: Session, account_id: int, public_id: str) -> Task:
-    item = db.scalar(select(Task).where(Task.public_id == public_id, Task.account_id == account_id, Task.deleted_at.is_(None)))
+def _task(db: Session, account_id: int, public_id: str, *, lock: bool = False) -> Task:
+    statement = select(Task).where(
+        Task.public_id == public_id,
+        Task.account_id == account_id,
+        Task.deleted_at.is_(None),
+    )
+    if lock:
+        statement = statement.with_for_update()
+    item = db.scalar(statement)
     if item is None:
         raise NotFoundError("任务不存在")
     return item
@@ -3775,7 +3889,7 @@ def retry_task(
 ) -> JSONResponse:
     _write_guard(request, account)
     key = _idempotency_key(request)
-    item = _task(db, account.id, task_id)
+    item = _task(db, account.id, task_id, lock=True)
     previous_retry = db.scalars(
         select(TaskOutbox).where(TaskOutbox.task_id == item.id, TaskOutbox.event_type == "task.retry").order_by(TaskOutbox.created_at.desc())
     ).all()
@@ -3792,6 +3906,12 @@ def retry_task(
     db.add(TaskAttempt(task_id=item.id, execution_generation=item.retry_count + 1, status="queued"))
     db.add(TaskOutbox(task_id=item.id, event_type="task.retry", payload={"retry_count": item.retry_count, "reason": payload.reason if payload else "user_retry", "idempotency_key": key}))
     db.commit()
+    if settings.execution_mode == "inline":
+        # 默认内联部署没有常驻 Worker；用户点击重试时立即消费持久 outbox，不能永久停在 queued。
+        from .worker import TaskWorker
+
+        TaskWorker(owner=f"inline-retry-{uuid.uuid4()}", batch_size=100).run_once()
+        db.refresh(item)
     return _ok(request, {"task": task_view(item)}, code=202)
 
 
@@ -4087,19 +4207,33 @@ def admin_update_status(payload: AccountStatusRequest, request: Request, account
 
 def _role_view(db: Session, role: AdminRole) -> dict[str, Any]:
     permission_keys = [row[0] for row in db.execute(select(AdminPermission.key).join(RolePermission, RolePermission.permission_id == AdminPermission.id).where(RolePermission.role_id == role.id)).all()]
-    return {"id": role.public_id, "name": role.name, "description": role.description, "is_builtin": role.is_builtin, "status": role.status, "permissions": sorted(permission_keys), "revision": role.revision}
+    member_count = db.scalar(select(func.count(AccountRole.id)).where(AccountRole.role_id == role.id)) or 0
+    permissions = sorted(permission_keys)
+    return {"id": role.public_id, "name": role.name, "description": role.description, "is_builtin": role.is_builtin, "status": role.status, "permissions": permissions, "permission_keys": permissions, "member_count": member_count, "revision": role.revision}
 
 
 @router.get("/admin/roles", tags=["admin"])
 def list_roles(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.roles.manage")
     rows = db.scalars(select(AdminRole).order_by(AdminRole.name)).all()
-    return _ok(request, {"items": [_role_view(db, row) for row in rows]})
+    catalog = db.scalars(select(AdminPermission).order_by(AdminPermission.key)).all()
+    return _ok(request, {"items": [_role_view(db, row) for row in rows], "permission_catalog": [{"key": item.key, "display_name": item.display_name, "description": item.description} for item in catalog]})
 
 
 @router.post("/admin/roles", tags=["admin"], status_code=201)
 def create_role(payload: RoleRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.roles.manage", write=True)
+    key = _idempotency_key(request)
+    normalized_payload = {**payload.model_dump(mode="json"), "name": payload.name.strip(), "description": payload.description.strip()}
+    request_digest = payload_hash(normalized_payload)
+    previous = db.scalar(select(AuditEvent).where(AuditEvent.operator_account_id == account.id, AuditEvent.action == "role.create", AuditEvent.idempotency_key == key))
+    if previous is not None:
+        if (previous.after_value or {}).get("request_hash") != request_digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的角色创建不同", 409)
+        existing_role = db.scalar(select(AdminRole).where(AdminRole.public_id == (previous.after_value or {}).get("role_id")))
+        if existing_role is None:
+            raise DomainError("ADMIN_ROLE_CONFLICT", "幂等角色记录已不可用，请联系管理员", 409)
+        return _ok(request, _role_view(db, existing_role))
     operator_permissions = permissions_for(db, account.id)
     if not set(payload.permission_keys).issubset(operator_permissions):
         raise DomainError("ADMIN_PERMISSION_ESCALATION", "不能授予自己没有的后台权限", 403)
@@ -4109,7 +4243,7 @@ def create_role(payload: RoleRequest, request: Request, account: WebAccount, db:
     db.add(role)
     db.flush()
     _replace_role_permissions(db, role, payload.permission_keys)
-    _admin_audit(db, account, "role.create", None, request, "创建后台角色", after={"role": role.name})
+    _admin_audit(db, account, "role.create", None, request, payload.reason, after={"role_id": role.public_id, "role": role.name, "revision": role.revision, "request_hash": request_digest}, idempotency_key=key)
     db.commit()
     return _ok(request, _role_view(db, role), code=201)
 
@@ -4126,6 +4260,17 @@ def _replace_role_permissions(db: Session, role: AdminRole, permission_keys: lis
 @router.put("/admin/roles/{role_id}", tags=["admin"])
 def update_role(payload: RoleRequest, request: Request, account: WebAccount, role_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.roles.manage", write=True)
+    key = _idempotency_key(request)
+    normalized_payload = {"role_id": role_id, **payload.model_dump(mode="json"), "name": payload.name.strip(), "description": payload.description.strip()}
+    request_digest = payload_hash(normalized_payload)
+    previous = db.scalar(select(AuditEvent).where(AuditEvent.operator_account_id == account.id, AuditEvent.action == "role.update", AuditEvent.idempotency_key == key))
+    if previous is not None:
+        if (previous.after_value or {}).get("request_hash") != request_digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的角色更新不同", 409)
+        replayed_role = db.scalar(select(AdminRole).where(AdminRole.public_id == role_id))
+        if replayed_role is None:
+            raise NotFoundError("角色不存在")
+        return _ok(request, _role_view(db, replayed_role))
     role = db.scalar(select(AdminRole).where(AdminRole.public_id == role_id))
     if role is None:
         raise NotFoundError("角色不存在")
@@ -4135,12 +4280,16 @@ def update_role(payload: RoleRequest, request: Request, account: WebAccount, rol
         raise DomainError("ADMIN_ROLE_REVISION_CONFLICT", "角色已变化，请刷新后重试", 409, "refresh")
     if not set(payload.permission_keys).issubset(permissions_for(db, account.id)):
         raise DomainError("ADMIN_PERMISSION_ESCALATION", "不能授予自己没有的后台权限", 403)
+    conflicting_role = db.scalar(select(AdminRole).where(AdminRole.name == payload.name.strip(), AdminRole.id != role.id))
+    if conflicting_role is not None:
+        raise DomainError("ADMIN_ROLE_EXISTS", "角色名称已经存在", 409)
+    before = _role_view(db, role)
     role.name = payload.name.strip()
     role.description = payload.description.strip()
     role.status = payload.status
     role.revision += 1
     _replace_role_permissions(db, role, payload.permission_keys)
-    _admin_audit(db, account, "role.update", None, request, "更新后台角色")
+    _admin_audit(db, account, "role.update", None, request, payload.reason, before={"name": before["name"], "description": before["description"], "status": before["status"], "permission_keys": before["permission_keys"], "revision": before["revision"]}, after={"role_id": role.public_id, "name": role.name, "description": role.description, "status": role.status, "permission_keys": sorted(payload.permission_keys), "revision": role.revision, "request_hash": request_digest}, idempotency_key=key)
     db.commit()
     return _ok(request, _role_view(db, role))
 
@@ -4148,9 +4297,17 @@ def update_role(payload: RoleRequest, request: Request, account: WebAccount, rol
 @router.put("/admin/users/{user_id}/roles", tags=["admin"])
 def assign_roles(payload: RoleAssignmentRequest, request: Request, account: WebAccount, user_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.roles.manage", write=True)
+    key = _idempotency_key(request)
     target = _account_or_404(db, user_id)
     if target.id == account.id:
         raise DomainError("ADMIN_SELF_ROLE_CHANGE", "不能修改当前管理员自己的后台角色", 409)
+    request_digest = payload_hash({"user_id": user_id, **payload.model_dump(mode="json")})
+    previous = db.scalar(select(AuditEvent).where(AuditEvent.operator_account_id == account.id, AuditEvent.action == "user.roles.update", AuditEvent.target_account_id == target.id, AuditEvent.idempotency_key == key))
+    if previous is not None:
+        if (previous.after_value or {}).get("request_hash") != request_digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的角色分配不同", 409)
+        current_roles = db.scalars(select(AdminRole).join(AccountRole, AccountRole.role_id == AdminRole.id).where(AccountRole.account_id == target.id).order_by(AdminRole.name)).all()
+        return _ok(request, {"account": public_account(db, target), "admin_roles": [_role_view(db, role) for role in current_roles]})
     if payload.base_revision is not None and payload.base_revision != target.revision:
         raise DomainError("ADMIN_USER_REVISION_CONFLICT", "用户角色已变化，请刷新后重试", 409, "refresh")
     roles = db.scalars(select(AdminRole).where(AdminRole.public_id.in_(payload.role_ids), AdminRole.status == "active")).all()
@@ -4181,9 +4338,9 @@ def assign_roles(payload: RoleAssignmentRequest, request: Request, account: WebA
     for role in roles:
         db.add(AccountRole(account_id=target.id, role_id=role.id))
     target.revision += 1
-    _admin_audit(db, account, "user.roles.update", target, request, "替换账号后台角色")
+    _admin_audit(db, account, "user.roles.update", target, request, payload.reason, before={"role_ids": sorted(db.scalars(select(AdminRole.public_id).where(AdminRole.id.in_(existing_role_ids))).all())}, after={"role_ids": sorted(role.public_id for role in roles), "revision": target.revision, "request_hash": request_digest}, idempotency_key=key)
     db.commit()
-    return _ok(request, {"account": public_account(db, target)})
+    return _ok(request, {"account": public_account(db, target), "admin_roles": [_role_view(db, role) for role in sorted(roles, key=lambda value: value.name)]})
 
 
 @router.get("/admin/usage-grants", tags=["admin"])
@@ -4220,7 +4377,8 @@ def admin_grant(payload: GrantRequest, request: Request, account: WebAccount, us
     key = _idempotency_key(request)
     target = _account_or_404(db, user_id)
     grant, existed = grant_feature(db, target, payload.feature, payload.count, source_type="admin_grant", reason=payload.reason, operator_account_id=account.id, idempotency_key=key)
-    _admin_audit(db, account, "usage.grant", target, request, payload.reason, after={"feature": payload.feature, "count": payload.count})
+    if not existed:
+        _admin_audit(db, account, "usage.grant", target, request, payload.reason, after={"feature": payload.feature, "count": payload.count, "grant_id": grant.public_id}, idempotency_key=key)
     db.commit()
     balance = next(item for item in usage_view(db, target)["balances"] if item["feature"] == payload.feature)
     return _ok(request, {"grant": {"id": grant.public_id, "feature": grant.feature, "count": grant.count, "reason": grant.reason, "before_available": grant.before_available, "after_available": grant.after_available, "created_at": grant.created_at.isoformat()}, "balance": balance}, code=200 if existed else 201)
@@ -4490,7 +4648,7 @@ def admin_feedback_detail(request: Request, account: WebAccount, feedback_id: st
     item = db.scalar(select(Feedback).where(Feedback.public_id == feedback_id, Feedback.deleted_at.is_(None)))
     if item is None:
         raise NotFoundError("反馈不存在")
-    return _ok(request, {"id": item.public_id, "feedback_type": item.feedback_type, "content": item.content, "rating": item.rating, "payment_intent": item.payment_intent, "context_type": item.context_type, "context_id": item.context_id, "status": item.status, "created_at": item.created_at.isoformat()})
+    return _ok(request, {"id": item.public_id, "feedback_type": item.feedback_type, "content": item.content, "rating": item.rating, "payment_intent": item.payment_intent, "context_type": item.context_type, "context_id": item.context_id, "status": item.status, "revision": item.revision, "created_at": item.created_at.isoformat()})
 
 
 @router.put("/admin/feedback/{feedback_id}", tags=["admin"])

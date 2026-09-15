@@ -36,6 +36,7 @@ from server.app.models import (  # noqa: E402
     Interview,
     InterviewAnswer,
     InterviewQuestion,
+    InterviewSummary,
     JobPoolItem,
     LogExport,
     StoredFile,
@@ -72,6 +73,12 @@ class _InterviewSession:
             return _Rows(self.questions)
         if entity is InterviewAnswer:
             return _Rows(self.answers)
+        raise AssertionError(f"未预期的查询实体：{entity}")
+
+    def scalar(self, statement: Any) -> None:
+        entity = statement.column_descriptions[0]["entity"]
+        if entity is InterviewSummary:
+            return None
         raise AssertionError(f"未预期的查询实体：{entity}")
 
     def get(self, model: Any, row_id: int) -> Any:

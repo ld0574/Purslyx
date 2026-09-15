@@ -54,6 +54,20 @@ def test_email_and_secret_normalization() -> None:
     assert compare_secret(token + "x", hash_secret(token)) is False
 
 
+def test_explicit_bearer_session_takes_precedence_over_cookie() -> None:
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/v1/me",
+            "headers": [(b"cookie", b"purslyx_session=cookie-session")],
+            "query_string": b"",
+        }
+    )
+    assert security._web_token(request, "Bearer explicit-session") == "explicit-session"
+    assert security._web_token(request, None) == "cookie-session"
+
+
 @pytest.mark.parametrize("length", [0, 11, 129])
 def test_password_length_is_enforced(length: int) -> None:
     with pytest.raises(DomainError) as error:

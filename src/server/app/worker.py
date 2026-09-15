@@ -216,15 +216,17 @@ class TaskWorker:
             if task is None:
                 return
             reservation = _reservation(db, task)
-            fail_task(
+            failed_task = fail_task(
                 db,
                 task.id,
                 reservation.id if reservation else None,
                 error,
                 attempt_id=attempt_id,
             )
-            # 业务占位必须与任务失败同时可重试；旧代次不会覆盖新代次。
-            self._mark_business_failed(db, task, error)
+            # 只有当前代次真正把任务推进到 failed 时才改业务占位。删除流程或新代次
+            # 已经取消／接管任务后，迟到 Worker 只能结束自己的记录，不能复活旧状态。
+            if failed_task.status == "failed":
+                self._mark_business_failed(db, failed_task, error)
             mark_outbox_published(db, task.id)
             db.commit()
 
@@ -259,9 +261,21 @@ class TaskWorker:
             if item is not None and item.status != "expired":
                 item.status = "failed"
         elif task.task_type.startswith("interview_"):
-            item = db.scalar(select(Interview).where(Interview.task_id == task.id, Interview.account_id == task.account_id))
+            if task.task_type == "interview_opening":
+                statement = select(Interview).where(Interview.task_id == task.id, Interview.account_id == task.account_id)
+            else:
+                statement = select(Interview).where(
+                    Interview.public_id == data.get("interview_id"),
+                    Interview.account_id == task.account_id,
+                )
+            item = db.scalar(statement)
             if item is not None and item.deleted_at is None:
-                item.status = "failed"
+                item.status = {
+                    "interview_opening": "opening_failed",
+                    "interview_feedback": "feedback_failed",
+                    "interview_summary": "summary_failed",
+                }.get(task.task_type, "failed")
+                item.revision += 1
 
     def _dispatch(
         self,
@@ -511,8 +525,19 @@ class TaskWorker:
             return get_model_provider().feedback({"question_text": question.question_text, "question_type": question.question_type}, answer.answer_text)
 
         def save_feedback(value: dict[str, Any]) -> None:
-            feedback = InterviewFeedback(account_id=task.account_id, interview_id=interview.id, question_id=question.id, status="available", content=value.get("content"), needs_followup=bool(value.get("needs_followup")), completed_at=utcnow())
-            db.add(feedback)
+            feedback = db.scalar(
+                select(InterviewFeedback).where(
+                    InterviewFeedback.interview_id == interview.id,
+                    InterviewFeedback.question_id == question.id,
+                )
+            )
+            if feedback is None:
+                feedback = InterviewFeedback(account_id=task.account_id, interview_id=interview.id, question_id=question.id)
+                db.add(feedback)
+            feedback.status = "available"
+            feedback.content = value.get("content")
+            feedback.needs_followup = bool(value.get("needs_followup"))
+            feedback.completed_at = utcnow()
             if value.get("needs_followup") and question.question_type == "main":
                 existing = db.scalar(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id, InterviewQuestion.parent_question_id == question.id))
                 if existing is None:
@@ -522,11 +547,13 @@ class TaskWorker:
                     db.flush()
                 interview.current_question_id = existing.public_id
                 interview.status = "awaiting_answer"
+                interview.revision += 1
             else:
                 next_main = db.scalar(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id, InterviewQuestion.question_type == "main", InterviewQuestion.status == "awaiting_answer").order_by(InterviewQuestion.main_no))
                 if next_main is not None:
                     interview.current_question_id = next_main.public_id
                     interview.status = "awaiting_answer"
+                    interview.revision += 1
                 else:
                     self._save_summary(db, interview, "full")
 
@@ -538,9 +565,15 @@ class TaskWorker:
         question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
         answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
         value = get_model_provider().summary(question_values, answer_values, completion_type).value
-        db.add(InterviewSummary(account_id=interview.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
+        summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == interview.id))
+        if summary is None:
+            db.add(InterviewSummary(account_id=interview.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
+        else:
+            summary.completion_type = completion_type
+            summary.content = value
         interview.summary = value
         interview.status = "completed" if completion_type == "full" else "ended_early"
+        interview.current_question_id = None
         interview.revision += 1
 
     def _handle_interview_summary(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
@@ -557,9 +590,15 @@ class TaskWorker:
             return get_model_provider().summary(values, answer_values, completion_type)
 
         def save_result(value: dict[str, Any]) -> None:
-            db.add(InterviewSummary(account_id=task.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
+            summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == interview.id))
+            if summary is None:
+                db.add(InterviewSummary(account_id=task.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
+            else:
+                summary.completion_type = completion_type
+                summary.content = value
             interview.summary = value
             interview.status = "completed" if completion_type == "full" else "ended_early"
+            interview.current_question_id = None
             interview.revision += 1
 
         _run_model(db, task, attempt, reservation, work, owner=self.owner, cost_feature="interview_summary", on_success=save_result)

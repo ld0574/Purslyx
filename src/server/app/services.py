@@ -168,6 +168,16 @@ def get_or_create_balance(db: Session, account_id: int, feature: str, *, lock: b
     return balance
 
 
+def _lock_account_write_lane(db: Session, account_id: int) -> None:
+    """把同一账号的短写入判定串行化。
+
+    PostgreSQL 唯一索引是最后一道防线；先锁账号行可以让并发重放在查询幂等事实前
+    排队，从而让第二个请求返回原记录，而不是把唯一冲突暴露成服务端错误。
+    """
+
+    db.scalar(select(Account.id).where(Account.id == account_id).with_for_update())
+
+
 def grant_feature(
     db: Session,
     account: Account,
@@ -187,6 +197,7 @@ def grant_feature(
         raise DomainError("USAGE_GRANT_INVALID", "发放次数必须是正整数", 422)
     if not reason.strip():
         raise DomainError("USAGE_GRANT_INVALID", "发放原因不能为空", 422)
+    _lock_account_write_lane(db, account.id)
     existing = None
     if batch_key:
         existing = db.scalar(
@@ -414,6 +425,7 @@ def create_task(
     """创建任务、冻结输入、写 outbox，并在同一事务内预留次数。"""
 
     request_digest = payload_hash(input_data)
+    _lock_account_write_lane(db, account.id)
     existing = None
     if idempotency_key:
         existing = db.scalar(

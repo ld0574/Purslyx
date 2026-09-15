@@ -6,7 +6,7 @@
  * 脚本只创建随机本地测试账号，不读取《本地开发环境.md》，也不打印令牌或密码。
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -139,6 +139,16 @@ async function submit(client, selector) {
     return { ok: true, path: location.pathname };
   })()`);
   assert(submitted?.ok, `不能提交表单 ${selector}；当前 ${submitted?.path || "未知页面"}；现有表单 ${(submitted?.forms || []).join("、") || "无"}`);
+}
+
+async function click(client, selector) {
+  const clicked = await client.evaluate(`(() => {
+    const element = document.querySelector(${JSON.stringify(selector)});
+    if (!element) return false;
+    element.click();
+    return true;
+  })()`);
+  assert(clicked, `不能点击控件 ${selector}`);
 }
 
 async function waitForText(client, text, timeoutMs = 15000) {
@@ -395,6 +405,114 @@ async function adminEntries(client) {
   return { pages: entries.length, permissionProtected: true };
 }
 
+function bootstrapAdmin(suffix) {
+  const email = `e2e-admin-${suffix}@purslyx.local`;
+  const result = spawnSync(
+    ".venv/bin/python",
+    ["scripts/bootstrap_e2e_admin_201.py"],
+    {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PYTHONPATH: "src",
+        PURSLYX_E2E_ADMIN_EMAIL: email,
+        PURSLYX_E2E_ADMIN_PASSWORD: PASSWORD,
+      },
+    },
+  );
+  assert(result.status === 0, `创建 E2E 临时管理员失败：${result.stderr || result.stdout}`);
+  return email;
+}
+
+async function adminSuccessFlow(client, suffix, targetEmail) {
+  await logoutSession(client);
+  const adminEmail = bootstrapAdmin(suffix);
+  await client.navigate(`${BASE_URL}/app/login`);
+  await waitForSelector(client, "#auth-form");
+  await setValue(client, "#auth-email", adminEmail);
+  await setValue(client, "#auth-password", PASSWORD);
+  await submit(client, "#auth-form");
+  await waitForPath(client, "/app/recruiter/dashboard");
+  await waitForWorkspaceReady(client, "工作台");
+
+  const entries = [
+    ["/app/admin/metrics", "站点概况"],
+    ["/app/admin/users", "用户管理"],
+    ["/app/admin/roles", "角色权限"],
+    ["/app/admin/usage", "次数管理"],
+    ["/app/admin/logs", "日志管理"],
+  ];
+  for (const [pathname, text] of entries) {
+    await openWorkbenchPage(client, pathname, text);
+    const denied = await client.evaluate("document.body.innerText.includes('没有访问权限')");
+    assert(!denied, `管理员访问 ${pathname} 被错误拒绝`);
+  }
+
+  await openWorkbenchPage(client, "/app/admin/users", "用户管理");
+  await setValue(client, '#admin-user-search [name="search"]', targetEmail);
+  await submit(client, "#admin-user-search");
+  await waitForValue(
+    () => client.evaluate(`(() => {
+      const rows = [...document.querySelectorAll('.admin-row')]
+        .filter(item => item.querySelector('[data-action="open-admin-user"]'));
+      return rows.length === 1 && rows[0].querySelector('strong')?.textContent === ${JSON.stringify(targetEmail)};
+    })()`),
+    "等待管理员用户搜索结果稳定",
+  );
+  await click(client, '[data-action="open-admin-user"]');
+  await waitForText(client, "USER DETAIL");
+  await waitForText(client, "后台角色分配");
+
+  const roleName = `浏览器支持-${suffix}`;
+  await openWorkbenchPage(client, "/app/admin/roles", "角色权限");
+  await setValue(client, '#admin-role-form [name="name"]', roleName);
+  await setValue(client, '#admin-role-form [name="description"]', "由真实 Chrome 创建的受限后台角色");
+  await setChecked(client, '#admin-role-form input[name="permission_keys"][value="admin.users.read"]');
+  await submit(client, "#admin-role-form");
+  await waitForText(client, roleName);
+  await waitForText(client, "后台角色已创建");
+
+  await openWorkbenchPage(client, "/app/admin/usage", "次数管理");
+  const targetId = await client.evaluate(`(() => {
+    const option = [...document.querySelectorAll('#admin-grant-form [name="user_id"] option')]
+      .find(item => item.textContent.includes(${JSON.stringify(targetEmail)}));
+    return option?.value || "";
+  })()`);
+  assert(targetId, "次数管理没有加载目标账号选项");
+  await setValue(client, '#admin-grant-form [name="user_id"]', targetId);
+  await setValue(client, '#admin-grant-form [name="feature"]', "analysis");
+  await setValue(client, '#admin-grant-form [name="count"]', "1");
+  await setValue(client, '#admin-grant-form [name="reason"]', "真实浏览器管理端验收发放");
+  await submit(client, "#admin-grant-form");
+  await waitForText(client, "已发放 1 次analysis");
+
+  await openWorkbenchPage(client, "/app/admin/logs", "日志管理");
+  await waitForText(client, "操作日志");
+  await click(client, '[data-action="export-logs"]');
+  await waitForText(client, "日志导出已生成，可下载");
+  await click(client, '[data-action="admin-log-type"][data-log-type="security"]');
+  await waitForValue(
+    () => client.evaluate(`document.querySelector('[data-action="admin-log-type"][data-log-type="security"]')?.classList.contains("active")`),
+    "切换安全日志",
+  );
+  await waitForText(client, "安全日志");
+  await click(client, '[data-action="admin-log-type"][data-log-type="tasks"]');
+  await waitForValue(
+    () => client.evaluate(`document.querySelector('[data-action="admin-log-type"][data-log-type="tasks"]')?.classList.contains("active")`),
+    "切换任务日志",
+  );
+  await waitForText(client, "任务日志");
+
+  return {
+    pages: entries.length,
+    userSearchAndDetail: true,
+    roleCreated: true,
+    usageGranted: true,
+    logsAndExport: true,
+  };
+}
+
 async function main() {
   const health = await fetch(`${BASE_URL}/health`).then((response) => response.json());
   assert(health.status === "ok", "201 服务健康检查失败");
@@ -434,9 +552,11 @@ async function main() {
     client.on("Runtime.exceptionThrown", (event) => browserErrors.push(event.exceptionDetails?.exception?.description || event.exceptionDetails?.text || "页面异常"));
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const home = await publicHome(client);
+    const seekerEmail = `e2e-seeker-${suffix}@purslyx.local`;
     const seeker = await seekerFlow(client, suffix);
     const recruiter = await recruiterFlow(client, suffix);
-    const admin = await adminEntries(client);
+    const adminDenied = await adminEntries(client);
+    const admin = await adminSuccessFlow(client, suffix, seekerEmail);
     assert(browserErrors.length === 0, `浏览器控制台异常：${browserErrors.join("；")}`);
 
     console.log(JSON.stringify({
@@ -445,6 +565,7 @@ async function main() {
       home,
       seeker,
       recruiter,
+      adminDenied,
       admin,
       result: "passed",
     }, null, 2));

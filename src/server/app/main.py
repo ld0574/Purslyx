@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .api import router as api_router
 from .config import settings
@@ -133,6 +133,16 @@ app.include_router(api_router)
 @app.exception_handler(DomainError)
 async def domain_error_handler(request: Request, exc: DomainError) -> JSONResponse:
     return _error(request, exc)
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, _: IntegrityError) -> JSONResponse:
+    """数据库唯一约束是并发写入的最后防线，不向客户端泄露 SQL 或字段值。"""
+
+    return _error(
+        request,
+        DomainError("WRITE_CONFLICT", "数据已被另一个请求更新，请刷新后重试", 409, "refresh"),
+    )
 
 
 @app.exception_handler(RequestValidationError)

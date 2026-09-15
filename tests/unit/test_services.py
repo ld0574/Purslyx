@@ -126,7 +126,7 @@ def test_grant_feature_reuses_same_idempotency_record() -> None:
         after_available=8,
         idempotency_key="grant-1",
     )
-    db = _Session([existing])
+    db = _Session([7, existing])
     result, existed = grant_feature(
         db,  # type: ignore[arg-type]
         _account(),
@@ -140,7 +140,7 @@ def test_grant_feature_reuses_same_idempotency_record() -> None:
     assert existed is True
     assert db.added == []
 
-    conflict_db = _Session([existing])
+    conflict_db = _Session([7, existing])
     with pytest.raises(DomainError) as error:
         grant_feature(
             conflict_db,  # type: ignore[arg-type]
@@ -302,7 +302,7 @@ def test_create_task_idempotency_conflict_does_not_create_new_rows() -> None:
         idempotency_key="task-1",
         request_hash=payload_hash(input_data),
     )
-    db = _Session([existing])
+    db = _Session([7, existing])
     returned, reservation, existed = create_task(
         db,  # type: ignore[arg-type]
         _account(),
@@ -315,7 +315,7 @@ def test_create_task_idempotency_conflict_does_not_create_new_rows() -> None:
     assert existed is True
     assert db.added == []
 
-    conflict_db = _Session([existing])
+    conflict_db = _Session([7, existing])
     with pytest.raises(DomainError) as error:
         create_task(
             conflict_db,  # type: ignore[arg-type]

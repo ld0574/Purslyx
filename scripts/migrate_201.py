@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import os
 import subprocess
 import sys
@@ -39,7 +40,28 @@ def configure_environment() -> None:
     os.environ["PGPASSWORD"] = values["密码"]
 
 
-if __name__ == "__main__":
+def main() -> None:
+    parser = argparse.ArgumentParser(description="只针对《本地开发环境.md》的 201 PostgreSQL 执行迁移检查")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("upgrade", "current", "check", "verify"),
+        default="upgrade",
+        help="默认 upgrade；verify 会依次执行 current 和 check",
+    )
+    args = parser.parse_args()
     configure_environment()
-    result = subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=PROJECT_DIR, check=False)
-    raise SystemExit(result.returncode)
+    commands = {
+        "upgrade": (("upgrade", "head"),),
+        "current": (("current",),),
+        "check": (("check",),),
+        "verify": (("current",), ("check",)),
+    }[args.action]
+    for command in commands:
+        result = subprocess.run([sys.executable, "-m", "alembic", *command], cwd=PROJECT_DIR, check=False)
+        if result.returncode:
+            raise SystemExit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()

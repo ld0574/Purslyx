@@ -51,6 +51,8 @@ def test_workbench_navigation_uses_real_page_loads() -> None:
     """多页面菜单必须进入真实 URL，不能继续只在当前文档里替换内容。"""
 
     script_text = (WEB_ROOT / "assets" / "workbench.js").read_text(encoding="utf-8")
+    assert "event.target.closest('a[data-page], button[data-page]')" in script_text
+    assert 'event.target.closest("[data-page]")' not in script_text
     assert 'if (pageNode.matches("a[href]")) return;' in script_text
     assert "window.location.assign(routeFor(pageNode.dataset.page));" in script_text
 
@@ -82,3 +84,7 @@ def test_shared_workbench_assets_are_executable_contract() -> None:
     assert "localStorage.getItem(SESSION_KEY)" in script_text
     assert "data-rewrite-editor" in script_text
     assert "已修改，待重新确认" in script_text
+    assert 'feedback_failed: "反馈失败"' in script_text
+    assert 'data-action="retry-task"' in script_text
+    assert "岗位期望已有新版本" in script_text
+    assert "尚未应用" in script_text
