@@ -55,13 +55,13 @@ def init_db() -> None:
     settings.file_dir.mkdir(parents=True, exist_ok=True)
     settings.export_dir.mkdir(parents=True, exist_ok=True)
     Base.metadata.create_all(engine)
-    _upgrade_early_demo_schema()
+    _upgrade_legacy_schema()
     with session_scope() as db:
         seed_permissions(db)
 
 
-def _upgrade_early_demo_schema() -> None:
-    """把第一版演示库平滑升级到当前模型，不删除用户已产生的演示记录。
+def _upgrade_legacy_schema() -> None:
+    """把早期开发库平滑升级到当前模型，不删除已经产生的业务记录。
 
     第一版去投递表曾保存过原始 URL；当前设计只保存 URL 摘要。为了让 201 上已经
     初始化过的库仍可直接启动，这里只补新列、回填摘要并放宽旧列约束，后续正式环境
@@ -70,7 +70,7 @@ def _upgrade_early_demo_schema() -> None:
 
     with engine.begin() as connection:
         inspector = inspect(connection)
-        # 201 上可能已经存在上一轮演示表；create_all 不会为已有表补列，所以把
+        # 201 上可能已经存在早期开发表；create_all 不会为已有表补列，所以把
         # 本轮契约新增的幂等字段以可重复执行的 ALTER TABLE 平滑补齐。
         idempotency_columns = {
             "job_pool_items": ("idempotency_key", "VARCHAR(128)", "request_hash", "VARCHAR(64)"),
@@ -106,7 +106,7 @@ def _upgrade_early_demo_schema() -> None:
                 )
             )
         additive_columns = {
-            # 201 上的早期演示库可能已经有这些表，但还没有本轮审计字段。
+            # 201 上的早期开发库可能已经有这些表，但还没有当前审计字段。
             "accounts": (("revision", "INTEGER DEFAULT 1"),),
             "product_feedback": (
                 ("revision", "INTEGER DEFAULT 1"),

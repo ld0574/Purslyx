@@ -1,8 +1,8 @@
 """在 201 PostgreSQL 上跑一遍可复核的 Purslyx 最小正式链路。
 
 脚本只通过 HTTP 操作，不读取或打印密码。服务端的 DATABASE_URL、PGPASSWORD、
-PURSLYX_TOKEN_SECRET 和本地演示开关由【本地开发环境.md】对应的进程环境注入。
-脚本会创建带时间戳的临时演示账号和资料，不清理已有数据、不使用 SQLite。
+PURSLYX_TOKEN_SECRET 和本地开发开关由【本地开发环境.md】对应的进程环境注入。
+脚本会创建带时间戳的临时验收账号和资料，不清理已有数据、不使用 SQLite。
 """
 
 from __future__ import annotations
@@ -735,7 +735,7 @@ def main() -> None:
             raise RuntimeError("提前结束面试没有生成 early 总结")
         interview_ids = (full_interview["id"], early_interview["id"])
 
-        # 用独立 HTTP 客户端验证跨账号隔离，不覆盖主演示账号的 Cookie。
+        # 用独立 HTTP 客户端验证跨账号隔离，不覆盖主验收账号的 Cookie。
         with httpx.Client(timeout=30, follow_redirects=False) as isolated_client:
             _, second_token, second_csrf = register_and_login(isolated_client, second_email)
             assert_error(
@@ -757,7 +757,7 @@ def main() -> None:
             json={
                 "document_type": "resume",
                 "subject_type": "self_resume",
-                "title": "待删除演示资料",
+                "title": "待删除验收资料",
                 "text": "这份资料只用于验证删除后的旧入口失效。",
             },
         )

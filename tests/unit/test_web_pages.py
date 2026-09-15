@@ -56,6 +56,21 @@ def test_workbench_navigation_uses_real_page_loads() -> None:
     assert "window.location.assign(routeFor(pageNode.dataset.page));" in script_text
 
 
+def test_public_home_is_a_product_entry() -> None:
+    """公共首页只提供正式产品能力与认证入口，不再承载匿名业务短链路。"""
+
+    home_text = (WEB_ROOT / "pages" / "home.html").read_text(encoding="utf-8")
+    script_text = (WEB_ROOT / "assets" / "workbench.js").read_text(encoding="utf-8")
+    assert 'href="/app/login"' in home_text
+    assert 'href="/app/register"' in home_text
+    assert "function homePage" in script_text
+    assert 'id="demo-form"' not in home_text
+    assert 'id="demo-form"' not in script_text
+    assert "/api/v1/demo" not in script_text
+    assert "SDD" not in home_text
+    assert "SDD" not in script_text
+
+
 def test_shared_workbench_assets_are_executable_contract() -> None:
     """共享资源必须存在，所有页面才能复用同一份 API 和视觉实现。"""
 

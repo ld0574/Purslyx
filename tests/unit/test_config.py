@@ -33,7 +33,7 @@ def test_other_postgres_host_is_rejected() -> None:
     except RuntimeError as exc:
         assert "201" in str(exc)
     else:
-        raise AssertionError("the demo must stay on the 201 PostgreSQL host")
+        raise AssertionError("the local environment must stay on the 201 PostgreSQL host")
 
 
 def test_execution_mode_is_explicit() -> None:

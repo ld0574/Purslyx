@@ -53,19 +53,18 @@ Purslyx/
 
 现有资料：[需求说明（已评审）](docs/01-product/specs/需求说明.md) · [首版模块与页面清单（已评审）](docs/01-product/specs/首版模块与页面清单.md) · [首版高保真产品稿](docs/01-product/prototypes/高保真产品稿.html) · [篡改猴高保真产品稿](docs/01-product/prototypes/篡改猴高保真产品稿.html) · [技术架构（已评审）](docs/02-technical/技术架构.md) · [API 设计索引](docs/02-technical/api/API设计索引.md) · [技术模块设计索引](docs/02-technical/modules/技术模块设计索引.md) · [数据库设计规范（已评审）](docs/02-technical/database/数据库设计规范.md) · [模块数据库设计索引](docs/02-technical/database/数据库设计索引.md) · [项目起点与复用说明](docs/04-presentations/项目起点与复用说明.md) · [原始需求记录](docs/01-product/specs/需求记录.md) · [视觉方案](docs/01-product/visual/视觉方案.md) · [配色对比](docs/01-product/visual/视觉对比.html) · [项目命名说明](docs/00-overview/brand/Purslyx%20项目命名说明.md) · [黑客松信息](docs/00-overview/event/黑客松信息.md) · [黑客松规则与赛题说明](docs/00-overview/event/黑客松规则与赛题说明.md)
 
-明日 SDD 材料：[Feature Spec](docs/01-product/specs/Feature%20Spec-资料确认与可复核匹配.md) · [需求—接口—代码追溯矩阵](docs/02-technical/SDD追溯矩阵-最小演示.md) · [201 实施计划](docs/02-technical/实施计划-201最小演示.md) · [演示脚本](docs/04-presentations/明日SDD演示脚本.md) · [测试与验收记录](docs/04-presentations/201最小演示测试与验收记录.md) · [变更记录](docs/04-presentations/201最小演示变更记录.md)
-
 本项目采用 [Apache License 2.0](LICENSE)。
 
-## 明日可直接演示的完整工作台
+## 完整产品工作台
 
-完整的多页面正式工作台已经接上 `/api/v1` 认证接口：公共首页、登录／注册、求职端资料／期望、
+多页面工作台已经接上 `/api/v1` 认证接口：公共首页、登录／注册、求职端资料／期望、
 匹配池、报告、事实改写、岗位版简历、面试、任务、用量、统计，以及招聘端候选人资料／单人报告和管理端
 站点概况、用户、角色权限、次数、日志，均有独立页面入口；页面之间共用会话、API 客户端和视觉样式。
-菜单使用真实 URL 跳转，报告、岗位版、面试和任务通过短 ID 深链接恢复，不再依赖单页内存状态。明天不需要
-逐页讲完，可以直接打开某个页面深讲，其余页面用菜单和自动化证据证明已能落地。根路径仍保留
-`/api/v1/demo` 隔离短入口，正式链路由 `scripts/smoke_201.py` 复核；页面不需要 Node.js 构建，
-也可以切换到同一 PostgreSQL outbox 的本地 Worker。
+菜单使用真实 URL 跳转，报告、岗位版、面试和任务通过短 ID 深链接恢复，不依赖单页内存状态。所有产品功能
+都通过登录后的正式业务链路访问，包含 CSRF、幂等、版本、用量与账号隔离；页面不需要 Node.js 构建，也可以
+切换到同一 PostgreSQL outbox 的本地 Worker。
+
+## 本地运行与验收
 
 数据库固定直连【本地开发环境.md】中的 201 PostgreSQL，禁止 SQLite。密码不要拼进 URL（本
 地密码含 URL 特殊字符），用 `PGPASSWORD` 注入：
@@ -87,12 +86,14 @@ PURSLYX_BASE_URL=http://127.0.0.1:8001 node scripts/e2e_web_201.mjs
 ```
 
 看到 `"database": {"backend": "postgresql"...}`、`"analysis_status": "available"` 即可
-进入浏览器打开 <http://127.0.0.1:8001/> 演示。第二条命令会用本机 Chrome 自动完成求职注册、资料确认、
+进入浏览器打开 <http://127.0.0.1:8001/>。第二条命令会用本机 Chrome 自动完成公共首页、求职注册、资料确认、
 期望、入池与报告，以及招聘资料和单人报告，并检查五个管理端独立入口；测试账号和密码均为随机本地数据，
 不会读取环境文件中的真实凭据。完整的 201 连接约定见
 [201 环境部署约定](docs/02-technical/deployment/201环境部署.md)。
 
-如需现场展示 queued → running → succeeded 的异步 SDD 流程，另开两个终端：
+## 异步任务执行
+
+如需使用 queued → running → succeeded 的独立 Worker 模式，另开两个终端：
 
 ```bash
 # 终端 A：启动只负责受理任务的 HTTP 服务
@@ -107,12 +108,12 @@ Worker 同样只读取 `本地开发环境.md`，也可用下面的一次性验�
 PURSLYX_BASE_URL=http://127.0.0.1:8001 PYTHONPATH=src .venv/bin/python scripts/smoke_worker_201.py
 ```
 
-管理员日志导出不是普通求职演示的前置条件。若演示者已在当前进程环境中显式注入管理员凭据，
-可额外运行下面的一条可选验收；脚本不读取本地开发环境文件、不打印密码，未注入凭据时会安全跳过：
+管理员日志导出需要部署者显式配置的管理员账号。可额外运行下面的一条可选验收；脚本不读取本地开发环境
+文件、不打印密码，未注入凭据时会安全跳过：
 
 ```bash
 PURSLYX_ADMIN_EMAIL=... PURSLYX_ADMIN_PASSWORD=... \
 PYTHONPATH=src .venv/bin/python scripts/smoke_log_export_201.py
 ```
 
-演示结束后恢复为不设置 `PURSLYX_EXECUTION_MODE` 的默认内联模式即可。
+不设置 `PURSLYX_EXECUTION_MODE` 时默认使用内联任务模式。

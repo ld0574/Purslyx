@@ -5,7 +5,7 @@
 不会读取《本地开发环境.md》或打印任何凭据。管理员登录信息必须由调用方显式注入：
 ``PURSLYX_ADMIN_EMAIL`` + ``PURSLYX_ADMIN_PASSWORD``，也可以直接注入短期的
 ``PURSLYX_ADMIN_TOKEN`` + ``PURSLYX_ADMIN_CSRF``。未注入时安全跳过，方便普通求职
-演示不被管理员验收阻塞。
+主流程不被管理员验收阻塞。
 """
 
 from __future__ import annotations

@@ -841,7 +841,7 @@ def verify_email(payload: TokenRequest, request: Request, db: Session = Depends(
 
 @router.post("/auth/resend-verification", tags=["auth"])
 def resend_verification(payload: RecoveryRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
-    """返回中性文案；debug 环境附带 token 便于本机演示。"""
+    """返回中性文案；debug 环境附带 token 便于本地开发。"""
 
     _rate_limit(db, request, "auth.resend_verification", limit=5, subject=payload.email)
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
@@ -4394,7 +4394,7 @@ def admin_metrics(
             "rule_version": "daily-metrics-v1",
             "source_watermark_at": now_utc().isoformat(),
             "totals": totals,
-            # 兼容最小演示页面的旧字段，同时给正式管理端提供完整口径。
+            # 兼容早期管理页面字段，同时提供完整统计口径。
             "metric_date": end_label,
             "accounts": {"total": registered_accounts, "active": active_accounts},
             "job_pool_items": db.scalar(select(func.count(JobPoolItem.id)).where(JobPoolItem.deleted_at.is_(None))) or 0,

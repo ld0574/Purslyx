@@ -1,7 +1,7 @@
 """Purslyx 本地 PostgreSQL Worker。
 
-这个 Worker 不依赖 Celery/Redis，专门服务明天的 SDD 演示：事务 outbox 由 PostgreSQL
-持久化，Worker 用 ``FOR UPDATE SKIP LOCKED`` 认领，执行代次用租约保护。以后接入真实
+这个 Worker 不依赖 Celery/Redis：事务 outbox 由 PostgreSQL 持久化，Worker 使用
+``FOR UPDATE SKIP LOCKED`` 认领，执行代次用租约保护。以后接入外部
 队列时可以复用这里的 Handler 和同一组状态迁移，不改变 HTTP 契约。
 """
 
@@ -182,7 +182,7 @@ class TaskWorker:
                 lease_seconds=self.lease_seconds,
             )
             if claimed is None:
-                # 已经由同步演示路径完成，或尚未到 retry_at；不要吞掉未来的事件。
+                # 已经由内联执行路径完成，或尚未到 retry_at；不要吞掉未来的事件。
                 if task.status in {"queued", "retry_wait"} and task.next_retry_at is not None:
                     event.status = "pending"
                     event.claimed_by = None
@@ -599,6 +599,6 @@ class TaskWorker:
 
 
 def task_status_snapshot(task: Task) -> dict[str, Any]:
-    """Worker CLI 和手工演示使用的安全任务摘要。"""
+    """Worker CLI 使用的安全任务摘要。"""
 
     return {"id": task.public_id, "task_type": task.task_type, "status": task.status, "retry_count": task.retry_count}

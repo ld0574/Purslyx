@@ -1,4 +1,4 @@
-"""本地演示环境的私有文件存储边界。
+"""本地开发环境的私有文件存储边界。
 
 文件正文不进入任务、日志或错误响应。该模块只负责容量检查、目录内路径校验和原子
 落盘；生产部署可以把同一组端口替换成对象存储实现。
@@ -70,7 +70,7 @@ def private_path(path_value: str | Path, root: Path | None = None) -> Path:
     if candidate.is_absolute():
         resolved = candidate.resolve()
     else:
-        # 兼容早期演示库把 ``data/files/x`` 作为相对路径写入字段；当前逻辑键则
+        # 兼容早期开发库把 ``data/files/x`` 作为相对路径写入字段；当前逻辑键则
         # 是相对于 data 根目录的 ``files/x``。两种解释都必须通过同一个根目录约束。
         working_directory_candidate = candidate.resolve()
         try:

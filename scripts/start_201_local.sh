@@ -4,7 +4,7 @@
 set -euo pipefail
 
 project_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-# 演示环境只有一个事实来源，避免通过环境变量误指向 202 或其他数据库。
+# 本地开发环境只有一个事实来源，避免通过环境变量误指向 202 或其他数据库。
 local_env_file="$project_dir/docs/02-technical/deployment/本地开发环境.md"
 
 if [[ ! -f "$local_env_file" ]]; then
@@ -39,7 +39,7 @@ export PGPASSWORD="$postgres_password"
 export PURSLYX_DEBUG="${PURSLYX_DEBUG:-true}"
 export PURSLYX_AUTO_VERIFY_LOCAL="${PURSLYX_AUTO_VERIFY_LOCAL:-true}"
 export PURSLYX_AUTO_CREATE_SCHEMA="${PURSLYX_AUTO_CREATE_SCHEMA:-true}"
-export PURSLYX_TOKEN_SECRET="${PURSLYX_TOKEN_SECRET:-purslyx-local-demo-secret-2026-change-me}"
+export PURSLYX_TOKEN_SECRET="${PURSLYX_TOKEN_SECRET:-purslyx-local-development-secret-2026-change-me}"
 
 if [[ ! -x "$project_dir/.venv/bin/uvicorn" ]]; then
   echo "找不到 .venv/bin/uvicorn，请先执行：uv venv .venv && uv pip install -e '.[test]'" >&2

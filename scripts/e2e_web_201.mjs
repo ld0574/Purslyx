@@ -185,6 +185,31 @@ async function openWorkbenchPage(client, pathname, expectedText) {
   assert(staticRoute, `${pathname} 仍是空 HTML 壳`);
 }
 
+async function publicHome(client) {
+  await client.navigate(`${BASE_URL}/`);
+  await waitForSelector(client, "#product-home");
+  const contract = await client.evaluate(`(() => {
+    const text = document.body.innerText;
+    return {
+      hasLogin: Boolean(document.querySelector('a[href="/app/login"]')),
+      hasRegister: Boolean(document.querySelector('a[href="/app/register"]')),
+      hasAnonymousForm: Boolean(document.querySelector("#demo-form")),
+      hasLegacyCopy: text.includes("最短演示") || text.includes("SDD"),
+      roles: ["求职工作台", "招聘工作台", "授权管理端"].every(value => text.includes(value)),
+    };
+  })()`);
+  assert(contract.hasLogin && contract.hasRegister, "产品首页缺少登录或注册入口");
+  assert(!contract.hasAnonymousForm && !contract.hasLegacyCopy, "产品首页仍包含匿名短链路");
+  assert(contract.roles, "产品首页没有完整说明三个工作台");
+  await client.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await client.navigate(`${BASE_URL}/`);
+  await waitForSelector(client, "#product-home");
+  const mobileNoOverflow = await client.evaluate("document.documentElement.scrollWidth === window.innerWidth");
+  await client.send("Emulation.clearDeviceMetricsOverride");
+  assert(mobileNoOverflow, "产品首页在 390px 移动端宽度下横向溢出");
+  return { login: true, register: true, workspaces: 3, mobileNoOverflow: true };
+}
+
 async function followLink(client, selector) {
   const href = await client.evaluate(`document.querySelector(${JSON.stringify(selector)})?.href || ""`);
   assert(href, `链接 ${selector} 没有目标地址`);
@@ -375,6 +400,8 @@ async function main() {
   assert(health.status === "ok", "201 服务健康检查失败");
   assert(health.environment === "201", "当前服务不是 201 环境");
   assert(health.database?.backend === "postgresql", "当前服务不是 PostgreSQL");
+  const removedAnonymousApi = await fetch(`${BASE_URL}/api/v1/demo/documents`, { method: "POST" });
+  assert(removedAnonymousApi.status === 404, "匿名短链路 API 仍然存在");
 
   const port = await freePort();
   const profile = await mkdtemp(path.join(os.tmpdir(), "purslyx-e2e-"));
@@ -406,6 +433,7 @@ async function main() {
     const browserErrors = [];
     client.on("Runtime.exceptionThrown", (event) => browserErrors.push(event.exceptionDetails?.exception?.description || event.exceptionDetails?.text || "页面异常"));
     const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const home = await publicHome(client);
     const seeker = await seekerFlow(client, suffix);
     const recruiter = await recruiterFlow(client, suffix);
     const admin = await adminEntries(client);
@@ -414,6 +442,7 @@ async function main() {
     console.log(JSON.stringify({
       environment: health.environment,
       database: health.database.backend,
+      home,
       seeker,
       recruiter,
       admin,

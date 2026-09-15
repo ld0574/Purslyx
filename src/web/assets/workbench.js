@@ -25,10 +25,6 @@
           return pages.has(PAGE) ? PAGE : "dashboard";
         }
 
-        function initialScreen() {
-          return PAGE === "home" ? "demo" : "formal";
-        }
-
         function navigationRole() {
           return state.session.account?.registration_role || PAGE_ROLE || "seeker";
         }
@@ -48,20 +44,8 @@
         }
 
         const state = {
-          screen: initialScreen(),
           health: { status: "loading", environment: "201", backend: "PostgreSQL" },
           toast: "",
-          demo: {
-            resumeTitle: "演示简历",
-            resumeText: DEFAULT_RESUME,
-            jobTitle: "前端开发工程师 JD",
-            jobText: DEFAULT_JOB,
-            running: false,
-            phase: "等待执行",
-            logs: [],
-            result: null,
-            error: "",
-          },
           auth: { mode: document.body.dataset.authMode || "login", email: "", password: "", role: "seeker", token: "", notice: "", error: "", running: false },
           session: loadSession(),
           workspace: {
@@ -313,14 +297,21 @@
         }
 
         function topbar() {
+          const entryActions = PAGE === "home"
+            ? state.session.account
+              ? `<a class="button primary" href="${routeFor("dashboard")}">进入工作台</a>`
+              : `<a class="button soft" href="/app/login">登录</a><a class="button primary" href="/app/register">免费注册</a>`
+            : state.session.account
+              ? `<button class="button soft" data-action="logout">退出登录</button>`
+              : `<a class="button primary" href="/">返回产品首页</a>`;
           return `<header class="topbar">
             <a class="brand-button" href="/" aria-label="回到 Purslyx 首页"><span class="brand-mark">P</span><span>Purslyx</span></a>
-            <span class="eyebrow">PURSLYX · 完整工作台</span>
+            <span class="eyebrow">PURSLYX · AI CAREER COMPANION</span>
             <div class="topbar-spacer"></div>
             ${healthChip()}
             <div class="top-actions">
               <a class="button outline" href="/docs" target="_blank" rel="noreferrer">查看 API</a>
-              ${state.screen === "formal" ? (state.session.account ? `<button class="button soft" data-action="logout">退出工作台</button>` : `<a class="button primary" href="/">返回产品首页</a>`) : `<a class="button primary" href="/app/login">进入完整工作台</a>`}
+              ${entryActions}
             </div>
           </header>`;
         }
@@ -329,22 +320,21 @@
           return `${topbar()}${content}${state.toast ? `<div class="toast">${esc(state.toast)}</div>` : ""}`;
         }
 
-        function demoPage() {
-          const demo = state.demo;
-          return `<main class="public-main">
+        function homePage() {
+          return `<main id="product-home" class="public-main">
             <section class="hero">
               <div class="hero-copy">
-                <div class="eyebrow">201 POSTGRESQL · DEMO SLICE</div>
+                <div class="eyebrow">AI CAREER COMPANION</div>
                 <h1>从真实经历，<span>走到下一步。</span></h1>
-                <p>求职、招聘与授权管理端已经接入同一套真实数据。你可以从完整工作台浏览全部能力，也可以在这里快速跑一条可复核的 SDD 纵向链路。</p>
+                <p>围绕确认过的资料完成岗位匹配、简历表达和面试准备。重要结论都能回到原始经历，未知信息不会被包装成确定答案。</p>
                 <div class="hero-actions">
-                  <button class="button primary" data-action="demo-scroll">开始最短闭环 ↓</button>
-                  <a class="button" href="/health" target="_blank" rel="noreferrer">打开健康检查</a>
+                  <a class="button primary" href="/app/register">创建账号</a>
+                  <a class="button" href="/app/login">登录工作台</a>
                 </div>
                 <div class="proof-row">
-                  <div><strong>固定规则</strong>分数由代码计算</div>
-                  <div><strong>可复核</strong>报告保存输入版本</div>
-                  <div><strong>可落地</strong>直连 201 PostgreSQL</div>
+                  <div><strong>结论有依据</strong>逐条对照岗位要求</div>
+                  <div><strong>表达不造假</strong>由你确认和采用</div>
+                  <div><strong>状态可恢复</strong>页面刷新后继续任务</div>
                 </div>
               </div>
               <div class="hero-visual" aria-hidden="true">
@@ -355,54 +345,29 @@
                 </div>
               </div>
             </section>
-
-            <section id="demo-flow" class="demo-flow">
-              <div class="section-heading"><div><div class="eyebrow">SHORTEST PATH</div><h2>把需求现场跑出来</h2></div><p>页面只调用隔离的 <code>/api/v1/demo</code> 短入口；正式账号、CSRF、幂等和用量链路可从“正式工作台”进入。</p></div>
-              <div class="step-strip">
-                <div class="step"><b class="step-no">01</b><div><strong>输入资料</strong><span>简历和 JD 先生成可检查草稿</span></div></div>
-                <div class="step"><b class="step-no">02</b><div><strong>确认版本</strong><span>草稿确认后冻结为 version 1</span></div></div>
-                <div class="step"><b class="step-no">03</b><div><strong>读取报告</strong><span>能力分、覆盖率、依据和条件状态</span></div></div>
+            <section class="product-section" aria-labelledby="role-capabilities">
+              <div class="section-heading"><div><div class="eyebrow">THREE WORKSPACES</div><h2 id="role-capabilities">每个角色，都有完整的工作路径</h2></div><p>公共入口、求职端、招聘端与授权管理端分别使用独立页面，登录状态和业务数据在页面间安全恢复。</p></div>
+              <div class="capability-grid">
+                <article class="capability-card"><span class="capability-index">01</span><h3>求职工作台</h3><p>确认简历与岗位期望，管理匹配池，查看报告，完成事实改写、岗位版简历和面试练习。</p><a href="/app/register">以求职者身份开始 →</a></article>
+                <article class="capability-card"><span class="capability-index">02</span><h3>招聘工作台</h3><p>分别确认岗位和候选人资料，维护候选人期望，生成单人分析并持续查看任务与统计。</p><a href="/app/register">以招聘方身份开始 →</a></article>
+                <article class="capability-card"><span class="capability-index">03</span><h3>授权管理端</h3><p>按权限查看站点指标、用户、角色、用量与日志。每次管理写操作都由服务端复核并留下审计。</p><a href="/app/login">登录已授权账号 →</a></article>
               </div>
-              <form id="demo-form" class="panel">
-                <div class="panel-head"><div><h3>最短演示输入</h3><p>使用页面内的虚构资料即可；提交不会要求登录，也不会把密码写入前端。</p></div><span class="tag opportunity">文字输入</span></div>
-                <div class="input-grid">
-                  <div class="field-group"><label for="demo-resume-title">简历名称</label><input id="demo-resume-title" class="field" name="resume_title" value="${esc(demo.resumeTitle)}" /><label for="demo-resume-text">简历正文</label><textarea id="demo-resume-text" class="textarea" name="resume_text">${esc(demo.resumeText)}</textarea></div>
-                  <div class="field-group"><label for="demo-job-title">岗位名称</label><input id="demo-job-title" class="field" name="job_title" value="${esc(demo.jobTitle)}" /><label for="demo-job-text">岗位 JD</label><textarea id="demo-job-text" class="textarea" name="job_text">${esc(demo.jobText)}</textarea></div>
-                </div>
-                <div class="form-foot"><span class="micro">当前口径：本地开发环境.md → 201 PostgreSQL；SQLite 已禁止。</span><button class="button primary" type="submit" ${demo.running ? "disabled" : ""}>${demo.running ? "正在生成报告…" : "确认版本并生成报告"}</button></div>
-                ${demo.error ? `<div class="callout attention">${esc(demo.error)}</div>` : ""}
-                ${demo.running ? `<div class="progress-line"><i class="spinner"></i><span>${esc(demo.phase)}</span></div>` : ""}
-                ${demo.logs.map((item) => `<div class="log-line">${esc(item)}</div>`).join("")}
-              </form>
-              <section class="demo-result panel">
-                <div class="panel-head"><div><h3>可复核输出</h3><p>报告会从 PostgreSQL 重新落库读取所需的事实；演示时可展开原始 JSON 对照接口返回。</p></div>${demo.result ? `<span class="tag success">已落库</span>` : `<span class="tag neutral">等待执行</span>`}</div>
-                ${demo.result ? demoReport(demo.result) : `<div class="result-empty"><div class="empty-stage"><strong>资料草稿</strong><p>系统先提取结构化内容，避免直接把原文当成结论。</p></div><div class="empty-stage"><strong>冻结版本</strong><p>确认动作产生带 version_no 的不可变输入。</p></div><div class="empty-stage"><strong>匹配报告</strong><p>每条要求回到简历证据，未知不会被写成不具备。</p></div>`}
-              </section>
             </section>
-            <p class="footer-note">Purslyx · 完整工作台覆盖首版业务页面；本页短流程用于快速复跑 SDD 证据链。真实模型、生产队列、邮件和外部平台投递仍是当前演示边界。</p>
+            <section class="product-section product-principles" aria-labelledby="product-principles">
+              <div class="section-heading"><div><div class="eyebrow">BUILT FOR TRUST</div><h2 id="product-principles">重要决定，始终由人确认</h2></div><p>产品把资料、版本、分析和后续动作分开保存，让用户知道系统用了什么、得出了什么，以及下一步会发生什么。</p></div>
+              <div class="principle-grid">
+                <article><strong>先确认输入</strong><p>文字和文件先形成可检查草稿；确认后才生成不可变版本。</p></article>
+                <article><strong>逐条展示依据</strong><p>匹配结论回到简历原文和岗位要求，缺失信息明确标记待确认。</p></article>
+                <article><strong>操作前说明消耗</strong><p>分析、改写和面试按功能记账；失败任务释放预留次数。</p></article>
+                <article><strong>敏感操作留痕</strong><p>删除、权限、账号状态和次数发放都记录原因与审计日志。</p></article>
+              </div>
+            </section>
+            <section class="product-cta"><div><div class="eyebrow">YOUR NEXT STARTS HERE</div><h2>准备好看清下一步了吗？</h2><p>选择你的身份，进入对应的完整工作台。</p></div><div class="hero-actions"><a class="button primary" href="/app/register">创建账号</a><a class="button outline" href="/app/login">已有账号，直接登录</a></div></section>
+            <p class="footer-note">Purslyx · 从真实经历出发，让每一步更清楚、更可信。</p>
           </main>`;
         }
 
-        function demoReport(result) {
-          const report = result.analysis?.report || {};
-          const score = Number(report.ability_score);
-          const scoreValue = Number.isFinite(score) ? score : 0;
-          const advice = report.overall_advice || {};
-          const dimensions = Array.isArray(report.dimensions) ? report.dimensions : [];
-          const conditions = Array.isArray(report.conditions) ? report.conditions : [];
-          return `<div class="report-top">
-            <div class="score-block" style="--score:${Math.max(0, Math.min(scoreValue, 100))}"><div class="score-copy"><strong>${Number.isFinite(score) ? esc(number(score)) : "—"}</strong><span>能力综合分</span></div></div>
-            <div class="report-summary"><span class="tag ${statusClass(advice.status)}">${esc(labelStatus(advice.status))}</span><h3>${esc(advice.text || "报告已生成")}</h3><p>${esc((advice.next_steps || []).join(" ") || "请结合证据和条件对照做人工判断。")}</p><div class="report-metrics"><div class="metric-pill"><strong>${esc(percent(report.evidence_coverage))}</strong><span>证据覆盖率</span></div><div class="metric-pill"><strong>${esc(String(dimensions.filter((item) => item.score !== null && item.score !== undefined).length))}</strong><span>可评分维度</span></div><div class="metric-pill"><strong>${esc(String(result.analysis?.scoring_rule_version || report.scoring_rule_version || "ability-v0.1"))}</strong><span>评分规则</span></div></div></div>
-          </div>
-          <div class="report-grid">
-            <div class="report-card"><h3>能力维度与逐条依据</h3>${dimensions.map((dimension) => demoDimension(dimension)).join("") || `<div class="empty">暂无维度数据</div>`}</div>
-            <div class="report-card"><h3>岗位条件对照</h3><div style="margin-top:8px">${conditions.map((item) => `<div class="condition-row"><strong>${esc({ job_title: "岗位方向", location: "地点", work_mode: "办公方式", salary: "薪资" }[item.condition] || item.condition)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.explanation)}</p></div>`).join("") || `<div class="empty">没有条件数据</div>`}</div></div>
-            <div class="report-card full"><h3>输入版本</h3><div class="version-strip"><span class="version-chip">简历 · ${esc(result.resume?.version?.id || "—")} · v${esc(result.resume?.version?.version_no || "—")}</span><span class="version-chip">岗位 · ${esc(result.job?.version?.id || "—")} · v${esc(result.job?.version?.version_no || "—")}</span><span class="version-chip">分析 · ${esc(result.analysis?.id || "—")}</span></div><details class="raw-report"><summary>展开报告 JSON（用于讲接口与落库）</summary><pre>${esc(json(result))}</pre></details></div>
-          </div>
-          ${reportFollowupSections(report)}`;
-        }
-
-        function demoDimension(dimension) {
+        function reportDimension(dimension) {
           const score = Number(dimension.score);
           const width = Number.isFinite(score) ? Math.max(0, Math.min(score, 100)) : 0;
           return `<div class="dimension"><div class="dimension-head"><strong>${esc(dimension.label)}</strong><span>${Number.isFinite(score) ? `${esc(number(score))} 分` : "不适用"}</span></div>${Number.isFinite(score) ? `<div class="bar"><i style="width:${width}%"></i></div>` : ""}${(dimension.requirements || []).map((item) => `<div class="requirement"><div class="requirement-top"><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.job_quote)}</p></div>${item.evidence?.length ? `<div class="evidence">依据：${esc(item.evidence.map((evidence) => evidence.quote).join("；"))}</div>` : `<div class="evidence missing">暂无对应原文依据：保留为待确认，不直接判定为不具备。</div>`}</div>`).join("")}</div>`;
@@ -426,7 +391,7 @@
           const title = { login: "欢迎回来", register: "创建正式账号", verify: "完成邮箱验证", forgot: "找回密码", reset: "设置新密码", recovery: "申请账号恢复", recover: "恢复账号" }[auth.mode] || "欢迎回来";
           const description = {
             login: "登录后继续本账号的资料、岗位和历史任务。",
-            register: "注册时选择固定身份；本地演示会自动完成验证。",
+            register: "注册时选择固定身份；本地开发环境会自动完成验证。",
             verify: "输入邮件中的一次性验证码，验证完成后再登录。",
             forgot: "提交后如果账号存在，会收到重置说明。",
             reset: "重置成功后，之前的 Web 会话会全部失效。",
@@ -478,7 +443,7 @@
           const hasLogPermission = (state.session.account?.admin_permissions || []).some((item) => item.startsWith("admin.logs."));
           if ((requiredPermission && !(state.session.account?.admin_permissions || []).includes(requiredPermission)) || (page === "admin-logs" && !hasLogPermission)) {
             const pageTitle = { "admin-metrics": "站点概况", "admin-users": "用户管理", "admin-roles": "角色权限", "admin-usage": "次数管理", "admin-logs": "日志管理" }[page] || "管理端";
-            return `${heading("ADMIN ACCESS", pageTitle, "当前账号没有此页面所需的后台权限。页面入口不会返回管理数据，所有接口仍会由服务端逐次校验。", `<a class="button outline small" href="${routeFor("dashboard")}">回到工作台</a>`)}<div class="empty"><div><strong>没有访问权限</strong><p>如需演示该页面，请使用部署者显式配置并授权的管理员账号。</p></div></div>`;
+            return `${heading("ADMIN ACCESS", pageTitle, "当前账号没有此页面所需的后台权限。页面入口不会返回管理数据，所有接口仍会由服务端逐次校验。", `<a class="button outline small" href="${routeFor("dashboard")}">回到工作台</a>`)}<div class="empty"><div><strong>没有访问权限</strong><p>请使用部署者显式配置并授权的管理员账号。</p></div></div>`;
           }
           const content = page === "dashboard" ? dashboardPage() : page === "resume" ? resumePage() : page === "pool" ? enhancedPoolPage() : page === "report" ? formalReportPage() : page === "rewrite" ? rewritePage() : page === "variants" ? variantsPage() : page === "interview" ? interviewPage() : page === "tasks" ? tasksPage() : page === "usage" ? usagePage() : page === "stats" ? statsPage() : page === "admin-metrics" ? adminMetricsPage() : page === "admin-users" ? enhancedAdminUsersPage() : page === "admin-roles" ? adminRolesPage() : page === "admin-usage" ? adminUsagePage() : page === "admin-logs" ? adminLogsPageEnhanced() : dashboardPage();
           return `${state.workspace.error ? `<div class="callout attention" style="margin-bottom:18px">${esc(state.workspace.error)}</div>` : ""}${content}`;
@@ -563,7 +528,7 @@
           const account = state.session.account || {};
           const tasks = data.tasks || [];
           const adminReady = (account.admin_permissions || []).length > 0;
-          return `${heading(account.registration_role === "seeker" ? "SEEKER WORKSPACE" : "RECRUITER WORKSPACE", "工作台", "这里保留最近输入、当前报告和下一步动作；刷新页面仍从数据库恢复。", `<button class="button outline small" data-action="refresh">刷新数据</button>`)}<div class="metric-grid"><div class="metric-card"><div class="eyebrow">资料</div><strong>${esc(String(data.documents.length))}</strong><span>已导入资料</span></div><div class="metric-card"><div class="eyebrow">分析</div><strong>${esc(String(stats.completed_analyses ?? data.analyses.length))}</strong><span>已完成报告</span></div><div class="metric-card"><div class="eyebrow">面试</div><strong>${esc(String(stats.interviews ?? data.interviews.length))}</strong><span>练习会话</span></div><div class="metric-card"><div class="eyebrow">去投递</div><strong>${esc(String(stats.apply_clicks ?? 0))}</strong><span>点击记录，不等于已投递</span></div></div><div class="content-grid"><section class="card"><div class="card-head"><div><h3>继续下一步</h3><p>从当前账号的真实状态进入，不另造一套演示数据。</p></div></div><div class="card-body"><div class="card-list">${account.registration_role === "seeker" ? `<div class="list-row"><div><strong>补齐简历与岗位期望</strong><small>先确认输入，后续分析才有稳定版本。</small></div><button class="button soft small" data-page="resume">去准备</button></div><div class="list-row"><div><strong>保存岗位并生成报告</strong><small>选择一条期望，确认消耗 1 次分析机会。</small></div><button class="button soft small" data-page="pool">去匹配</button></div><div class="list-row"><div><strong>恢复面试练习</strong><small>已开始的会话可以从当前题目继续。</small></div><button class="button soft small" data-page="interview">去面试</button></div>` : `<div class="list-row"><div><strong>导入候选人资料</strong><small>岗位和候选人简历确认后，再发起单人分析。</small></div><button class="button soft small" data-page="resume">去准备</button></div>`}</div></div></section><section class="card"><div class="card-head"><div><h3>最近分析</h3><p>报告只读本账号拥有的输入版本。</p></div></div><div class="card-body">${data.analyses.length ? `<div class="card-list">${data.analyses.slice(0, 4).map((item) => `<div class="list-row"><div><strong>${esc(item.job_category || "岗位分析")}</strong><small>${esc(labelStatus(item.status))} · ${esc(number(item.ability_score))} 分 · ${esc(date(item.completed_at))}</small></div><a class="button link-button" href="${routeFor("report", { analysis_id: item.id })}">查看</a></div>`).join("")}</div>` : `<div class="empty"><div><strong>还没有报告</strong><p>从“简历与期望”开始，准备一份可复核的输入。</p></div></div>`}</div></section></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>最近任务</h3><p>排队、失败和可恢复输入都保留在原任务里；轮询不会产生新的任务。</p></div><div class="item-actions"><button class="button outline small" data-page="tasks">查看全部</button></div></div><div class="card-body">${tasks.length ? `<div class="task-list">${tasks.slice(0, 4).map(taskRow).join("")}</div>` : `<div class="empty"><div><strong>暂无任务</strong><p>发起解析、分析、改写、面试或 PDF 导出后，这里会显示状态。</p></div></div>`}</div></section>${adminReady ? `<div class="callout opportunity" style="margin-top:18px">当前账号拥有后台权限。管理端菜单已按权限显示，操作仍会在服务端逐次复核。</div>` : ""}`;
+          return `${heading(account.registration_role === "seeker" ? "SEEKER WORKSPACE" : "RECRUITER WORKSPACE", "工作台", "这里保留最近输入、当前报告和下一步动作；刷新页面仍从数据库恢复。", `<button class="button outline small" data-action="refresh">刷新数据</button>`)}<div class="metric-grid"><div class="metric-card"><div class="eyebrow">资料</div><strong>${esc(String(data.documents.length))}</strong><span>已导入资料</span></div><div class="metric-card"><div class="eyebrow">分析</div><strong>${esc(String(stats.completed_analyses ?? data.analyses.length))}</strong><span>已完成报告</span></div><div class="metric-card"><div class="eyebrow">面试</div><strong>${esc(String(stats.interviews ?? data.interviews.length))}</strong><span>练习会话</span></div><div class="metric-card"><div class="eyebrow">去投递</div><strong>${esc(String(stats.apply_clicks ?? 0))}</strong><span>点击记录，不等于已投递</span></div></div><div class="content-grid"><section class="card"><div class="card-head"><div><h3>继续下一步</h3><p>从当前账号的真实状态继续，所有数据都与当前会话绑定。</p></div></div><div class="card-body"><div class="card-list">${account.registration_role === "seeker" ? `<div class="list-row"><div><strong>补齐简历与岗位期望</strong><small>先确认输入，后续分析才有稳定版本。</small></div><button class="button soft small" data-page="resume">去准备</button></div><div class="list-row"><div><strong>保存岗位并生成报告</strong><small>选择一条期望，确认消耗 1 次分析机会。</small></div><button class="button soft small" data-page="pool">去匹配</button></div><div class="list-row"><div><strong>恢复面试练习</strong><small>已开始的会话可以从当前题目继续。</small></div><button class="button soft small" data-page="interview">去面试</button></div>` : `<div class="list-row"><div><strong>导入候选人资料</strong><small>岗位和候选人简历确认后，再发起单人分析。</small></div><button class="button soft small" data-page="resume">去准备</button></div>`}</div></div></section><section class="card"><div class="card-head"><div><h3>最近分析</h3><p>报告只读本账号拥有的输入版本。</p></div></div><div class="card-body">${data.analyses.length ? `<div class="card-list">${data.analyses.slice(0, 4).map((item) => `<div class="list-row"><div><strong>${esc(item.job_category || "岗位分析")}</strong><small>${esc(labelStatus(item.status))} · ${esc(number(item.ability_score))} 分 · ${esc(date(item.completed_at))}</small></div><a class="button link-button" href="${routeFor("report", { analysis_id: item.id })}">查看</a></div>`).join("")}</div>` : `<div class="empty"><div><strong>还没有报告</strong><p>从“简历与期望”开始，准备一份可复核的输入。</p></div></div>`}</div></section></div><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>最近任务</h3><p>排队、失败和可恢复输入都保留在原任务里；轮询不会产生新的任务。</p></div><div class="item-actions"><button class="button outline small" data-page="tasks">查看全部</button></div></div><div class="card-body">${tasks.length ? `<div class="task-list">${tasks.slice(0, 4).map(taskRow).join("")}</div>` : `<div class="empty"><div><strong>暂无任务</strong><p>发起解析、分析、改写、面试或 PDF 导出后，这里会显示状态。</p></div></div>`}</div></section>${adminReady ? `<div class="callout opportunity" style="margin-top:18px">当前账号拥有后台权限。管理端菜单已按权限显示，操作仍会在服务端逐次复核。</div>` : ""}`;
         }
 
         function taskRow(item) {
@@ -729,7 +694,7 @@
           const advice = report.overall_advice || {};
           const pool = state.workspace.selectedPool || findPoolForAnalysis(analysis.id);
           const resumeId = analysis.input_versions?.find((item) => item && item.type === "resume")?.id;
-          return `${heading("MATCH REPORT", "匹配报告", "结果绑定到本次分析的简历版本、岗位版本和规则版本；未知信息仍保持未知。", `<button class="button outline small" data-page="dashboard">回到工作台</button>`)}<section class="card"><div class="report-top"><div class="score-block" style="--score:${Math.max(0, Math.min(Number.isFinite(score) ? score : 0, 100))}"><div class="score-copy"><strong>${Number.isFinite(score) ? esc(number(score)) : "—"}</strong><span>能力综合分</span></div></div><div class="report-summary"><span class="tag ${statusClass(advice.status)}">${esc(labelStatus(advice.status))}</span><h3>${esc(advice.text || "报告已生成")}</h3><p>${esc((advice.next_steps || []).join(" ") || "请结合证据和条件对照做人工判断。")}</p><div class="report-metrics"><div class="metric-pill"><strong>${esc(percent(analysis.evidence_coverage ?? report.evidence_coverage))}</strong><span>证据覆盖率</span></div><div class="metric-pill"><strong>${esc(analysis.job_category || report.job_category || "general")}</strong><span>岗位类别</span></div><div class="metric-pill"><strong>${esc(analysis.scoring_rule_version || report.scoring_rule_version || "ability-v0.1")}</strong><span>评分规则</span></div></div><div class="item-actions">${pool && resumeId ? `<button class="button primary small" data-action="create-variant">制作岗位版简历</button><button class="button soft small" data-action="open-rewrite">补充事实与改写</button><button class="button soft small" data-action="start-interview">开始面试练习</button>` : ""}</div></div></div><div class="report-grid"><div class="report-card"><h3>能力维度与逐条依据</h3>${(report.dimensions || []).map((item) => demoDimension(item)).join("") || `<div class="empty">暂无维度数据</div>`}</div><div class="report-card"><h3>岗位条件对照</h3><div style="margin-top:8px">${(report.conditions || []).map((item) => `<div class="condition-row"><strong>${esc({ job_title: "岗位方向", location: "地点", work_mode: "办公方式", salary: "薪资" }[item.condition] || item.condition)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.explanation)}</p></div>`).join("") || `<div class="empty">没有条件数据</div>`}</div></div><div class="report-card full"><h3>输入版本与可追溯信息</h3><div class="version-strip">${(analysis.input_versions || []).filter(Boolean).map((item) => `<span class="version-chip">${esc(item.type)} · ${esc(item.id)}</span>`).join("")}<span class="version-chip">analysis · ${esc(analysis.id)}</span></div><div class="item-actions" style="margin-top:13px"><button class="button link-button small" data-action="delete-analysis" data-id="${esc(analysis.id)}">删除这份报告（先查看影响）</button></div><details class="raw-report"><summary>展开完整报告 JSON</summary><pre>${esc(json(analysis))}</pre></details></div></div></section>`;
+          return `${heading("MATCH REPORT", "匹配报告", "结果绑定到本次分析的简历版本、岗位版本和规则版本；未知信息仍保持未知。", `<button class="button outline small" data-page="dashboard">回到工作台</button>`)}<section class="card"><div class="report-top"><div class="score-block" style="--score:${Math.max(0, Math.min(Number.isFinite(score) ? score : 0, 100))}"><div class="score-copy"><strong>${Number.isFinite(score) ? esc(number(score)) : "—"}</strong><span>能力综合分</span></div></div><div class="report-summary"><span class="tag ${statusClass(advice.status)}">${esc(labelStatus(advice.status))}</span><h3>${esc(advice.text || "报告已生成")}</h3><p>${esc((advice.next_steps || []).join(" ") || "请结合证据和条件对照做人工判断。")}</p><div class="report-metrics"><div class="metric-pill"><strong>${esc(percent(analysis.evidence_coverage ?? report.evidence_coverage))}</strong><span>证据覆盖率</span></div><div class="metric-pill"><strong>${esc(analysis.job_category || report.job_category || "general")}</strong><span>岗位类别</span></div><div class="metric-pill"><strong>${esc(analysis.scoring_rule_version || report.scoring_rule_version || "ability-v0.1")}</strong><span>评分规则</span></div></div><div class="item-actions">${pool && resumeId ? `<button class="button primary small" data-action="create-variant">制作岗位版简历</button><button class="button soft small" data-action="open-rewrite">补充事实与改写</button><button class="button soft small" data-action="start-interview">开始面试练习</button>` : ""}</div></div></div><div class="report-grid"><div class="report-card"><h3>能力维度与逐条依据</h3>${(report.dimensions || []).map((item) => reportDimension(item)).join("") || `<div class="empty">暂无维度数据</div>`}</div><div class="report-card"><h3>岗位条件对照</h3><div style="margin-top:8px">${(report.conditions || []).map((item) => `<div class="condition-row"><strong>${esc({ job_title: "岗位方向", location: "地点", work_mode: "办公方式", salary: "薪资" }[item.condition] || item.condition)}</strong><span class="tag ${statusClass(item.status)}">${esc(labelStatus(item.status))}</span><p>${esc(item.explanation)}</p></div>`).join("") || `<div class="empty">没有条件数据</div>`}</div></div><div class="report-card full"><h3>输入版本与可追溯信息</h3><div class="version-strip">${(analysis.input_versions || []).filter(Boolean).map((item) => `<span class="version-chip">${esc(item.type)} · ${esc(item.id)}</span>`).join("")}<span class="version-chip">analysis · ${esc(analysis.id)}</span></div><div class="item-actions" style="margin-top:13px"><button class="button link-button small" data-action="delete-analysis" data-id="${esc(analysis.id)}">删除这份报告（先查看影响）</button></div><details class="raw-report"><summary>展开完整报告 JSON</summary><pre>${esc(json(analysis))}</pre></details></div></div></section>`;
         }
 
         function findPoolForAnalysis(analysisId) {
@@ -899,13 +864,13 @@
           const roles = state.workspace.data.admin.roles || [];
           const selected = state.workspace.selectedRole;
           const permissions = selected?.permissions || [];
-          return `${heading("ADMIN ROLES", "角色权限", "内置超级管理员只读；自定义角色只能授予当前管理员已有的权限。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="two-col"><section class="card"><div class="card-head"><div><h3>角色列表</h3><p>点击自定义角色进入编辑。</p></div></div><div class="card-body">${roles.length ? `<div class="admin-list">${roles.map((item) => `<article class="admin-row"><div><strong>${esc(item.name)} ${item.is_builtin ? "· 内置" : ""}</strong><small>${esc(item.description || "无描述")} · ${esc(item.status)} · ${esc(String(item.permissions?.length || 0))} 项权限</small></div><div class="item-actions">${item.is_builtin ? `<span class="tag neutral">只读</span>` : `<button class="button link-button small" data-action="select-role" data-id="${esc(item.id)}">编辑</button>`}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无角色</strong><p>刷新后重试。</p></div></div>`}</div></section><section class="card"><div class="card-head"><div><h3>${selected ? "编辑自定义角色" : "创建自定义角色"}</h3><p>保存会增加角色 revision 并记录后台审计。</p></div>${selected ? `<button class="button link-button small" data-action="clear-role">新建</button>` : ""}</div><div class="card-body"><form id="admin-role-form" class="form-card"><input type="hidden" name="role_id" value="${esc(selected?.id || "")}" /><div class="field-group"><label>角色名称</label><input class="field" name="name" value="${esc(selected?.name || "演示运营")}" required /></div><div class="field-group"><label>描述</label><input class="field" name="description" value="${esc(selected?.description || "用于明天演示的受限后台角色")}" /></div><div class="field-group"><label>状态</label><select class="select" name="status"><option value="active" ${selected?.status !== "archived" ? "selected" : ""}>启用</option><option value="archived" ${selected?.status === "archived" ? "selected" : ""}>归档</option></select></div><div class="field-group"><label>可授予权限</label><div class="permission-grid">${permissionOptions(permissions)}</div></div><div class="form-foot"><span class="micro">当前账号可授予 ${esc(String((state.session.account?.admin_permissions || []).length))} 项权限。</span><button class="button primary small" type="submit">${selected ? "保存角色" : "创建角色"}</button></div></form></div></section></div>`;
+          return `${heading("ADMIN ROLES", "角色权限", "内置超级管理员只读；自定义角色只能授予当前管理员已有的权限。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<div class="two-col"><section class="card"><div class="card-head"><div><h3>角色列表</h3><p>点击自定义角色进入编辑。</p></div></div><div class="card-body">${roles.length ? `<div class="admin-list">${roles.map((item) => `<article class="admin-row"><div><strong>${esc(item.name)} ${item.is_builtin ? "· 内置" : ""}</strong><small>${esc(item.description || "无描述")} · ${esc(item.status)} · ${esc(String(item.permissions?.length || 0))} 项权限</small></div><div class="item-actions">${item.is_builtin ? `<span class="tag neutral">只读</span>` : `<button class="button link-button small" data-action="select-role" data-id="${esc(item.id)}">编辑</button>`}</div></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无角色</strong><p>刷新后重试。</p></div></div>`}</div></section><section class="card"><div class="card-head"><div><h3>${selected ? "编辑自定义角色" : "创建自定义角色"}</h3><p>保存会增加角色 revision 并记录后台审计。</p></div>${selected ? `<button class="button link-button small" data-action="clear-role">新建</button>` : ""}</div><div class="card-body"><form id="admin-role-form" class="form-card"><input type="hidden" name="role_id" value="${esc(selected?.id || "")}" /><div class="field-group"><label>角色名称</label><input class="field" name="name" value="${esc(selected?.name || "内容运营")}" required /></div><div class="field-group"><label>描述</label><input class="field" name="description" value="${esc(selected?.description || "负责内容与用户反馈处理的受限后台角色")}" /></div><div class="field-group"><label>状态</label><select class="select" name="status"><option value="active" ${selected?.status !== "archived" ? "selected" : ""}>启用</option><option value="archived" ${selected?.status === "archived" ? "selected" : ""}>归档</option></select></div><div class="field-group"><label>可授予权限</label><div class="permission-grid">${permissionOptions(permissions)}</div></div><div class="form-foot"><span class="micro">当前账号可授予 ${esc(String((state.session.account?.admin_permissions || []).length))} 项权限。</span><button class="button primary small" type="submit">${selected ? "保存角色" : "创建角色"}</button></div></form></div></section></div>`;
         }
 
         function adminUsagePage() {
           const grants = state.workspace.data.admin.grants || [];
           const users = state.workspace.data.admin.users || [];
-          return `${heading("ADMIN USAGE", "次数管理", "给指定账号追加分析、改写或面试次数；每笔发放都要求原因，并支持幂等重试。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<section class="card"><div class="card-head"><div><h3>发放次数</h3><p>只允许发放当前账号角色允许使用的功能。</p></div></div><div class="card-body"><form id="admin-grant-form" class="form-card"><div class="field-group"><label>目标账号</label>${users.length ? `<select class="select" name="user_id">${users.filter((item) => item.status === "active").map((item) => `<option value="${esc(item.id)}">${esc(item.email)} · ${esc(item.registration_role)}</option>`).join("")}</select>` : `<input class="field" name="user_id" placeholder="粘贴账号 ID" required />`}</div><div class="form-row"><div class="field-group"><label>功能</label><select class="select" name="feature"><option value="analysis">分析</option><option value="rewrite">改写</option><option value="interview">面试</option></select></div><div class="field-group"><label>次数</label><input class="field" name="count" type="number" min="1" max="10000" value="5" required /></div></div><div class="field-group"><label>发放原因</label><input class="field" name="reason" value="明日 SDD 演示补充次数" required /></div><div class="form-foot"><span class="micro">写入用量流水和管理员审计。</span><button class="button primary small" type="submit">确认发放</button></div></form></div></section><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>最近发放</h3><p>共 ${esc(String(grants.length))} 笔。</p></div></div><div class="card-body">${grants.length ? `<div class="admin-list">${grants.slice(0, 30).map((item) => `<article class="admin-row"><div><strong>${esc(item.feature)} +${esc(String(item.count))}</strong><small>${esc(item.account_id || "未知账号")} · ${esc(item.reason)} · ${esc(date(item.created_at))}</small></div><span class="tag success">${esc(String(item.after_available))} 可用</span></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无发放记录</strong><p>提交一次发放后会在这里留下记录。</p></div></div>`}</div></section>`;
+          return `${heading("ADMIN USAGE", "次数管理", "给指定账号追加分析、改写或面试次数；每笔发放都要求原因，并支持幂等重试。", `<button class="button outline small" data-action="refresh">刷新</button>`)}<section class="card"><div class="card-head"><div><h3>发放次数</h3><p>只允许发放当前账号角色允许使用的功能。</p></div></div><div class="card-body"><form id="admin-grant-form" class="form-card"><div class="field-group"><label>目标账号</label>${users.length ? `<select class="select" name="user_id">${users.filter((item) => item.status === "active").map((item) => `<option value="${esc(item.id)}">${esc(item.email)} · ${esc(item.registration_role)}</option>`).join("")}</select>` : `<input class="field" name="user_id" placeholder="粘贴账号 ID" required />`}</div><div class="form-row"><div class="field-group"><label>功能</label><select class="select" name="feature"><option value="analysis">分析</option><option value="rewrite">改写</option><option value="interview">面试</option></select></div><div class="field-group"><label>次数</label><input class="field" name="count" type="number" min="1" max="10000" value="5" required /></div></div><div class="field-group"><label>发放原因</label><input class="field" name="reason" value="用户支持补充次数" required /></div><div class="form-foot"><span class="micro">写入用量流水和管理员审计。</span><button class="button primary small" type="submit">确认发放</button></div></form></div></section><section class="card" style="margin-top:18px"><div class="card-head"><div><h3>最近发放</h3><p>共 ${esc(String(grants.length))} 笔。</p></div></div><div class="card-body">${grants.length ? `<div class="admin-list">${grants.slice(0, 30).map((item) => `<article class="admin-row"><div><strong>${esc(item.feature)} +${esc(String(item.count))}</strong><small>${esc(item.account_id || "未知账号")} · ${esc(item.reason)} · ${esc(date(item.created_at))}</small></div><span class="tag success">${esc(String(item.after_available))} 可用</span></article>`).join("")}</div>` : `<div class="empty"><div><strong>暂无发放记录</strong><p>提交一次发放后会在这里留下记录。</p></div></div>`}</div></section>`;
         }
 
         function logRow(type, item) {
@@ -931,12 +896,12 @@
         }
 
         function render() {
-          if (state.screen === "formal" && !state.session.account) {
+          if (PAGE === "home") {
+            app.innerHTML = appFrame(homePage());
+          } else if (!state.session.account) {
             app.innerHTML = appFrame(authPage());
-          } else if (state.screen === "formal") {
-            app.innerHTML = `${topbar()}${workspaceShell()}${state.toast ? `<div class="toast">${esc(state.toast)}</div>` : ""}`;
           } else {
-            app.innerHTML = appFrame(demoPage());
+            app.innerHTML = `${topbar()}${workspaceShell()}${state.toast ? `<div class="toast">${esc(state.toast)}</div>` : ""}`;
           }
           // 多页面 Web 端在每次局部刷新后重新补上语义化表单控件。
           decoratePreferenceForms();
@@ -957,7 +922,7 @@
         function scheduleWorkspacePoll() {
           if (state.workspace.pollTimer) window.clearTimeout(state.workspace.pollTimer);
           state.workspace.pollTimer = null;
-          if (state.workspace.pollInFlight || state.screen !== "formal" || !state.session.account || !state.workspace.loaded || !workspaceHasPendingWork()) return;
+          if (state.workspace.pollInFlight || PAGE === "home" || !state.session.account || !state.workspace.loaded || !workspaceHasPendingWork()) return;
           state.workspace.pollTimer = window.setTimeout(() => {
             state.workspace.pollTimer = null;
             void pollWorkspace();
@@ -965,7 +930,7 @@
         }
 
         async function pollWorkspace() {
-          if (state.workspace.pollInFlight || state.screen !== "formal" || !state.session.account) return;
+          if (state.workspace.pollInFlight || PAGE === "home" || !state.session.account) return;
           state.workspace.pollInFlight = true;
           try {
             await loadWorkspace(true);
@@ -982,50 +947,7 @@
           setToast.timer = window.setTimeout(() => { state.toast = ""; render(); }, 3600);
         }
 
-        async function runDemo(form) {
-          const values = new FormData(form);
-          state.demo.resumeTitle = String(values.get("resume_title") || "演示简历").trim();
-          state.demo.resumeText = String(values.get("resume_text") || "").trim();
-          state.demo.jobTitle = String(values.get("job_title") || "演示岗位").trim();
-          state.demo.jobText = String(values.get("job_text") || "").trim();
-          state.demo.running = true;
-          state.demo.result = null;
-          state.demo.error = "";
-          state.demo.logs = [];
-          state.demo.phase = "提交简历并生成解析草稿…";
-          render();
-          try {
-            const resume = await request("/api/v1/demo/documents", { method: "POST", body: { document_type: "resume", title: state.demo.resumeTitle, text: state.demo.resumeText } });
-            state.demo.logs.push("简历草稿已生成");
-            state.demo.phase = "确认简历 version 1…";
-            render();
-            const resumeConfirmed = await request(`/api/v1/demo/documents/${encodeURIComponent(resume.id)}/confirm`, { method: "POST" });
-            state.demo.logs.push("简历已确认并冻结");
-            state.demo.phase = "提交岗位 JD 并生成解析草稿…";
-            render();
-            const job = await request("/api/v1/demo/documents", { method: "POST", body: { document_type: "job", title: state.demo.jobTitle, text: state.demo.jobText } });
-            state.demo.logs.push("岗位草稿已生成");
-            state.demo.phase = "确认岗位 version 1…";
-            render();
-            const jobConfirmed = await request(`/api/v1/demo/documents/${encodeURIComponent(job.id)}/confirm`, { method: "POST" });
-            state.demo.logs.push("岗位已确认并冻结");
-            state.demo.phase = "根据两个冻结版本计算匹配报告…";
-            render();
-            const analysis = await request("/api/v1/demo/matches", { method: "POST", body: { resume_version_id: resumeConfirmed.version.id, job_version_id: jobConfirmed.version.id } });
-            state.demo.logs.push("报告已写入 201 PostgreSQL");
-            state.demo.result = { resume: resumeConfirmed, job: jobConfirmed, analysis };
-            state.demo.phase = "演示完成";
-          } catch (error) {
-            state.demo.error = error instanceof ApiError ? `${error.code}：${error.message}` : `演示失败：${error.message || error}`;
-            state.demo.phase = "可重试";
-          } finally {
-            state.demo.running = false;
-            render();
-          }
-        }
-
         async function openFormal() {
-          state.screen = "formal";
           state.workspace.error = "";
           render();
           if (!state.session.token) return;
@@ -1049,7 +971,6 @@
           const allowedOrigins = ["https://www.zhipin.com", "https://zhipin.com", "https://www.liepin.com", "https://liepin.com"];
           window.history.replaceState({}, document.title, window.location.pathname);
           if (!allowedOrigins.includes(platformOrigin) || !/^[A-Za-z0-9_-]{32,128}$/.test(nonce) || !window.opener) {
-            state.screen = "formal";
             state.auth.error = "浏览器同步请求无效，请从受支持的平台详情页重新发起。";
             render();
             return;
@@ -1057,12 +978,10 @@
           try {
             const data = await request("/api/v1/auth/browser-codes", { method: "POST", formal: true, body: { origin: platformOrigin, nonce } });
             window.opener.postMessage({ type: "PURSLYX_BROWSER_CODE", origin: platformOrigin, nonce, authorization_code: data.authorization_code, expires_at: data.expires_at }, platformOrigin);
-            state.screen = "formal";
             state.auth.notice = "浏览器同步请求已发送，可以关闭此窗口。";
             render();
             window.setTimeout(() => window.close(), 450);
           } catch (error) {
-            state.screen = "formal";
             state.auth.error = error instanceof ApiError ? `${error.code}：${error.message}` : "请先在此浏览器登录 Purslyx，再重试同步。";
             render();
           }
@@ -1078,7 +997,6 @@
             window.location.assign(routeFor("dashboard"));
             return;
           }
-          state.screen = "formal";
           state.workspace.page = "dashboard";
           state.workspace.loaded = false;
           state.auth.error = "";
@@ -1120,7 +1038,7 @@
               if (data.reset_token) {
                 state.auth.token = data.reset_token;
                 state.auth.mode = "reset";
-                state.auth.notice = "本地演示已生成重置令牌，请确认后设置新密码。";
+                state.auth.notice = "本地开发环境已生成重置令牌，请确认后设置新密码。";
               } else state.auth.notice = data.message || "如果账号存在，重置说明会发送到注册邮箱。";
               state.auth.running = false;
               render();
@@ -1139,7 +1057,7 @@
               if (data.recovery_token) {
                 state.auth.token = data.recovery_token;
                 state.auth.mode = "recover";
-                state.auth.notice = "本地演示已生成恢复令牌，请确认恢复账号。";
+                state.auth.notice = "本地开发环境已生成恢复令牌，请确认恢复账号。";
               } else state.auth.notice = data.message || "如果账号存在，恢复说明会发送到注册邮箱。";
               state.auth.running = false;
               render();
@@ -1156,7 +1074,7 @@
             state.auth.error = error instanceof ApiError ? `${error.code}：${error.message}` : `请求失败：${error.message || error}`;
             if (error instanceof ApiError && error.code === "AUTH_EMAIL_UNVERIFIED") {
               state.auth.mode = "verify";
-              state.auth.notice = "该账号尚未完成邮箱验证；本地演示可使用验证令牌继续。";
+              state.auth.notice = "该账号尚未完成邮箱验证；本地开发环境可使用验证令牌继续。";
             }
             state.auth.running = false;
             render();
@@ -1174,7 +1092,7 @@
             const data = await request("/api/v1/auth/resend-verification", { method: "POST", body: { email } });
             state.auth.mode = "verify";
             state.auth.token = data.verification_token || state.auth.token;
-            state.auth.notice = data.verification_token ? "本地演示已生成新的验证令牌。" : (data.message || "验证说明已发送，请查收邮箱。");
+            state.auth.notice = data.verification_token ? "本地开发环境已生成新的验证令牌。" : (data.message || "验证说明已发送，请查收邮箱。");
           } catch (error) {
             state.auth.error = error instanceof ApiError ? `${error.code}：${error.message}` : error.message || "重新发送失败";
           } finally {
@@ -1636,7 +1554,7 @@
         }
 
         async function retryTask(id) {
-          const data = await request(`/api/v1/tasks/${encodeURIComponent(id)}/retry`, { method: "POST", formal: true, idempotencyKey: key("task-retry"), body: { reason: "演示现场重试" } });
+          const data = await request(`/api/v1/tasks/${encodeURIComponent(id)}/retry`, { method: "POST", formal: true, idempotencyKey: key("task-retry"), body: { reason: "用户手动重试" } });
           state.workspace.selectedTask = data.task;
           state.workspace.selectedTaskEtag = "";
           state.workspace.page = "tasks";
@@ -1873,7 +1791,7 @@
           const account = detail.account || {};
           const nextStatus = currentStatus === "suspended" ? "active" : "suspended";
           if (!window.confirm(`确认将该账号${nextStatus === "suspended" ? "暂停" : "恢复"}？`)) return;
-          await request(`/api/v1/admin/users/${encodeURIComponent(id)}/status`, { method: "PUT", formal: true, idempotencyKey: key("admin-user-status"), body: { status: nextStatus, reason: nextStatus === "suspended" ? "演示管理员操作" : "演示管理员恢复", base_revision: account.revision } });
+          await request(`/api/v1/admin/users/${encodeURIComponent(id)}/status`, { method: "PUT", formal: true, idempotencyKey: key("admin-user-status"), body: { status: nextStatus, reason: nextStatus === "suspended" ? "管理员暂停账号" : "管理员恢复账号", base_revision: account.revision } });
           setToast(nextStatus === "suspended" ? "账号已暂停" : "账号已恢复");
           await loadWorkspace(true);
         }
@@ -1886,7 +1804,7 @@
             description: String(values.get("description") || "").trim(),
             status: String(values.get("status") || "active"),
             permission_keys: values.getAll("permission_keys").map((item) => String(item)),
-            reason: roleId ? "更新演示后台角色" : "创建演示后台角色",
+            reason: roleId ? "更新后台角色" : "创建后台角色",
           };
           const selected = roleId ? state.workspace.data.admin.roles.find((item) => item.id === roleId) : null;
           if (roleId) payload.base_revision = selected?.revision;
@@ -2019,13 +1937,10 @@
           }
           if (!actionNode) return;
           const action = actionNode.dataset.action;
-          if (action === "home") { state.screen = "demo"; state.toast = ""; render(); return; }
-          if (action === "demo-scroll") { document.querySelector("#demo-flow")?.scrollIntoView({ behavior: "smooth" }); return; }
-          if (action === "formal") { void openFormal(); return; }
           if (action === "auth-mode") { state.auth.mode = actionNode.dataset.mode; state.auth.error = ""; state.auth.notice = ""; render(); return; }
           if (action === "auth-role") { state.auth.role = actionNode.dataset.role; render(); return; }
           if (action === "resend-verification") { void resendVerification(); return; }
-          if (action === "logout") { void (async () => { try { await request("/api/v1/auth/logout", { method: "POST", formal: true }); } catch (_) {} clearSession(); state.screen = "demo"; setToast("已退出正式工作台"); })(); return; }
+          if (action === "logout") { void (async () => { try { await request("/api/v1/auth/logout", { method: "POST", formal: true }); } catch (_) {} clearSession(); window.location.assign("/app/login"); })(); return; }
           if (action === "refresh") { void refreshWorkspace(); return; }
           if (action === "open-task") { if (PAGE !== "tasks") { window.location.assign(routeFor("tasks", { task_id: actionNode.dataset.id })); return; } void openTask(actionNode.dataset.id); return; }
           if (action === "close-task") { state.workspace.selectedTask = null; state.workspace.selectedTaskEtag = ""; render(); return; }
@@ -2072,7 +1987,6 @@
           const action = params.get("action");
           const mode = { verify: "verify", reset: "reset", recover: "recover" }[action];
           if (!token || !mode) return;
-          state.screen = "formal";
           state.auth.mode = mode;
           state.auth.token = token;
           state.auth.notice = "已从安全链接带入一次性令牌；提交后该链接会失效。";
@@ -2084,5 +1998,5 @@
         render();
         void loadHealth();
         void handleBrowserSync();
-        if (state.screen === "formal" && state.session.token) void openFormal();
+        if (PAGE !== "home" && state.session.token) void openFormal();
       })();

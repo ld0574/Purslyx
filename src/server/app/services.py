@@ -1,7 +1,7 @@
 """跨模块的轻量应用服务。
 
 正式部署可以把这些函数拆成独立的 Repository 和 Worker；当前版本把事务边界集中在
-这里，方便明天用一条可运行的代码路径演示 SDD 的输入冻结、用量预留和结果结算。
+这里，统一处理输入冻结、用量预留、任务执行和结果结算。
 """
 
 from __future__ import annotations
@@ -745,10 +745,10 @@ def mark_task_running(
     db: Session,
     task: Task,
     *,
-    lease_owner: str = "local-demo-worker",
+    lease_owner: str = "local-postgres-worker",
     execution_generation: int | None = None,
 ) -> TaskAttempt:
-    """同步演示 Worker 的认领记录。"""
+    """记录本地 PostgreSQL Worker 的任务认领。"""
 
     task.status = "running"
     task.current_step = "running"
@@ -992,7 +992,7 @@ def run_local_task(
     estimated_input_tokens: int = 12000,
     estimated_output_tokens: int = 4000,
     attempt: TaskAttempt | None = None,
-    lease_owner: str = "local-demo-worker",
+    lease_owner: str = "local-postgres-worker",
     task_result: dict[str, Any] | None = None,
 ) -> None:
     """在没有 Celery 前置依赖时执行一个可追踪的本地任务。

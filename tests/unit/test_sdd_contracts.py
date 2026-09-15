@@ -1,4 +1,4 @@
-"""明日 SDD 演示切片的关键契约回归测试。"""
+"""Purslyx 核心业务的关键契约回归测试。"""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ from server.app.api import (  # noqa: E402
 from server.app.errors import DomainError, NotFoundError  # noqa: E402
 from server.app.models import Account, Interview, InterviewAnswer, InterviewQuestion, JobPoolItem, LogExport, StoredFile  # noqa: E402
 from server.app.matching import build_match_result  # noqa: E402
+from server.app.main import app  # noqa: E402
 
 
 class _Rows:
@@ -40,6 +41,14 @@ class _Rows:
 
     def all(self) -> list[Any]:
         return self._rows
+
+
+def test_anonymous_demo_api_is_not_registered() -> None:
+    """所有业务功能都必须通过带认证的正式 API 进入。"""
+
+    paths = {route.path for route in app.routes if hasattr(route, "path")}
+    assert app.title == "Purslyx API"
+    assert not any(path.startswith("/api/v1/demo") for path in paths)
 
 
 class _InterviewSession:

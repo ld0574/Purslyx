@@ -240,7 +240,7 @@ class OpenAIModelProvider(ModelProvider):
 
 
 def _uuid_like(index: int) -> str:
-    """本地演示用的稳定问题 ID；持久化前会在 Service 中替换为随机 UUID。"""
+    """本地模型使用的稳定问题 ID；持久化前会在 Service 中替换为随机 UUID。"""
 
     return f"local-question-{index + 1}"
 
