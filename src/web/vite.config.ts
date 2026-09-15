@@ -1,7 +1,7 @@
 import { fileURLToPath, URL } from "node:url";
 
 import vue from "@vitejs/plugin-vue";
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [vue()],
@@ -17,5 +17,9 @@ export default defineConfig({
     host: "127.0.0.1",
     port: 5173,
     proxy: { "/api": "http://127.0.0.1:8001", "/health": "http://127.0.0.1:8001" }
-  }
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./tests/setup.ts"],
+  },
 });

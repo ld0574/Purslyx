@@ -71,8 +71,6 @@ cover/
 # Django stuff:
 *.log
 local_settings.py
-db.sqlite3
-db.sqlite3-journal
 
 # Flask stuff:
 instance/
@@ -177,6 +175,9 @@ venv.bak/
 # Purslyx 运行时私有文件与 PDF 渲染中间产物
 /data/
 /tmp/
+
+# Web 依赖与生产构建由 package-lock 和启动脚本恢复。
+node_modules/
 
 # Python interactive shell history
 .python_history

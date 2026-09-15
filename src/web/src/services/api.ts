@@ -34,6 +34,7 @@ export async function api<T = JsonMap>(
     idempotencyKey?: string;
     headers?: Record<string, string>;
     raw?: boolean;
+    redirect?: RequestRedirect;
   } = {},
 ): Promise<T> {
   const session = readSession();
@@ -47,6 +48,7 @@ export async function api<T = JsonMap>(
   const response = await fetch(path, {
     method: options.method || "GET",
     credentials: "same-origin",
+    redirect: options.redirect,
     headers,
     body: options.formData || (options.body !== undefined ? JSON.stringify(options.body) : undefined),
   });
@@ -63,6 +65,19 @@ export async function api<T = JsonMap>(
     throw new ApiError(response.status, error.code || "REQUEST_FAILED", error.message || "请求失败", error.action);
   }
   return (payload.data ?? payload) as T;
+}
+
+export async function deleteWithImpact(
+  path: string,
+  prompt: (impact: JsonMap) => string,
+): Promise<boolean> {
+  const impact = await api<JsonMap>(`${path}/deletion-impact`);
+  if (!window.confirm(prompt(impact))) return false;
+  await api(path, {
+    method: "DELETE",
+    headers: { "If-Match": `"${impact.impact_version}"` },
+  });
+  return true;
 }
 
 export { SESSION_KEY };

@@ -46,6 +46,21 @@ if [[ ! -x "$project_dir/.venv/bin/uvicorn" ]]; then
   exit 1
 fi
 
+web_dir="$project_dir/src/web"
+if ! command -v npm >/dev/null 2>&1; then
+  echo "找不到 npm，无法构建 Vue 前端" >&2
+  exit 1
+fi
+if [[ ! -f "$web_dir/package-lock.json" ]]; then
+  echo "找不到 src/web/package-lock.json，无法执行可复现安装" >&2
+  exit 1
+fi
+if [[ ! -x "$web_dir/node_modules/.bin/vue-tsc" ]]; then
+  npm --prefix "$web_dir" ci --no-audit --no-fund
+fi
+# 每次本地启动都先做类型检查并生成带哈希的生产资源。
+npm --prefix "$web_dir" run build
+
 cd "$project_dir"
 # 启动前只做向前迁移和幂等种子写入，避免运行进程用 create_all 隐式修改结构。
 "$project_dir/.venv/bin/python" "$project_dir/scripts/migrate_201.py"

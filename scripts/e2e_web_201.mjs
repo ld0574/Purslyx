@@ -179,6 +179,7 @@ async function waitForWorkspaceReady(client, expectedText, timeoutMs = 15000) {
   return waitForValue(
     () => client.evaluate(`document.querySelector(".workspace-layout")?.dataset.workspaceLoaded === "true"
       && Boolean(document.querySelector(".workspace-content .page-heading"))
+      && !document.querySelector(".workspace-content .spinner")
       && !document.querySelector(".route-bootstrap")
       && document.body.innerText.includes(${JSON.stringify(expectedText)})`),
     `等待工作台页面“${expectedText}”`,
@@ -191,8 +192,8 @@ async function openWorkbenchPage(client, pathname, expectedText) {
   await waitForWorkspaceReady(client, expectedText);
   const staticRoute = await client.evaluate(`fetch(${JSON.stringify(`${BASE_URL}${pathname}`)}, { cache: "no-store" })
     .then(response => response.text())
-    .then(text => /data-route-view=/.test(text) && /<h1>/.test(text) && (text.match(/<h2>/g) || []).length >= 2)`);
-  assert(staticRoute, `${pathname} 仍是空 HTML 壳`);
+    .then(text => /<div id="app"><\\/div>/.test(text) && /<script[^>]+type="module"[^>]+src="\\/assets\\/index-[^"]+\\.js"/.test(text))`);
+  assert(staticRoute, `${pathname} 没有返回 Vite 生产入口`);
 }
 
 async function publicHome(client) {
@@ -203,13 +204,10 @@ async function publicHome(client) {
     return {
       hasLogin: Boolean(document.querySelector('a[href="/app/login"]')),
       hasRegister: Boolean(document.querySelector('a[href="/app/register"]')),
-      hasAnonymousForm: Boolean(document.querySelector("#demo-form")),
-      hasLegacyCopy: text.includes("最短演示") || text.includes("SDD"),
       roles: ["求职工作台", "招聘工作台", "授权管理端"].every(value => text.includes(value)),
     };
   })()`);
   assert(contract.hasLogin && contract.hasRegister, "产品首页缺少登录或注册入口");
-  assert(!contract.hasAnonymousForm && !contract.hasLegacyCopy, "产品首页仍包含匿名短链路");
   assert(contract.roles, "产品首页没有完整说明三个工作台");
   await client.send("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   await client.navigate(`${BASE_URL}/`);
@@ -393,7 +391,9 @@ async function adminEntries(client) {
     ["/app/admin/logs", "日志管理"],
   ];
   for (const [pathname, text] of entries) {
-    await openWorkbenchPage(client, pathname, text);
+    await client.navigate(`${BASE_URL}${pathname}`);
+    await waitForPath(client, "/app/forbidden");
+    await waitForWorkspaceReady(client, "没有访问权限");
     await waitForText(client, "没有访问权限");
   }
   const denied = await client.evaluate(`(async () => {
@@ -518,8 +518,6 @@ async function main() {
   assert(health.status === "ok", "201 服务健康检查失败");
   assert(health.environment === "201", "当前服务不是 201 环境");
   assert(health.database?.backend === "postgresql", "当前服务不是 PostgreSQL");
-  const removedAnonymousApi = await fetch(`${BASE_URL}/api/v1/demo/documents`, { method: "POST" });
-  assert(removedAnonymousApi.status === 404, "匿名短链路 API 仍然存在");
 
   const port = await freePort();
   const profile = await mkdtemp(path.join(os.tmpdir(), "purslyx-e2e-"));

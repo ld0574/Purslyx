@@ -10,49 +10,22 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from .api import router as api_router
 from .config import settings
 from .db import engine, init_db
-from .errors import DomainError, NotFoundError
+from .errors import DomainError
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
-WEB_PAGE_ROOT = WEB_ROOT / "pages"
-WEB_ASSET_ROOT = WEB_ROOT / "assets"
-
-# 正式工作台按页面职责拆分入口；页面内部仍复用同一套会话、API 和视觉组件。
-WEB_PAGES = {
-    "home": "home.html",
-    "login": "login.html",
-    "register": "register.html",
-    "seeker-dashboard": "seeker-dashboard.html",
-    "seeker-resume": "seeker-resume.html",
-    "seeker-pool": "seeker-pool.html",
-    "seeker-report": "seeker-report.html",
-    "seeker-rewrite": "seeker-rewrite.html",
-    "seeker-variants": "seeker-variants.html",
-    "seeker-interview": "seeker-interview.html",
-    "seeker-tasks": "seeker-tasks.html",
-    "seeker-usage": "seeker-usage.html",
-    "seeker-stats": "seeker-stats.html",
-    "recruiter-dashboard": "recruiter-dashboard.html",
-    "recruiter-materials": "recruiter-materials.html",
-    "recruiter-report": "recruiter-report.html",
-    "recruiter-tasks": "recruiter-tasks.html",
-    "recruiter-usage": "recruiter-usage.html",
-    "recruiter-stats": "recruiter-stats.html",
-    "admin-metrics": "admin-metrics.html",
-    "admin-users": "admin-users.html",
-    "admin-roles": "admin-roles.html",
-    "admin-usage": "admin-usage.html",
-    "admin-logs": "admin-logs.html",
-}
+WEB_DIST_ROOT = WEB_ROOT / "dist"
+WEB_INDEX = WEB_DIST_ROOT / "index.html"
+WEB_ASSET_ROOT = WEB_DIST_ROOT / "assets"
 
 
 def utcnow() -> datetime:
@@ -128,6 +101,8 @@ app.add_middleware(
     allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-CSRF-Token", "Idempotency-Key"],
 )
 app.include_router(api_router)
+# Vite 生产构建的带哈希资源统一从 /assets 提供；目录缺失时页面入口会返回明确的构建提示。
+app.mount("/assets", StaticFiles(directory=WEB_ASSET_ROOT, check_dir=False), name="web-assets")
 
 
 @app.exception_handler(DomainError)
@@ -165,52 +140,31 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 @app.get("/", include_in_schema=False)
 def index() -> FileResponse:
-    """提供独立的公共首页；正式业务从登录页和各模块页面进入。"""
+    """公共首页与工作台共用 Vue 应用入口。"""
 
-    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES["home"], headers={"Cache-Control": "no-store"})
-
-
-@app.get("/app/{page_name}", include_in_schema=False)
-def auth_page(page_name: str = PathParam(min_length=1, max_length=32)) -> FileResponse:
-    """提供登录和注册这两个独立的认证入口。"""
-
-    if page_name not in {"login", "register"}:
-        raise NotFoundError("页面不存在")
-    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES[page_name], headers={"Cache-Control": "no-store"})
+    return _web_index()
 
 
-@app.get("/app/{role}/{page_name}", include_in_schema=False)
-def workbench_page(
-    role: str = PathParam(min_length=1, max_length=32),
-    page_name: str = PathParam(min_length=1, max_length=32),
-) -> FileResponse:
-    """提供求职、招聘和管理端的独立模块页面入口。"""
+def _web_index() -> FileResponse:
+    """返回 SPA 入口；开发者忘记构建前端时给出可执行的修复说明。"""
 
-    page_key = f"{role}-{page_name}"
-    if page_key not in WEB_PAGES:
-        raise NotFoundError("页面不存在")
-    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES[page_key], headers={"Cache-Control": "no-store"})
+    if not WEB_INDEX.is_file():
+        raise DomainError("WEB_BUILD_MISSING", "前端尚未构建，请在 src/web 执行 npm ci && npm run build", 503)
+    return FileResponse(WEB_INDEX, media_type="text/html", headers={"Cache-Control": "no-store"})
 
 
-@app.get("/assets/styles.css", include_in_schema=False)
-def web_stylesheet() -> FileResponse:
-    """返回所有页面共享的视觉样式。"""
+@app.get("/app/{path:path}", include_in_schema=False)
+def app_page(path: str) -> FileResponse:
+    """Vue Router 的认证、业务和管理路由都回落到同一生产入口。"""
 
-    return FileResponse(WEB_ASSET_ROOT / "styles.css", media_type="text/css", headers={"Cache-Control": "no-store"})
-
-
-@app.get("/assets/workbench.js", include_in_schema=False)
-def web_workbench_script() -> FileResponse:
-    """返回所有页面共享的 API 客户端和交互逻辑。"""
-
-    return FileResponse(WEB_ASSET_ROOT / "workbench.js", media_type="text/javascript", headers={"Cache-Control": "no-store"})
+    return _web_index()
 
 
 @app.get("/job-pool/items", include_in_schema=False)
 def job_pool_page() -> FileResponse:
     """让浏览器脚本返回的确认链接直接落到匹配池独立页面。"""
 
-    return FileResponse(WEB_PAGE_ROOT / WEB_PAGES["seeker-pool"], headers={"Cache-Control": "no-store"})
+    return _web_index()
 
 
 @app.get("/health", tags=["system"])

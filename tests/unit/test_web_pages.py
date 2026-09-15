@@ -1,90 +1,114 @@
-"""多页面前端入口的静态契约回归。"""
+"""Vue 工程化前端入口和关键契约回归。"""
 
+import json
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = PROJECT_ROOT / "src" / "web"
 
 
-def test_workbench_has_independent_page_entries() -> None:
-    """每个首版工作台模块都必须有独立 HTML 入口，而不是只在单页里切换。"""
+def read(path: str) -> str:
+    return (WEB_ROOT / path).read_text(encoding="utf-8")
 
-    expected_pages = {
-        "home.html",
-        "login.html",
-        "register.html",
-        "seeker-dashboard.html",
-        "seeker-resume.html",
-        "seeker-pool.html",
-        "seeker-report.html",
-        "seeker-rewrite.html",
-        "seeker-variants.html",
-        "seeker-interview.html",
-        "seeker-tasks.html",
-        "seeker-usage.html",
-        "seeker-stats.html",
-        "recruiter-dashboard.html",
-        "recruiter-materials.html",
-        "recruiter-report.html",
-        "recruiter-tasks.html",
-        "recruiter-usage.html",
-        "recruiter-stats.html",
-        "admin-metrics.html",
-        "admin-users.html",
-        "admin-roles.html",
-        "admin-usage.html",
-        "admin-logs.html",
+
+def test_vue_application_has_all_product_routes_and_views() -> None:
+    """首版业务必须有独立 Vue 路由和实现文件，不能退回单个首页样稿。"""
+
+    expected_views = {
+        "HomeView.vue",
+        "AuthView.vue",
+        "DashboardView.vue",
+        "MaterialsView.vue",
+        "PoolView.vue",
+        "ReportView.vue",
+        "RewriteView.vue",
+        "VariantsView.vue",
+        "InterviewView.vue",
+        "TasksView.vue",
+        "UsageView.vue",
+        "StatsView.vue",
+        "PermissionDeniedView.vue",
+        "admin/AdminMetricsView.vue",
+        "admin/AdminUsersView.vue",
+        "admin/AdminRolesView.vue",
+        "admin/AdminUsageView.vue",
+        "admin/AdminLogsView.vue",
     }
-    page_root = WEB_ROOT / "pages"
-    assert {path.name for path in page_root.glob("*.html")} >= expected_pages
-    for name in expected_pages:
-        content = (page_root / name).read_text(encoding="utf-8")
-        assert 'id="app"' in content
-        assert 'data-route-view=' in content
-        assert "<h1>" in content
-        assert content.count("<h2>") >= 2
-        assert 'href="/assets/styles.css"' in content
-        assert 'src="/assets/workbench.js"' in content
+    for name in expected_views:
+        assert (WEB_ROOT / "src" / "views" / name).is_file(), name
+    router = read("src/router.ts")
+    expected_routes = {
+        "/app/login",
+        "/app/register",
+        "/app/seeker/resume",
+        "/app/seeker/pool",
+        "/app/seeker/rewrite",
+        "/app/seeker/variants",
+        "/app/seeker/interview",
+        "/app/admin/metrics",
+        "/app/admin/users",
+        "/app/admin/roles",
+        "/app/admin/usage",
+        "/app/admin/logs",
+    }
+    assert all(route in router for route in expected_routes)
+    assert "/app/:role(seeker|recruiter)/dashboard" in router
+    assert "/app/:role(seeker|recruiter)/report" in router
+    assert "/app/:role(seeker|recruiter)/tasks" in router
+    assert "/app/:role(seeker|recruiter)/usage" in router
+    assert "/app/:role(seeker|recruiter)/stats" in router
 
 
-def test_workbench_navigation_uses_real_page_loads() -> None:
-    """多页面菜单必须进入真实 URL，不能继续只在当前文档里替换内容。"""
-
-    script_text = (WEB_ROOT / "assets" / "workbench.js").read_text(encoding="utf-8")
-    assert "event.target.closest('a[data-page], button[data-page]')" in script_text
-    assert 'event.target.closest("[data-page]")' not in script_text
-    assert 'if (pageNode.matches("a[href]")) return;' in script_text
-    assert "window.location.assign(routeFor(pageNode.dataset.page));" in script_text
-
-
-def test_public_home_is_a_product_entry() -> None:
-    """公共首页只提供正式产品能力与认证入口，不再承载匿名业务短链路。"""
-
-    home_text = (WEB_ROOT / "pages" / "home.html").read_text(encoding="utf-8")
-    script_text = (WEB_ROOT / "assets" / "workbench.js").read_text(encoding="utf-8")
-    assert 'href="/app/login"' in home_text
-    assert 'href="/app/register"' in home_text
-    assert "function homePage" in script_text
-    assert 'id="demo-form"' not in home_text
-    assert 'id="demo-form"' not in script_text
-    assert "/api/v1/demo" not in script_text
-    assert "SDD" not in home_text
-    assert "SDD" not in script_text
+def test_vite_and_typescript_are_the_production_frontend_contract() -> None:
+    package = json.loads(read("package.json"))
+    assert package["dependencies"]["vue"].startswith("^")
+    assert "pinia" in package["dependencies"]
+    assert "vue-router" in package["dependencies"]
+    assert "element-plus" in package["dependencies"]
+    assert "vue-tsc --noEmit" in package["scripts"]["build"]
+    assert "vitest run" in package["scripts"]["test"]
+    assert (WEB_ROOT / "package-lock.json").is_file()
+    index = read("index.html")
+    assert 'id="app"' in index
+    assert 'src="/src/main.ts"' in index
+    main = read("src/main.ts")
+    assert "createApp(App)" in main
+    assert "createPinia()" in main
+    assert "app.use(router)" in main
 
 
-def test_shared_workbench_assets_are_executable_contract() -> None:
-    """共享资源必须存在，所有页面才能复用同一份 API 和视觉实现。"""
+def test_api_client_preserves_auth_csrf_and_idempotency_boundaries() -> None:
+    client = read("src/services/api.ts")
+    assert 'headers.Authorization = `Bearer ${session.token}`' in client
+    assert 'headers["X-CSRF-Token"] = session.csrf' in client
+    assert 'headers["Idempotency-Key"] = options.idempotencyKey' in client
+    assert 'credentials: "same-origin"' in client
+    assert "redirect: options.redirect" in client
 
-    stylesheet = WEB_ROOT / "assets" / "styles.css"
-    script = WEB_ROOT / "assets" / "workbench.js"
-    assert stylesheet.is_file() and "--brand:" in stylesheet.read_text(encoding="utf-8")
-    script_text = script.read_text(encoding="utf-8")
-    assert "function routeFor" in script_text
-    assert "async function loadWorkspace" in script_text
-    assert "localStorage.getItem(SESSION_KEY)" in script_text
-    assert "data-rewrite-editor" in script_text
-    assert "已修改，待重新确认" in script_text
-    assert 'feedback_failed: "反馈失败"' in script_text
-    assert 'data-action="retry-task"' in script_text
-    assert "岗位期望已有新版本" in script_text
-    assert "尚未应用" in script_text
+
+def test_key_pages_keep_browser_and_business_contracts() -> None:
+    materials = read("src/views/MaterialsView.vue")
+    pool = read("src/views/PoolView.vue")
+    interview = read("src/views/InterviewView.vue")
+    tasks = read("src/views/TasksView.vue")
+    admin = "\n".join(read(f"src/views/admin/{name}") for name in ["AdminUsersView.vue", "AdminRolesView.vue", "AdminUsageView.vue", "AdminLogsView.vue"])
+    for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
+        assert f'id="{selector}"' in materials
+    assert 'id="pool-form"' in pool
+    assert 'redirect: "manual"' in pool
+    assert 'id="answer-form"' in interview
+    assert 'data-action="retry-task"' in tasks
+    for selector in ["admin-user-search", "admin-role-form", "admin-grant-form"]:
+        assert f'id="{selector}"' in admin
+    assert 'data-action="open-admin-user"' in admin
+    assert 'data-action="export-logs"' in admin
+    assert 'data-action="admin-log-type"' in admin
+
+
+def test_fastapi_serves_vite_dist_without_legacy_fallback() -> None:
+    server = (PROJECT_ROOT / "src" / "server" / "app" / "main.py").read_text(encoding="utf-8")
+    assert 'WEB_DIST_ROOT = WEB_ROOT / "dist"' in server
+    assert 'app.mount("/assets", StaticFiles' in server
+    assert '@app.get("/app/{path:path}"' in server
+    assert "WEB_BUILD_MISSING" in server
+    assert "WEB_PAGE_ROOT" not in server

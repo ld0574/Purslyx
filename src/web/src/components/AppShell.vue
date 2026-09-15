@@ -4,32 +4,43 @@ import { useRoute, useRouter } from "vue-router";
 
 import { useAuthStore } from "@/stores/auth";
 
+interface NavItem {
+  label: string;
+  to: string;
+  hint: string;
+}
+
+interface AdminNavItem extends NavItem {
+  visible: boolean;
+}
+
 const auth = useAuthStore();
 const route = useRoute();
 const router = useRouter();
 const role = computed(() => auth.role || "seeker");
-const mainNav = computed(() => role.value === "seeker"
+const mainNav = computed<NavItem[]>(() => role.value === "seeker"
   ? [
-      ["工作台", `/app/seeker/dashboard`, "概览"], ["简历", "/app/seeker/resume", "资料与期望"],
-      ["匹配池", "/app/seeker/pool", "岗位与报告"], ["事实与改写", "/app/seeker/rewrite", "真实表达"],
-      ["岗位版简历", "/app/seeker/variants", "排版与 PDF"], ["面试", "/app/seeker/interview", "逐轮练习"],
-      ["任务", "/app/seeker/tasks", "执行恢复"], ["用量", "/app/seeker/usage", "次数流水"],
-      ["统计", "/app/seeker/stats", "反馈与结果"],
+      { label: "工作台", to: "/app/seeker/dashboard", hint: "概览" }, { label: "简历", to: "/app/seeker/resume", hint: "资料与期望" },
+      { label: "匹配池", to: "/app/seeker/pool", hint: "岗位与报告" }, { label: "事实与改写", to: "/app/seeker/rewrite", hint: "真实表达" },
+      { label: "岗位版简历", to: "/app/seeker/variants", hint: "排版与 PDF" }, { label: "面试", to: "/app/seeker/interview", hint: "逐轮练习" },
+      { label: "任务", to: "/app/seeker/tasks", hint: "执行恢复" }, { label: "用量", to: "/app/seeker/usage", hint: "次数流水" },
+      { label: "统计", to: "/app/seeker/stats", hint: "反馈与结果" },
     ]
   : [
-      ["工作台", "/app/recruiter/dashboard", "概览"], ["候选人资料", "/app/recruiter/materials", "JD 与简历"],
-      ["单人报告", "/app/recruiter/report", "证据与条件"], ["任务", "/app/recruiter/tasks", "执行恢复"],
-      ["用量", "/app/recruiter/usage", "次数流水"], ["统计", "/app/recruiter/stats", "反馈与结果"],
+      { label: "工作台", to: "/app/recruiter/dashboard", hint: "概览" }, { label: "候选人资料", to: "/app/recruiter/materials", hint: "JD 与简历" },
+      { label: "单人报告", to: "/app/recruiter/report", hint: "证据与条件" }, { label: "任务", to: "/app/recruiter/tasks", hint: "执行恢复" },
+      { label: "用量", to: "/app/recruiter/usage", hint: "次数流水" }, { label: "统计", to: "/app/recruiter/stats", hint: "反馈与结果" },
     ]);
 const adminNav = computed(() => {
   const p = auth.permissions;
-  return [
-    ["站点概况", "/app/admin/metrics", "全站指标", p.has("admin.stats.read")],
-    ["用户管理", "/app/admin/users", "账号与状态", p.has("admin.users.read")],
-    ["角色权限", "/app/admin/roles", "授权组合", p.has("admin.roles.manage")],
-    ["次数管理", "/app/admin/usage", "发放与流水", p.has("admin.usage.grant")],
-    ["日志管理", "/app/admin/logs", "审计与导出", [...p].some((value) => value.startsWith("admin.logs."))],
-  ].filter((item) => item[3]);
+  const items: AdminNavItem[] = [
+    { label: "站点概况", to: "/app/admin/metrics", hint: "全站指标", visible: p.has("admin.stats.read") },
+    { label: "用户管理", to: "/app/admin/users", hint: "账号与状态", visible: p.has("admin.users.read") },
+    { label: "角色权限", to: "/app/admin/roles", hint: "授权组合", visible: p.has("admin.roles.manage") },
+    { label: "次数管理", to: "/app/admin/usage", hint: "发放与流水", visible: p.has("admin.usage.grant") },
+    { label: "日志管理", to: "/app/admin/logs", hint: "审计与导出", visible: [...p].some((value) => value.startsWith("admin.logs.")) },
+  ];
+  return items.filter((item) => item.visible);
 });
 
 async function logout() {
@@ -51,13 +62,13 @@ async function logout() {
     <aside class="sidebar">
       <div class="side-brand"><span class="brand-mark">P</span><div>Purslyx<small>{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</small></div></div>
       <nav class="side-nav" aria-label="业务导航">
-        <RouterLink v-for="item in mainNav" :key="String(item[1])" class="nav-button" :to="String(item[1])" :class="{ active: route.path === item[1] }">
-          <span>{{ item[0] }}</span><small>{{ item[2] }}</small>
+        <RouterLink v-for="item in mainNav" :key="item.to" class="nav-button" :to="item.to" :class="{ active: route.path === item.to }">
+          <span>{{ item.label }}</span><small>{{ item.hint }}</small>
         </RouterLink>
         <template v-if="adminNav.length">
           <div class="eyebrow nav-group">授权管理</div>
-          <RouterLink v-for="item in adminNav" :key="String(item[1])" class="nav-button" :to="String(item[1])" :class="{ active: route.path === item[1] }">
-            <span>{{ item[0] }}</span><small>{{ item[2] }}</small>
+          <RouterLink v-for="item in adminNav" :key="item.to" class="nav-button" :to="item.to" :class="{ active: route.path === item.to }">
+            <span>{{ item.label }}</span><small>{{ item.hint }}</small>
           </RouterLink>
         </template>
       </nav>

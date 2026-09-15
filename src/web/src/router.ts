@@ -26,6 +26,7 @@ const routes: RouteRecordRaw[] = [
   { path: "/app/admin/roles", name: "admin-roles", component: () => import("@/views/admin/AdminRolesView.vue"), meta: { permission: "admin.roles.manage", title: "角色权限" } },
   { path: "/app/admin/usage", name: "admin-usage", component: () => import("@/views/admin/AdminUsageView.vue"), meta: { permission: "admin.usage.grant", title: "次数管理" } },
   { path: "/app/admin/logs", name: "admin-logs", component: () => import("@/views/admin/AdminLogsView.vue"), meta: { permission: "admin", title: "日志管理" } },
+  { path: "/app/forbidden", name: "forbidden", component: () => import("@/views/PermissionDeniedView.vue"), meta: { title: "没有访问权限" } },
   { path: "/:pathMatch(.*)*", component: () => import("@/views/NotFoundView.vue"), meta: { public: true, title: "页面不存在" } },
 ];
 
@@ -41,8 +42,8 @@ router.beforeEach(async (to) => {
   if (expectedRole && expectedRole !== auth.role) return `/app/${auth.role}/dashboard`;
   const permission = to.meta.permission as string | undefined;
   if (permission === "admin") {
-    return [...auth.permissions].some((value) => value.startsWith("admin.logs.")) || { name: "dashboard", params: { role: auth.role } };
+    return [...auth.permissions].some((value) => value.startsWith("admin.logs.")) || { name: "forbidden", query: { from: to.fullPath } };
   }
-  if (permission && !auth.permissions.has(permission)) return { name: "dashboard", params: { role: auth.role } };
+  if (permission && !auth.permissions.has(permission)) return { name: "forbidden", query: { from: to.fullPath } };
   return true;
 });
