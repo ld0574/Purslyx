@@ -526,6 +526,8 @@ async function main() {
   assert(health.status === "ok", "201 服务健康检查失败");
   assert(health.environment === "201", "当前服务不是 201 环境");
   assert(health.database?.backend === "postgresql", "当前服务不是 PostgreSQL");
+  const favicon = await fetch(`${BASE_URL}/favicon.svg`);
+  assert(favicon.status === 200 && favicon.headers.get("content-type")?.includes("image/svg+xml"), "站点图标不可用");
 
   const port = await freePort();
   const profile = await mkdtemp(path.join(os.tmpdir(), "purslyx-e2e-"));

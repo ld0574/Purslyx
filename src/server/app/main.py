@@ -26,6 +26,7 @@ WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 WEB_DIST_ROOT = WEB_ROOT / "dist"
 WEB_INDEX = WEB_DIST_ROOT / "index.html"
 WEB_ASSET_ROOT = WEB_DIST_ROOT / "assets"
+WEB_FAVICON = WEB_DIST_ROOT / "favicon.svg"
 
 
 def utcnow() -> datetime:
@@ -143,6 +144,15 @@ def index() -> FileResponse:
     """公共首页与工作台共用 Vue 应用入口。"""
 
     return _web_index()
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon() -> FileResponse:
+    """提供 Vite public 目录复制出的站点图标。"""
+
+    if not WEB_FAVICON.is_file():
+        raise DomainError("WEB_BUILD_MISSING", "前端站点图标尚未构建", 503)
+    return FileResponse(WEB_FAVICON, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
 
 
 def _web_index() -> FileResponse:
