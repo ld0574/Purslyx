@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     Index,
@@ -50,7 +51,15 @@ class TimestampMixin:
 
 class Account(TimestampMixin, Base):
     __tablename__ = "accounts"
-    __table_args__ = (UniqueConstraint("email_normalized", name="uk_accounts_email"),)
+    __table_args__ = (
+        UniqueConstraint("email_normalized", name="uk_accounts_email"),
+        CheckConstraint("registration_role IN ('seeker', 'recruiter')", name="ck_accounts_registration_role"),
+        CheckConstraint(
+            "status IN ('pending_verification', 'active', 'suspended')",
+            name="ck_accounts_status",
+        ),
+        CheckConstraint("revision >= 1", name="ck_accounts_revision"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -79,6 +88,12 @@ class WebSession(Base):
 
 class OneTimeToken(Base):
     __tablename__ = "account_tokens"
+    __table_args__ = (
+        CheckConstraint(
+            "token_type IN ('verify_email', 'reset_password', 'recover_account')",
+            name="ck_account_tokens_type",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -107,6 +122,7 @@ class BrowserAuthCode(Base):
 
 class BrowserSession(Base):
     __tablename__ = "browser_sessions"
+    __table_args__ = (CheckConstraint("scope_version >= 1", name="ck_browser_sessions_scope_version"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -122,6 +138,7 @@ class RateLimitBucket(Base):
     """基于 PostgreSQL 的限频桶；避免多进程部署时只在内存中限频。"""
 
     __tablename__ = "rate_limit_buckets"
+    __table_args__ = (CheckConstraint("hit_count >= 0", name="ck_rate_limit_buckets_hit_count"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     bucket_key: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
@@ -141,6 +158,10 @@ class AdminPermission(Base):
 
 class AdminRole(TimestampMixin, Base):
     __tablename__ = "admin_roles"
+    __table_args__ = (
+        CheckConstraint("status IN ('active', 'archived')", name="ck_admin_roles_status"),
+        CheckConstraint("revision >= 1", name="ck_admin_roles_revision"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -181,6 +202,18 @@ class Document(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint("document_type IN ('resume', 'job_description', 'job')", name="ck_documents_type"),
+        CheckConstraint(
+            "subject_type IN ('self_resume', 'candidate_resume', 'job_description', 'resume', 'job')",
+            name="ck_documents_subject_type",
+        ),
+        CheckConstraint("source_type IN ('text', 'pdf', 'docx', 'doc')", name="ck_documents_source_type"),
+        CheckConstraint(
+            "status IN ('importing', 'parsing', 'unconfirmed', 'awaiting_confirmation', "
+            "'confirmed', 'available', 'failed', 'deleted')",
+            name="ck_documents_status",
+        ),
+        CheckConstraint("draft_revision >= 1", name="ck_documents_draft_revision"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -213,6 +246,7 @@ class DocumentVersion(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint("version_no >= 1", name="ck_document_versions_version_no"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -238,6 +272,12 @@ class Preference(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint(
+            "source_type IN ('self_confirmed', 'candidate_disclosed')",
+            name="ck_job_preferences_source_type",
+        ),
+        CheckConstraint("status IN ('active', 'archived')", name="ck_job_preferences_status"),
+        CheckConstraint("revision >= 1", name="ck_job_preferences_revision"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -265,6 +305,8 @@ class Fact(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint("status IN ('active', 'archived')", name="ck_resume_facts_status"),
+        CheckConstraint("revision >= 1", name="ck_resume_facts_revision"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -294,6 +336,16 @@ class Task(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint(
+            "task_type IN ('document_parse', 'analysis', 'rewrite', 'resume_export', "
+            "'interview_opening', 'interview_feedback', 'interview_summary', 'log_export')",
+            name="ck_async_tasks_type",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'retry_wait', 'succeeded', 'failed', 'cancelled')",
+            name="ck_async_tasks_status",
+        ),
+        CheckConstraint("usage_reserved >= 0 AND retry_count >= 0", name="ck_async_tasks_counts"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -320,7 +372,14 @@ class Task(TimestampMixin, Base):
 
 class UsageBalance(Base):
     __tablename__ = "usage_balances"
-    __table_args__ = (UniqueConstraint("account_id", "feature", name="uk_usage_balance"),)
+    __table_args__ = (
+        UniqueConstraint("account_id", "feature", name="uk_usage_balance"),
+        CheckConstraint("feature IN ('analysis', 'rewrite', 'interview')", name="ck_usage_balances_feature"),
+        CheckConstraint(
+            "granted >= 0 AND consumed >= 0 AND reserved >= 0 AND consumed + reserved <= granted",
+            name="ck_usage_balances_amounts",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -333,6 +392,10 @@ class UsageBalance(Base):
 
 class UsageLedger(Base):
     __tablename__ = "usage_ledger_entries"
+    __table_args__ = (
+        CheckConstraint("feature IN ('analysis', 'rewrite', 'interview')", name="ck_usage_ledger_feature"),
+        CheckConstraint("event_type IN ('grant', 'reserve', 'settle', 'release')", name="ck_usage_ledger_event"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -357,6 +420,13 @@ class JobPoolItem(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
+        CheckConstraint("source_type IN ('manual', 'browser_capture')", name="ck_job_pool_source_type"),
+        CheckConstraint("platform IS NULL OR platform IN ('boss', 'liepin')", name="ck_job_pool_platform"),
+        CheckConstraint(
+            "analysis_status IN ('awaiting_requirements', 'queued', 'running', 'available', 'failed', 'deleted')",
+            name="ck_job_pool_analysis_status",
+        ),
+        CheckConstraint("revision >= 1", name="ck_job_pool_revision"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -383,7 +453,22 @@ class JobPoolItem(TimestampMixin, Base):
 
 class Analysis(TimestampMixin, Base):
     __tablename__ = "analysis_reports"
-    __table_args__ = (Index("ix_analysis_account_status", "account_id", "status", "created_at"),)
+    __table_args__ = (
+        Index("ix_analysis_account_status", "account_id", "status", "created_at"),
+        CheckConstraint(
+            "context_type IN ('seeker_pool', 'recruiter_single', 'seeker', 'demo')",
+            name="ck_analysis_reports_context_type",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'available', 'succeeded', 'failed', 'deleted')",
+            name="ck_analysis_reports_status",
+        ),
+        CheckConstraint("ability_score IS NULL OR ability_score BETWEEN 0 AND 100", name="ck_analysis_ability_score"),
+        CheckConstraint(
+            "evidence_coverage IS NULL OR evidence_coverage BETWEEN 0 AND 1",
+            name="ck_analysis_evidence_coverage",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -410,6 +495,12 @@ class Analysis(TimestampMixin, Base):
 
 class Rewrite(TimestampMixin, Base):
     __tablename__ = "resume_rewrites"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'available', 'failed', 'deleted')",
+            name="ck_resume_rewrites_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -433,6 +524,8 @@ class RewriteDecision(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
+        CheckConstraint("decision IN ('adopt', 'keep_original', 'revert')", name="ck_rewrite_decisions_decision"),
+        CheckConstraint("decision_no >= 1", name="ck_rewrite_decisions_decision_no"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -458,6 +551,8 @@ class ResumeVariant(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint("status IN ('editing', 'deleted')", name="ck_resume_variants_status"),
+        CheckConstraint("revision >= 1", name="ck_resume_variants_revision"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -484,6 +579,7 @@ class ResumeVariantVersion(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
+        CheckConstraint("version_no >= 1", name="ck_resume_variant_versions_version_no"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -502,6 +598,13 @@ class ResumeVariantVersion(Base):
 
 class Export(Base):
     __tablename__ = "resume_exports"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'exporting', 'available', 'failed', 'expired')",
+            name="ck_resume_exports_status",
+        ),
+        CheckConstraint("page_count IS NULL OR page_count >= 1", name="ck_resume_exports_page_count"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -519,6 +622,14 @@ class Export(Base):
 
 class Interview(TimestampMixin, Base):
     __tablename__ = "interview_sessions"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('opening', 'opening_failed', 'awaiting_answer', 'processing', "
+            "'feedback_failed', 'summary_failed', 'completed', 'ended_early', 'deleted')",
+            name="ck_interview_sessions_status",
+        ),
+        CheckConstraint("revision >= 1", name="ck_interview_sessions_revision"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -548,6 +659,13 @@ class Feedback(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint(
+            "feedback_type IN ('issue', 'suggestion', 'payment_intent', 'other')",
+            name="ck_product_feedback_type",
+        ),
+        CheckConstraint("rating IS NULL OR rating BETWEEN 1 AND 5", name="ck_product_feedback_rating"),
+        CheckConstraint("status IN ('new', 'reviewed', 'closed')", name="ck_product_feedback_status"),
+        CheckConstraint("revision >= 1", name="ck_product_feedback_revision"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -570,7 +688,10 @@ class Feedback(TimestampMixin, Base):
 
 class ApplyClick(Base):
     __tablename__ = "apply_click_events"
-    __table_args__ = (UniqueConstraint("account_id", "click_token_hash", name="uk_apply_click_token"),)
+    __table_args__ = (
+        UniqueConstraint("account_id", "click_token_hash", name="uk_apply_click_token"),
+        CheckConstraint("platform IN ('boss', 'liepin')", name="ck_apply_click_platform"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -586,6 +707,16 @@ class ApplyClick(Base):
 
 class ModelCall(Base):
     __tablename__ = "model_call_attempts"
+    __table_args__ = (
+        CheckConstraint("status IN ('running', 'succeeded', 'failed')", name="ck_model_call_attempts_status"),
+        CheckConstraint(
+            "(input_tokens IS NULL OR input_tokens >= 0) AND "
+            "(output_tokens IS NULL OR output_tokens >= 0) AND "
+            "(cost_usd IS NULL OR cost_usd >= 0) AND "
+            "(duration_ms IS NULL OR duration_ms >= 0)",
+            name="ck_model_call_attempts_metrics",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -632,6 +763,9 @@ class AuditEvent(Base):
 
 class SecurityEvent(Base):
     __tablename__ = "security_events"
+    __table_args__ = (
+        CheckConstraint("outcome IN ('succeeded', 'failed')", name="ck_security_events_outcome"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -654,6 +788,11 @@ class LogExport(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
+        CheckConstraint("log_type IN ('operations', 'security', 'tasks')", name="ck_log_exports_type"),
+        CheckConstraint(
+            "status IN ('queued', 'exporting', 'downloadable', 'failed', 'expired')",
+            name="ck_log_exports_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -672,7 +811,11 @@ class LogExport(Base):
 
 class MetricRollup(Base):
     __tablename__ = "daily_metric_rollups"
-    __table_args__ = (UniqueConstraint("metric_date", "registration_role", "feature", name="uk_daily_metric"),)
+    __table_args__ = (
+        UniqueConstraint("metric_date", "registration_role", "feature", name="uk_daily_metric"),
+        CheckConstraint("registration_role IN ('seeker', 'recruiter')", name="ck_daily_metrics_role"),
+        CheckConstraint("revision >= 1", name="ck_daily_metrics_revision"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     metric_date: Mapped[str] = mapped_column(String(10), index=True, nullable=False)
@@ -692,6 +835,14 @@ class StoredFile(Base):
     """私有原件、成品和导出文件的元数据。"""
 
     __tablename__ = "stored_files"
+    __table_args__ = (
+        CheckConstraint(
+            "purpose IN ('document_source', 'resume_pdf', 'log_export')",
+            name="ck_stored_files_purpose",
+        ),
+        CheckConstraint("byte_size >= 0", name="ck_stored_files_byte_size"),
+        CheckConstraint("status IN ('available', 'deleted')", name="ck_stored_files_status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -711,7 +862,14 @@ class DocumentDraft(Base):
     """资料解析草稿；确认后保留最小状态，正文可按清理策略移除。"""
 
     __tablename__ = "document_drafts"
-    __table_args__ = (Index("ix_document_drafts_account_document", "account_id", "document_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_document_drafts_account_document", "account_id", "document_id", "created_at"),
+        CheckConstraint("revision >= 1", name="ck_document_drafts_revision"),
+        CheckConstraint(
+            "status IN ('unconfirmed', 'confirmed', 'expired', 'failed')",
+            name="ck_document_drafts_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -741,6 +899,11 @@ class PreferenceVersion(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint("version_no >= 1", name="ck_preference_versions_version_no"),
+        CheckConstraint(
+            "source_type IN ('self_confirmed', 'candidate_disclosed')",
+            name="ck_preference_versions_source_type",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -769,6 +932,7 @@ class FactVersion(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL AND deleted_at IS NULL"),
         ),
+        CheckConstraint("version_no >= 1", name="ck_fact_versions_version_no"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -791,6 +955,14 @@ class RewriteSegment(Base):
     """逐段改写结果，避免把所有段落塞进不可筛选的大 JSON。"""
 
     __tablename__ = "resume_rewrite_segments"
+    __table_args__ = (
+        CheckConstraint(
+            "current_decision IS NULL OR current_decision IN ('adopt', 'keep_original', 'revert')",
+            name="ck_rewrite_segments_decision",
+        ),
+        CheckConstraint("current_decision_no >= 0", name="ck_rewrite_segments_decision_no"),
+        CheckConstraint("status IN ('available', 'deleted')", name="ck_rewrite_segments_status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -833,6 +1005,15 @@ class BrowserJobDraft(Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
+        CheckConstraint("platform IN ('boss', 'liepin')", name="ck_browser_job_drafts_platform"),
+        CheckConstraint(
+            "work_mode IS NULL OR work_mode IN ('onsite', 'hybrid', 'remote')",
+            name="ck_browser_job_drafts_work_mode",
+        ),
+        CheckConstraint(
+            "status IN ('awaiting_confirmation', 'confirmed', 'expired')",
+            name="ck_browser_job_drafts_status",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -864,7 +1045,12 @@ class AnalysisDimensionScore(Base):
     """报告固定能力维度得分。"""
 
     __tablename__ = "analysis_dimension_scores"
-    __table_args__ = (UniqueConstraint("analysis_id", "dimension_key", name="uk_analysis_dimension"),)
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "dimension_key", name="uk_analysis_dimension"),
+        CheckConstraint("base_weight BETWEEN 0 AND 1", name="ck_analysis_dimensions_base_weight"),
+        CheckConstraint("effective_weight BETWEEN 0 AND 1", name="ck_analysis_dimensions_effective_weight"),
+        CheckConstraint("score IS NULL OR score BETWEEN 0 AND 100", name="ck_analysis_dimensions_score"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -882,7 +1068,15 @@ class AnalysisRequirementResult(Base):
     """报告中逐条 JD 要求的结论。"""
 
     __tablename__ = "analysis_requirement_results"
-    __table_args__ = (UniqueConstraint("analysis_id", "requirement_id", name="uk_analysis_requirement"),)
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "requirement_id", name="uk_analysis_requirement"),
+        CheckConstraint("position_no >= 1", name="ck_analysis_requirements_position"),
+        CheckConstraint(
+            "finding_type IN ('supported', 'partially_supported', 'needs_confirmation', 'gap')",
+            name="ck_analysis_requirements_finding_type",
+        ),
+        CheckConstraint("match_coefficient BETWEEN 0 AND 1", name="ck_analysis_requirements_coefficient"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -917,7 +1111,21 @@ class AnalysisConditionResult(Base):
     """岗位方向、地点、办公方式、薪资的条件对照。"""
 
     __tablename__ = "analysis_condition_results"
-    __table_args__ = (UniqueConstraint("analysis_id", "condition_code", name="uk_analysis_condition"),)
+    __table_args__ = (
+        UniqueConstraint("analysis_id", "condition_code", name="uk_analysis_condition"),
+        CheckConstraint(
+            "condition_code IN ('job_title', 'location', 'work_mode', 'salary')",
+            name="ck_analysis_conditions_code",
+        ),
+        CheckConstraint(
+            "result_status IN ('matched', 'conflicted', 'unknown', 'unrestricted')",
+            name="ck_analysis_conditions_status",
+        ),
+        CheckConstraint(
+            "strength IS NULL OR strength IN ('prefer', 'important', 'required', 'negotiable')",
+            name="ck_analysis_conditions_strength",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -950,6 +1158,9 @@ class UsageGrant(Base):
             unique=True,
             postgresql_where=text("batch_key IS NOT NULL"),
         ),
+        CheckConstraint("feature IN ('analysis', 'rewrite', 'interview')", name="ck_usage_grants_feature"),
+        CheckConstraint("count > 0", name="ck_usage_grants_count"),
+        CheckConstraint("source_type IN ('trial', 'admin_grant', 'test')", name="ck_usage_grants_source_type"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -971,7 +1182,12 @@ class UsageReservation(Base):
     """计次任务的预留到结算／释放生命周期。"""
 
     __tablename__ = "usage_reservations"
-    __table_args__ = (UniqueConstraint("task_id", "feature", name="uk_usage_reservation_task_feature"),)
+    __table_args__ = (
+        UniqueConstraint("task_id", "feature", name="uk_usage_reservation_task_feature"),
+        CheckConstraint("feature IN ('analysis', 'rewrite', 'interview')", name="ck_usage_reservations_feature"),
+        CheckConstraint("count > 0", name="ck_usage_reservations_count"),
+        CheckConstraint("status IN ('reserved', 'settled', 'released')", name="ck_usage_reservations_status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1008,7 +1224,17 @@ class SiteBudgetBucket(Base):
     """按上海自然日控制的全站预算和并发槽。"""
 
     __tablename__ = "site_budget_buckets"
-    __table_args__ = (UniqueConstraint("metric_date", name="uk_budget_date"),)
+    __table_args__ = (
+        UniqueConstraint("metric_date", name="uk_budget_date"),
+        CheckConstraint(
+            "budget_usd >= 0 AND reserved_usd >= 0 AND settled_usd >= 0 AND unknown_usd >= 0",
+            name="ck_site_budget_amounts",
+        ),
+        CheckConstraint(
+            "concurrent_reserved >= 0 AND concurrent_limit >= 1 AND concurrent_reserved <= concurrent_limit",
+            name="ck_site_budget_concurrency",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     metric_date: Mapped[str] = mapped_column(String(10), nullable=False)
@@ -1025,6 +1251,14 @@ class BudgetReservation(Base):
     """单次模型调用的预算预留。"""
 
     __tablename__ = "budget_reservations"
+    __table_args__ = (
+        CheckConstraint("upper_bound_usd >= 0", name="ck_budget_reservations_upper_bound"),
+        CheckConstraint("actual_cost_usd IS NULL OR actual_cost_usd >= 0", name="ck_budget_reservations_actual_cost"),
+        CheckConstraint(
+            "status IN ('reserved', 'settled', 'released', 'unknown')",
+            name="ck_budget_reservations_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1043,6 +1277,9 @@ class TaskInputRef(Base):
     """任务创建时冻结的资源与版本引用。"""
 
     __tablename__ = "task_input_refs"
+    __table_args__ = (
+        CheckConstraint("version_no IS NULL OR version_no >= 1", name="ck_task_input_refs_version_no"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -1058,6 +1295,11 @@ class TaskOutbox(Base):
     """事务提交后再发布到队列的持久消息。"""
 
     __tablename__ = "task_outbox"
+    __table_args__ = (
+        CheckConstraint("event_type IN ('task.created', 'task.retry')", name="ck_task_outbox_event_type"),
+        CheckConstraint("status IN ('pending', 'claimed', 'published')", name="ck_task_outbox_status"),
+        CheckConstraint("attempts >= 0", name="ck_task_outbox_attempts"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
@@ -1076,7 +1318,14 @@ class TaskAttempt(Base):
     """任务执行代次、租约和结果摘要。"""
 
     __tablename__ = "task_attempts"
-    __table_args__ = (Index("uk_task_attempt_generation", "task_id", "execution_generation", unique=True),)
+    __table_args__ = (
+        Index("uk_task_attempt_generation", "task_id", "execution_generation", unique=True),
+        CheckConstraint("execution_generation >= 1", name="ck_task_attempts_generation"),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed', 'expired', 'stale', 'cancelled')",
+            name="ck_task_attempts_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1123,6 +1372,14 @@ class InterviewQuestion(Base):
     """面试题目明细，问题正文仍受账号删除状态控制。"""
 
     __tablename__ = "interview_questions"
+    __table_args__ = (
+        CheckConstraint("question_type IN ('main', 'followup')", name="ck_interview_questions_type"),
+        CheckConstraint("main_no >= 1 AND position_no >= 1", name="ck_interview_questions_position"),
+        CheckConstraint(
+            "status IN ('awaiting_answer', 'answered', 'skipped')",
+            name="ck_interview_questions_status",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1167,7 +1424,10 @@ class InterviewFeedback(Base):
     """逐题结构化反馈。"""
 
     __tablename__ = "interview_feedback"
-    __table_args__ = (Index("uk_interview_feedback_question", "interview_id", "question_id", unique=True),)
+    __table_args__ = (
+        Index("uk_interview_feedback_question", "interview_id", "question_id", unique=True),
+        CheckConstraint("status IN ('available', 'failed')", name="ck_interview_feedback_status"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1184,7 +1444,10 @@ class InterviewSummary(Base):
     """面试完成或提前结束的总结。"""
 
     __tablename__ = "interview_summaries"
-    __table_args__ = (Index("uk_interview_summary", "interview_id", unique=True),)
+    __table_args__ = (
+        Index("uk_interview_summary", "interview_id", unique=True),
+        CheckConstraint("completion_type IN ('full', 'early', 'completed')", name="ck_interview_summaries_completion"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
@@ -1199,6 +1462,7 @@ class IntegrityScanRun(Base):
     """只读引用完整性巡检批次。"""
 
     __tablename__ = "integrity_scan_runs"
+    __table_args__ = (CheckConstraint("status IN ('clean', 'findings')", name="ck_integrity_scan_runs_status"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)

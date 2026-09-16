@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from sqlalchemy import CheckConstraint
 from sqlalchemy.dialects import postgresql
 
 # API 模块会在导入时创建 PostgreSQL Engine；单元测试只需要合法的 201 URL，
@@ -36,6 +37,7 @@ from server.app.api import (  # noqa: E402
 from server.app.errors import DomainError, NotFoundError  # noqa: E402
 from server.app.matching import build_match_result  # noqa: E402
 from server.app.models import (  # noqa: E402
+    Base,
     BrowserJobDraft,
     Interview,
     InterviewAnswer,
@@ -505,3 +507,25 @@ def test_log_export_view_does_not_expose_private_file_metadata() -> None:
     assert view["row_count"] == 2
     assert "file_path" not in view
     assert "sha256" not in view
+
+
+def test_core_tables_define_database_check_constraints() -> None:
+    """关键状态和数值边界必须由 PostgreSQL 兜底，不能只依赖接口校验。"""
+
+    checks = {
+        (table.name, constraint.name)
+        for table in Base.metadata.sorted_tables
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert len(checks) >= 100
+    assert {
+        ("accounts", "ck_accounts_status"),
+        ("documents", "ck_documents_status"),
+        ("async_tasks", "ck_async_tasks_status"),
+        ("usage_balances", "ck_usage_balances_amounts"),
+        ("analysis_reports", "ck_analysis_ability_score"),
+        ("resume_exports", "ck_resume_exports_page_count"),
+        ("interview_sessions", "ck_interview_sessions_status"),
+        ("task_attempts", "ck_task_attempts_status"),
+    } <= checks
