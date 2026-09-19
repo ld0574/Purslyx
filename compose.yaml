@@ -30,7 +30,7 @@ services:
     ports:
       - "127.0.0.1:${PURSLYX_API_PORT:-18001}:8001"
     volumes:
-      - ${PURSLYX_DATA_DIR_HOST:-/data/purslyx/data}:/var/lib/purslyx
+      - ${PURSLYX_DATA_DIR_HOST:-./upload}:/var/lib/purslyx
     extra_hosts:
       - host.docker.internal:host-gateway
     healthcheck:
@@ -66,7 +66,7 @@ services:
       - --poll-seconds
       - "2"
     volumes:
-      - ${PURSLYX_DATA_DIR_HOST:-/data/purslyx/data}:/var/lib/purslyx
+      - ${PURSLYX_DATA_DIR_HOST:-./upload}:/var/lib/purslyx
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:

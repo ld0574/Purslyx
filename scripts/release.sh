@@ -26,11 +26,12 @@ usage() {
   scripts/release.sh status           查看当前槽位、版本和容器状态
 
 发布过程：
-  1. 构建 inactive 槽位（purslyx-api1 或 purslyx-api2）的带版本标签镜像；
-  2. 使用候选镜像执行 Alembic 向前迁移和幂等种子；
-  3. 启动候选 API 与 Worker，等待 /health 和 Worker 进程通过；
-  4. 原子替换 OpenResty upstream 并平滑 reload；
-  5. 等待旧请求排空后停止旧槽位。
+  1. 检查工作区并执行 git pull --ff-only；
+  2. 构建 inactive 槽位（purslyx-api1 或 purslyx-api2）的带版本标签镜像；
+  3. 使用候选镜像执行 Alembic 向前迁移和幂等种子；
+  4. 启动候选 API 与 Worker，等待 /health 和 Worker 进程通过；
+  5. 原子替换 OpenResty upstream 并平滑 reload；
+  6. 等待旧请求排空后停止旧槽位。
 
 重要环境变量：
   PURSLYX_RELEASE_ID          自定义版本标签；默认 UTC 时间 + Git 短 SHA
@@ -132,6 +133,7 @@ require_tools() {
   [[ -r "$ENV_FILE" ]] || die "生产环境文件不存在或不可读：$ENV_FILE"
   command -v docker >/dev/null 2>&1 || die '找不到 docker。'
   docker compose version >/dev/null 2>&1 || die '当前 Docker 未提供 docker compose 子命令。'
+  command -v git >/dev/null 2>&1 || die '找不到 git。'
   command -v curl >/dev/null 2>&1 || die '找不到 curl。'
   command -v systemctl >/dev/null 2>&1 || die '找不到 systemctl。'
   command -v flock >/dev/null 2>&1 || die '找不到 flock；请安装 util-linux。'
@@ -146,6 +148,48 @@ require_tools() {
   validate_uint PURSLYX_STOP_TIMEOUT "$STOP_TIMEOUT"
   mkdir -p "$STATE_DIR"
   chmod 0700 "$STATE_DIR"
+}
+
+sync_source() {
+  git -C "$ROOT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+    || die "不是 Git 工作区：$ROOT_DIR"
+
+  local dirty
+  dirty="$(git -C "$ROOT_DIR" status --porcelain --untracked-files=no)"
+  [[ -z "$dirty" ]] || die 'Git 工作区存在已跟踪但未提交的改动，请先提交或还原后再 deploy。'
+
+  log '同步代码：git pull --ff-only'
+  git -C "$ROOT_DIR" pull --ff-only
+}
+
+runtime_data_host_dir() {
+  local configured=''
+  configured="$(sed -n 's/^[[:space:]]*PURSLYX_DATA_DIR_HOST[[:space:]]*=[[:space:]]*//p' "$ENV_FILE" | tail -n 1)"
+  configured="${configured#"${configured%%[![:space:]]*}"}"
+  configured="${configured%"${configured##*[![:space:]]}"}"
+  case "$configured" in
+    \"*\") configured="${configured:1:${#configured}-2}" ;;
+    \'*\') configured="${configured:1:${#configured}-2}" ;;
+  esac
+  [[ -n "$configured" ]] || configured='./upload'
+  if [[ "$configured" == /* ]]; then
+    printf '%s\n' "$configured"
+  else
+    printf '%s/%s\n' "$ROOT_DIR" "${configured#./}"
+  fi
+}
+
+ensure_runtime_data_dir() {
+  local data_dir
+  data_dir="$(runtime_data_host_dir)"
+  [[ "$data_dir" != '/' ]] || die 'PURSLYX_DATA_DIR_HOST 不能指向根目录。'
+  install -d -m 0750 "$data_dir"
+  chown 10001:10001 "$data_dir"
+  for subdir in files exports; do
+    install -d -m 0750 "$data_dir/$subdir"
+    chown 10001:10001 "$data_dir/$subdir"
+  done
+  log "运行时目录已准备：$data_dir（10001:10001）"
 }
 
 acquire_lock() {
@@ -350,6 +394,8 @@ switch_upstream() {
 deploy() {
   require_tools
   acquire_lock
+  sync_source
+  ensure_runtime_data_dir
   load_active
 
   local candidate tag old_slot old_release switched=0
@@ -391,6 +437,7 @@ deploy() {
 rollback() {
   require_tools
   acquire_lock
+  ensure_runtime_data_dir
   load_active
   [[ "$ACTIVE_KIND" == 'slot' ]] || die '没有可回滚的 active 槽位。'
   load_meta "$STATE_DIR/previous.env" || die '没有可回滚的 previous 槽位。'

@@ -34,11 +34,11 @@ sudo apt update
 sudo apt install -y ca-certificates curl gnupg lsb-release rsync util-linux
 sudo install -d -m 0755 /data
 sudo install -d -m 0755 -o "$USER" /data/purslyx
-sudo install -d -m 0700 /data/purslyx/data /data/purslyx/.deploy
+sudo install -d -m 0750 /data/purslyx/upload /data/purslyx/.deploy
 sudo install -d -m 0755 -o www-data -g www-data /data/logs/openresty
 git clone <仓库地址> /data/purslyx
 cd /data/purslyx
-sudo chown -R 10001:10001 /data/purslyx/data
+sudo chown -R 10001:10001 /data/purslyx/upload
 ```
 
 安装 Docker Engine 和 Compose v2 插件时使用 Docker 官方 Debian 方式，确认：
@@ -196,7 +196,7 @@ PURSLYX_AUTO_CREATE_SCHEMA=false
 PURSLYX_EXECUTION_MODE=worker
 PURSLYX_TOKEN_SECRET=<至少32个字符的随机值>
 PURSLYX_DATA_DIR=/var/lib/purslyx
-PURSLYX_DATA_DIR_HOST=/data/purslyx/data
+PURSLYX_DATA_DIR_HOST=./upload
 
 PURSLYX_PRODUCT_ORIGIN=https://purslyx.com
 PURSLYX_ALLOWED_ORIGINS=https://purslyx.com
@@ -227,6 +227,10 @@ sudo scripts/release.sh status
 5. 原子替换 OpenResty upstream，执行配置检查并 reload；
 6. 等待旧请求排空后停止旧槽位。
 
+应用运行时数据挂载到仓库内的 `upload/` 目录，该目录已加入 Git 忽略；其中会自动创建
+`files/`（上传原件）和 `exports/`（生成的 PDF、日志导出）子目录。发布脚本会在启动容器前
+确保这些目录归容器用户 `10001:10001` 所有。
+
 验收：
 
 ```bash
@@ -241,10 +245,11 @@ sudo systemctl status postgresql redis-server openresty --no-pager
 
 ```bash
 cd /data/purslyx
-git pull --ff-only
 sudo scripts/release.sh deploy
 sudo scripts/release.sh status
 ```
+
+`deploy` 会在构建前自动执行 `git pull --ff-only`；服务器仓库中不能有已跟踪但未提交的文件改动。
 
 发布路径为：当前 `purslyx-api1` → 构建 `purslyx-api2` → 迁移并启动 `purslyx-api2` → 健康检查 → upstream 切到 `28001` → 排空旧请求 → 停止 `purslyx-api1`；下一次发布反向进行。
 
@@ -272,10 +277,10 @@ sudo -u postgres pg_dump --format=custom \
   --file=/data/backup/postgresql/purslyx-$(date +%F).dump purslyx
 sudo -u postgres pg_restore --list \
   /data/backup/postgresql/purslyx-$(date +%F).dump >/dev/null
-sudo rsync -aH --delete /data/purslyx/data/ /data/backup/purslyx-data/
+sudo rsync -aH --delete /data/purslyx/upload/ /data/backup/purslyx-upload/
 ```
 
-只备份数据库而不备份 `/data/purslyx/data`，会导致业务记录仍在但上传原件和 PDF 无法下载。备份还应复制到异机或对象存储。
+只备份数据库而不备份 `/data/purslyx/upload`，会导致业务记录仍在但上传原件和 PDF 无法下载。备份还应复制到异机或对象存储。
 
 ## 10. 常见问题
 
@@ -308,9 +313,10 @@ sudo grep -n '172.29.10' /etc/postgresql/*/main/pg_hba.conf
 
 ```bash
 cd /data/purslyx
-git pull --ff-only
 sudo scripts/release.sh deploy
 ```
+
+`deploy` 会在构建前自动执行 `git pull --ff-only`；服务器仓库中不能有已跟踪但未提交的文件改动。
 
 PostgreSQL 会回滚失败迁移事务，通常不需要手动修改 `alembic_version`。如需确认：
 

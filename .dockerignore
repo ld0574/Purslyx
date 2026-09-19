@@ -10,6 +10,7 @@ node_modules
 src/web/node_modules
 src/web/dist
 data
+upload
 tmp
 .env
 .env.*
