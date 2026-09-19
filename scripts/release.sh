@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Purslyx 单机蓝绿发布：宿主机 OpenResty，应用使用 Docker 双槽位。
+# Purslyx 单机双槽位发布：宿主机 OpenResty，应用使用 Docker api1/api2。
 # 新版本先启动 inactive 槽位并通过健康检查，再原子替换 OpenResty upstream。
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -26,7 +26,7 @@ usage() {
   scripts/release.sh status           查看当前槽位、版本和容器状态
 
 发布过程：
-  1. 构建 inactive 槽位的带版本标签镜像；
+  1. 构建 inactive 槽位（purslyx-api1 或 purslyx-api2）的带版本标签镜像；
   2. 使用候选镜像执行 Alembic 向前迁移和幂等种子；
   3. 启动候选 API 与 Worker，等待 /health 和 Worker 进程通过；
   4. 原子替换 OpenResty upstream 并平滑 reload；
@@ -72,21 +72,36 @@ validate_token() {
 }
 
 slot_project() {
-  printf '%s-%s\n' "$PROJECT_PREFIX" "$1"
+  case "$1" in
+    api1|api2) printf '%s-%s\n' "$PROJECT_PREFIX" "$1" ;;
+    *) die "未知槽位：$1" ;;
+  esac
+}
+
+slot_app_container() {
+  slot_project "$1"
+}
+
+slot_worker_container() {
+  case "$1" in
+    api1) printf '%s-worker1\n' "$PROJECT_PREFIX" ;;
+    api2) printf '%s-worker2\n' "$PROJECT_PREFIX" ;;
+    *) die "未知槽位：$1" ;;
+  esac
 }
 
 slot_port() {
   case "$1" in
-    blue) printf '%s\n' "${PURSLYX_BLUE_API_PORT:-18001}" ;;
-    green) printf '%s\n' "${PURSLYX_GREEN_API_PORT:-28001}" ;;
+    api1) printf '%s\n' "${PURSLYX_API1_PORT:-18001}" ;;
+    api2) printf '%s\n' "${PURSLYX_API2_PORT:-28001}" ;;
     *) die "未知槽位：$1" ;;
   esac
 }
 
 slot_subnet() {
   case "$1" in
-    blue) printf '%s\n' "${PURSLYX_BLUE_NETWORK_SUBNET:-172.29.109.0/24}" ;;
-    green) printf '%s\n' "${PURSLYX_GREEN_NETWORK_SUBNET:-172.29.110.0/24}" ;;
+    api1) printf '%s\n' "${PURSLYX_API1_NETWORK_SUBNET:-172.29.109.0/24}" ;;
+    api2) printf '%s\n' "${PURSLYX_API2_NETWORK_SUBNET:-172.29.110.0/24}" ;;
     *) die "未知槽位：$1" ;;
   esac
 }
@@ -142,16 +157,20 @@ compose_slot() {
   local slot="$1"
   local tag="$2"
   shift 2
-  local project port subnet
+  local project port subnet app_container worker_container
   project="$(slot_project "$slot")"
   port="$(slot_port "$slot")"
   subnet="$(slot_subnet "$slot")"
+  app_container="$(slot_app_container "$slot")"
+  worker_container="$(slot_worker_container "$slot")"
   env \
     PURSLYX_RUNTIME_ENV_FILE="$ENV_FILE" \
     PURSLYX_IMAGE_TAG="$tag" \
     PURSLYX_API_PORT="$port" \
     PURSLYX_NETWORK_NAME="$project" \
     PURSLYX_NETWORK_SUBNET="$subnet" \
+    PURSLYX_APP_CONTAINER_NAME="$app_container" \
+    PURSLYX_WORKER_CONTAINER_NAME="$worker_container" \
     docker compose \
       --project-name "$project" \
       --env-file "$ENV_FILE" \
@@ -186,7 +205,7 @@ load_meta() {
       *) die "未知发布状态字段：$key" ;;
     esac
   done < "$file"
-  [[ "$META_SLOT" == 'blue' || "$META_SLOT" == 'green' ]] || die "状态文件槽位不合法：$file"
+  [[ "$META_SLOT" == 'api1' || "$META_SLOT" == 'api2' ]] || die "状态文件槽位不合法：$file"
   validate_token RELEASE "$META_RELEASE"
   [[ "$META_PORT" == "$(slot_port "$META_SLOT")" ]] || die "状态文件端口与槽位不匹配：$file"
 }
@@ -218,11 +237,12 @@ service_running() {
 wait_candidate() {
   local slot="$1"
   local tag="$2"
-  local project port deadline
+  local project port app_container deadline
   project="$(slot_project "$slot")"
   port="$(slot_port "$slot")"
+  app_container="$(slot_app_container "$slot")"
   deadline=$((SECONDS + HEALTH_TIMEOUT))
-  log "等待 $project 健康检查：API $port"
+  log "等待 $app_container 健康检查：API $port"
   while ((SECONDS < deadline)); do
     if curl --fail --silent --show-error --max-time 5 "http://127.0.0.1:$port/health" >/dev/null 2>&1 \
       && service_running "$project" worker; then
@@ -249,9 +269,9 @@ migrate_candidate() {
   local tag="$2"
   log "使用 $slot 槽位镜像执行 Alembic 迁移。"
   compose_slot "$slot" "$tag" run --rm --no-deps app \
-    /opt/venv/bin/python -m alembic upgrade head
+    /app/.venv/bin/python -m alembic upgrade head
   compose_slot "$slot" "$tag" run --rm --no-deps app \
-    /opt/venv/bin/python scripts/init_201.py
+    /app/.venv/bin/python scripts/init_201.py
 }
 
 start_candidate() {
@@ -334,11 +354,11 @@ deploy() {
 
   local candidate tag old_slot old_release switched=0
   if [[ "$ACTIVE_KIND" == 'slot' ]]; then
-    if [[ "$ACTIVE_SLOT" == 'blue' ]]; then candidate='green'; else candidate='blue'; fi
+    if [[ "$ACTIVE_SLOT" == 'api1' ]]; then candidate='api2'; else candidate='api1'; fi
     old_slot="$ACTIVE_SLOT"
     old_release="$ACTIVE_RELEASE"
   else
-    candidate='blue'
+    candidate='api1'
     old_slot=''
     old_release=''
   fi
@@ -403,7 +423,9 @@ status() {
   load_active
   printf 'active: %s\n' "$ACTIVE_KIND"
   if [[ "$ACTIVE_KIND" == 'slot' ]]; then
-    printf 'slot: %s\nrelease: %s\nport: %s\n' "$ACTIVE_SLOT" "$ACTIVE_RELEASE" "$ACTIVE_PORT"
+    printf 'slot: %s\nrelease: %s\nport: %s\ncontainer: %s\nworker: %s\n' \
+      "$ACTIVE_SLOT" "$ACTIVE_RELEASE" "$ACTIVE_PORT" \
+      "$(slot_app_container "$ACTIVE_SLOT")" "$(slot_worker_container "$ACTIVE_SLOT")"
     compose_slot "$ACTIVE_SLOT" "$ACTIVE_RELEASE" ps || true
   fi
   if load_meta "$STATE_DIR/previous.env"; then

@@ -1,6 +1,6 @@
 # Purslyx Debian 单机部署
 
-> Debian 宿主机运行 OpenResty、PostgreSQL、Redis；Purslyx 应用使用 Docker；应用通过 blue/green 双槽位滚动发布和回滚。
+> Debian 宿主机运行 OpenResty、PostgreSQL、Redis；Purslyx 应用使用 Docker；应用通过 `purslyx-api1` / `purslyx-api2` 双槽位滚动发布和回滚。
 
 ## 1. 部署架构
 
@@ -18,12 +18,12 @@ Vue 前端在 Docker 镜像构建阶段生成 `src/web/dist`，再由同一个 F
 | OpenResty | Debian 宿主机 | `0.0.0.0:80/443` |
 | PostgreSQL | Debian 宿主机 | `127.0.0.1`、Docker 宿主网关 |
 | Redis | Debian 宿主机 | `127.0.0.1`、Docker 宿主网关 |
-| API + Vue | Docker blue/green | `127.0.0.1:18001` / `28001` |
-| Worker | Docker blue/green | 无公网端口 |
+| API + Vue | Docker `purslyx-api1` / `purslyx-api2` | `127.0.0.1:18001` / `28001` |
+| Worker | Docker `purslyx-worker1` / `purslyx-worker2` | 无公网端口 |
 
-默认 Docker 网段：blue 为 `172.29.109.0/24`，green 为 `172.29.110.0/24`。安全组只放行 `80`、`443` 和受限的 `22`，不要放行 `5432`、`6379`、`18001`、`28001`。
+默认 Docker 网段：`purslyx-api1` 为 `172.29.109.0/24`，`purslyx-api2` 为 `172.29.110.0/24`。安全组只放行 `80`、`443` 和受限的 `22`，不要放行 `5432`、`6379`、`18001`、`28001`。
 
-这是单机 blue/green，不是多机高可用。切流量时新旧应用会短暂并存；数据库迁移必须采用 expand/contract，不能在一次发布中删除旧字段或破坏旧接口。
+这是单机双槽位发布，不是多机高可用。切流量时新旧应用会短暂并存；数据库迁移必须采用 expand/contract，不能在一次发布中删除旧字段或破坏旧接口。
 
 ## 2. 服务器目录和依赖
 
@@ -246,7 +246,7 @@ sudo scripts/release.sh deploy
 sudo scripts/release.sh status
 ```
 
-发布路径为：当前 blue → 构建 green → 迁移并启动 green → 健康检查 → upstream 切到 `28001` → 排空旧请求 → 停止 blue；下一次发布反向进行。
+发布路径为：当前 `purslyx-api1` → 构建 `purslyx-api2` → 迁移并启动 `purslyx-api2` → 健康检查 → upstream 切到 `28001` → 排空旧请求 → 停止 `purslyx-api1`；下一次发布反向进行。
 
 回滚只切回上一版应用镜像，不会自动回滚数据库：
 
@@ -293,7 +293,7 @@ PURSLYX_ALLOWED_DATABASE_HOSTS=host.docker.internal
 检查 `listen_addresses`、`pg_hba.conf` 和两个 Docker 网段：
 
 ```bash
-docker network inspect purslyx-blue
+docker network inspect purslyx-api1
 sudo ss -lntp | grep 5432
 sudo grep -n '172.29.10' /etc/postgresql/*/main/pg_hba.conf
 ```
@@ -304,7 +304,7 @@ sudo grep -n '172.29.10' /etc/postgresql/*/main/pg_hba.conf
 
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
-docker logs --tail=200 purslyx-blue-worker-1
+docker logs --tail=200 purslyx-worker1
 ```
 
 当前 Worker 依赖 PostgreSQL outbox，不要只检查 Redis。
@@ -322,7 +322,7 @@ sudo grep -n 'purslyx_api\|proxy_pass' /usr/local/openresty/nginx/conf/conf.d/*.
 
 - [`compose.yaml`](../../../compose.yaml)：应用和 Worker 的单槽位 Compose 定义。
 - [`infra/docker/Dockerfile`](../../../infra/docker/Dockerfile)：Vue 构建和 Python 运行时的多阶段镜像。
-- [`scripts/release.sh`](../../../scripts/release.sh)：blue/green 发布、切流量和回滚。
+- [`scripts/release.sh`](../../../scripts/release.sh)：`purslyx-api1` / `purslyx-api2` 发布、切流量和回滚。
 - [`scripts/worker.py`](../../../scripts/worker.py)：容器化 Worker 入口。
 - [`infra/openresty/purslyx.conf`](../../../infra/openresty/purslyx.conf)：域名、证书和反向代理配置。
 - [`201环境部署.md`](201环境部署.md)：仅用于本地 201 开发环境。

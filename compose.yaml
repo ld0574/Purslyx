@@ -3,6 +3,7 @@ name: purslyx
 services:
   app:
     image: purslyx-app:${PURSLYX_IMAGE_TAG:-local}
+    container_name: ${PURSLYX_APP_CONTAINER_NAME:-purslyx-api1}
     build:
       context: .
       dockerfile: infra/docker/Dockerfile
@@ -48,6 +49,7 @@ services:
 
   worker:
     image: purslyx-app:${PURSLYX_IMAGE_TAG:-local}
+    container_name: ${PURSLYX_WORKER_CONTAINER_NAME:-purslyx-worker1}
     env_file:
       - ${PURSLYX_RUNTIME_ENV_FILE:-.env}
     environment:
@@ -75,7 +77,7 @@ services:
 
 networks:
   default:
-    name: ${PURSLYX_NETWORK_NAME:-purslyx-blue}
+    name: ${PURSLYX_NETWORK_NAME:-purslyx-api1}
     ipam:
       config:
         - subnet: ${PURSLYX_NETWORK_SUBNET:-172.29.109.0/24}
