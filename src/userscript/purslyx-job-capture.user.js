@@ -331,8 +331,12 @@
 
   async function flushPending() {
     if (!localStorage.getItem(TOKEN_KEY)) return;
+    const currentIdentity = isDetailPage()
+      ? pendingIdentity({ platform: currentPlatform(), source_url: location.href })
+      : "";
     for (const row of readPending()) {
-      if (row && row.value) await upload(row.value, true);
+      if (!row || !row.value || (currentIdentity && pendingIdentity(row.value) === currentIdentity)) continue;
+      await upload(row.value, true);
     }
   }
 

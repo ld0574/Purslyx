@@ -271,6 +271,27 @@ test("岗位正文动态加载时不会先上传半截内容", async () => {
   assert.match(JSON.parse(runtime.requests[0].data).job_description_text, /完整正文和任职条件/);
 });
 
+test("升级后当前岗位的旧半截本机草稿会等待完整正文", async () => {
+  const runtime = createRuntime({
+    url: "https://www.zhipin.com/job_detail/legacy-pending.html",
+    texts: {
+      "h1.job-name": "旧草稿岗位",
+      ".job-primary .text-desc": "杭州",
+      ".job-sec-text": "旧版只抓到的半截正文",
+    },
+  });
+  await runtime.runCapture();
+  assert.equal(JSON.parse(runtime.localStorage.getItem(DRAFT_KEY)).length, 1);
+
+  runtime.setToken("synced-token");
+  await runtime.emit("purslyx-browser-token-updated");
+  assert.equal(runtime.requests.length, 0);
+  runtime.setText(".job-sec-text", "旧版只抓到的半截正文\n完整职位要求和任职条件");
+  await runtime.mutateAndCapture();
+  assert.equal(runtime.requests.length, 1);
+  assert.match(JSON.parse(runtime.requests[0].data).job_description_text, /完整职位要求和任职条件/);
+});
+
 test("完整正文变化不会复用被截断的幂等键", async () => {
   const prefix = "共同开头".repeat(30);
   const runtime = createRuntime({
@@ -310,6 +331,8 @@ test("未登录时保留本机草稿，登录后继续上传", async () => {
 
   runtime.setToken("synced-token");
   await runtime.emit("purslyx-browser-token-updated");
+  assert.equal(runtime.requests.length, 0);
+  await runtime.mutateAndCapture();
   assert.equal(runtime.requests.length, 1);
   assert.deepEqual(JSON.parse(runtime.localStorage.getItem(DRAFT_KEY)), []);
 });
