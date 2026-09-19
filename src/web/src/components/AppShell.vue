@@ -50,7 +50,7 @@ async function logout() {
 
 <template>
   <header class="topbar">
-    <RouterLink class="brand-button" to="/"><span class="brand-mark">P</span><span>Purslyx</span></RouterLink>
+    <RouterLink class="brand-button" to="/"><img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" /><span>Purslyx</span></RouterLink>
     <span class="eyebrow">{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</span>
     <span class="topbar-spacer" />
     <details class="account-menu">
@@ -65,7 +65,7 @@ async function logout() {
   </header>
   <div class="workspace-layout" data-workspace-loaded="true">
     <aside class="sidebar">
-      <div class="side-brand"><span class="brand-mark">P</span><div>Purslyx<small>{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</small></div></div>
+      <div class="side-brand"><img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" /><div>Purslyx<small>{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</small></div></div>
       <nav class="side-nav" aria-label="业务导航">
         <RouterLink v-for="item in mainNav" :key="item.to" class="nav-button" :to="item.to" :class="{ active: route.path === item.to }">
           <span>{{ item.label }}</span><small>{{ item.hint }}</small>

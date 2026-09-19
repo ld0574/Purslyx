@@ -1,6 +1,6 @@
 <template>
   <div id="product-home">
-    <header class="topbar"><RouterLink class="brand-button" to="/"><span class="brand-mark">P</span>Purslyx</RouterLink><span class="topbar-spacer" /><RouterLink class="button soft" to="/app/login">登录</RouterLink><RouterLink class="button primary" to="/app/register">创建账号</RouterLink></header>
+    <header class="topbar"><RouterLink class="brand-button" to="/"><img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" />Purslyx</RouterLink><span class="topbar-spacer" /><RouterLink class="button soft" to="/app/login">登录</RouterLink><RouterLink class="button primary" to="/app/register">创建账号</RouterLink></header>
     <main class="public-main">
       <section class="hero">
         <div class="hero-copy"><div class="eyebrow">AI CAREER COMPANION</div><h1>从真实经历，<span>走到下一步。</span></h1><p>围绕确认过的资料完成岗位匹配、简历表达和面试准备。每个重要结论都能回到原始经历与冻结版本。</p><div class="hero-actions"><RouterLink class="button primary" to="/app/register">免费开始</RouterLink><RouterLink class="button outline" to="/app/login">登录工作台</RouterLink></div><div class="proof-row"><div><strong>证据优先</strong>不凭空补写经历</div><div><strong>条件分离</strong>能力与求职期望分开</div><div><strong>双端协作</strong>求职与招聘统一规则</div></div></div>

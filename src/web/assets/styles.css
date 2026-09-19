@@ -43,7 +43,7 @@
         backdrop-filter: blur(14px);
       }
       .brand-button { display: inline-flex; align-items: center; gap: 10px; padding: 0; border: 0; background: transparent; color: var(--ink); font-weight: 800; font-size: 18px; text-decoration: none; }
-      .brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 12px; color: #fff; background: var(--brand); box-shadow: 0 8px 18px rgba(18, 100, 232, 0.22); font-weight: 900; }
+      .brand-mark { display: block; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 12px; object-fit: cover; background: var(--brand); box-shadow: 0 8px 18px rgba(18, 100, 232, 0.22); }
       .topbar-spacer { flex: 1; }
       .eyebrow { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
       .topbar .eyebrow { color: var(--muted); letter-spacing: 0.08em; }
