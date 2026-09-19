@@ -87,11 +87,15 @@ def test_api_client_preserves_auth_csrf_and_idempotency_boundaries() -> None:
 
 
 def test_key_pages_keep_browser_and_business_contracts() -> None:
+    home = read("src/views/HomeView.vue")
     materials = read("src/views/MaterialsView.vue")
     pool = read("src/views/PoolView.vue")
     interview = read("src/views/InterviewView.vue")
     tasks = read("src/views/TasksView.vue")
     admin = "\n".join(read(f"src/views/admin/{name}") for name in ["AdminUsersView.vue", "AdminRolesView.vue", "AdminUsageView.vue", "AdminLogsView.vue"])
+    assert 'src="/purslyx-logo.png"' in home
+    assert 'alt="Purslyx 品牌标志"' in home
+    assert (WEB_ROOT / "public" / "purslyx-logo.png").is_file()
     for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
         assert f'id="{selector}"' in materials
     assert 'id="pool-form"' in pool

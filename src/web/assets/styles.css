@@ -63,6 +63,9 @@
 
       .public-main, .workspace-main { max-width: 1180px; margin: 0 auto; padding: 56px 28px 84px; }
       .hero { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(310px, 0.85fr); gap: 46px; align-items: center; padding: 18px 0 58px; }
+      .hero-brand { display: flex; align-items: center; gap: 14px; }
+      .hero-logo { display: block; width: 82px; height: 82px; border-radius: 22px; object-fit: contain; background: #fff; box-shadow: 0 14px 28px rgba(18, 100, 232, 0.14); }
+      .hero-brand small { display: block; margin-top: 7px; color: var(--muted); font-size: 12px; }
       .hero h1 { max-width: 670px; margin-top: 16px; font-size: clamp(40px, 6vw, 72px); line-height: 1.07; }
       .hero h1 span { color: var(--brand); }
       .hero-copy > p { max-width: 580px; margin-top: 20px; color: var(--muted); font-size: 17px; line-height: 1.8; }
@@ -375,6 +378,7 @@
         [data-page="home"] .top-actions .button.soft { display: none; }
         .topbar .button { min-height: 36px; padding: 0 10px; font-size: 11px; }
         .hero, .hero-copy, .hero-visual, .visual-window { width: 100%; min-width: 0; }
+        .hero-logo { width: 64px; height: 64px; border-radius: 18px; }
         .hero h1 { max-width: 100%; overflow-wrap: anywhere; font-size: clamp(36px, 11vw, 42px); }
         .hero-copy > p { font-size: 15px; }
         .sync-panel, .install-card { padding: 20px; }
