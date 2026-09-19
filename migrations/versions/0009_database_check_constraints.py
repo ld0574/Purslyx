@@ -124,7 +124,27 @@ def upgrade() -> None:
     op.execute("UPDATE resume_rewrite_segments SET current_decision = 'adopt' WHERE current_decision = 'adopted'")
     op.execute("UPDATE resume_segment_decisions SET decision = 'adopt' WHERE decision = 'adopted'")
     for table_name, constraint_name, condition in CHECKS:
-        op.create_check_constraint(constraint_name, table_name, condition)
+        # 0001_baseline 使用当前 ORM 元数据 create_all；新库可能已经有这些
+        # 约束，旧库则可能没有。使用 PostgreSQL catalog 检查避免重复创建。
+        op.execute(
+            f"""
+            DO $purslyx$
+            BEGIN
+              IF to_regclass('public.{table_name}') IS NOT NULL
+                 AND NOT EXISTS (
+                   SELECT 1
+                   FROM pg_constraint
+                   WHERE conrelid = 'public.{table_name}'::regclass
+                     AND conname = '{constraint_name}'
+                 )
+              THEN
+                ALTER TABLE {table_name}
+                  ADD CONSTRAINT {constraint_name} CHECK ({condition});
+              END IF;
+            END
+            $purslyx$;
+            """
+        )
 
 
 def downgrade() -> None:

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlalchemy as sa
 from alembic import op
 
 revision = "0008_preference_source"
@@ -14,7 +13,9 @@ depends_on = None
 def upgrade() -> None:
     """统一期望来源，并保存 PDF 渲染后的真实页数。"""
 
-    op.add_column("resume_exports", sa.Column("page_count", sa.Integer(), nullable=True))
+    # 0001_baseline 使用当前 ORM 元数据执行 create_all；因此全新数据库可能
+    # 已经包含 page_count。旧数据库则可能没有该列，两种情况都必须可升级。
+    op.execute("ALTER TABLE resume_exports ADD COLUMN IF NOT EXISTS page_count INTEGER")
 
     op.execute(
         """
@@ -45,4 +46,4 @@ def downgrade() -> None:
            AND source_type = 'candidate_disclosed';
         """
     )
-    op.drop_column("resume_exports", "page_count")
+    op.execute("ALTER TABLE resume_exports DROP COLUMN IF EXISTS page_count")

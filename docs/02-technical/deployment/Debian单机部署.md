@@ -298,6 +298,29 @@ sudo ss -lntp | grep 5432
 sudo grep -n '172.29.10' /etc/postgresql/*/main/pg_hba.conf
 ```
 
+### 首次迁移提示 `DuplicateColumn: page_count already exists`
+
+这是旧版迁移链的兼容性问题：`0001_baseline` 会按当前 ORM 模型创建基线，
+而旧版 `0008_preference_source_contract` 又无条件添加 `resume_exports.page_count`。
+当前版本已将 `0008` 和 `0009` 改为幂等迁移，已有列或约束会自动跳过。
+
+如果旧镜像已经在这里失败，不要手动删除 `page_count`，先拉取修复后的代码再重新发布：
+
+```bash
+cd /data/purslyx
+git pull --ff-only
+sudo scripts/release.sh deploy
+```
+
+PostgreSQL 会回滚失败迁移事务，通常不需要手动修改 `alembic_version`。如需确认：
+
+```bash
+psql 'postgresql://purslyx@127.0.0.1:5432/purslyx' \
+  -c 'SELECT version_num FROM alembic_version;'
+psql 'postgresql://purslyx@127.0.0.1:5432/purslyx' \
+  -c "SELECT column_name FROM information_schema.columns WHERE table_name = 'resume_exports' AND column_name = 'page_count';"
+```
+
 ### 任务一直处于 queued
 
 确认 API 配置了 `PURSLYX_EXECUTION_MODE=worker`，并查看 Worker：
