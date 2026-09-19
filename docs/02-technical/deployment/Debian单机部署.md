@@ -195,7 +195,9 @@ PURSLYX_AUTO_VERIFY_LOCAL=false
 PURSLYX_AUTO_CREATE_SCHEMA=false
 PURSLYX_EXECUTION_MODE=worker
 PURSLYX_TOKEN_SECRET=<至少32个字符的随机值>
+# 容器内路径，保持为 /var/lib/purslyx；宿主机 upload/ 通过 Compose 挂载到这里。
 PURSLYX_DATA_DIR=/var/lib/purslyx
+# 宿主机路径；应用实际写入 upload/files 和 upload/exports。
 PURSLYX_DATA_DIR_HOST=./upload
 
 PURSLYX_PRODUCT_ORIGIN=https://purslyx.com
