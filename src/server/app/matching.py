@@ -114,6 +114,55 @@ def _classify(requirement: str, segments: list[dict[str, Any]], explicit_gaps: s
     return status, evidence[:3]
 
 
+def _model_classification(
+    requirement: str,
+    finding: dict[str, Any],
+    segments: list[dict[str, Any]],
+    explicit_gaps: set[str],
+) -> tuple[str, list[dict[str, Any]], str] | None:
+    """校验模型判断后再把它交给评分内核。
+
+    模型只能引用已经存在的简历段落。引用无效、声称具备能力但没有证据，或把
+    “没有找到证据”直接写成明确差距时，统一降级为待确认，避免模型输出覆盖事实。
+    """
+
+    if not isinstance(finding, dict):
+        return None
+    allowed_statuses = {"supported", "partially_supported", "gap", "needs_confirmation"}
+    status = str(finding.get("status", "needs_confirmation"))
+    if status not in allowed_statuses:
+        status = "needs_confirmation"
+    segment_by_key = {str(item.get("segment_key")): item for item in segments}
+    evidence: list[dict[str, Any]] = []
+    raw_keys = finding.get("evidence_segment_keys") or []
+    if isinstance(raw_keys, list):
+        for key in raw_keys:
+            segment = segment_by_key.get(str(key))
+            if segment is None:
+                continue
+            evidence.append(
+                {
+                    "segment_key": segment.get("segment_key"),
+                    "quote": str(segment.get("text", "")),
+                    "matched_terms": sorted(_tokens(requirement) & _tokens(str(segment.get("text", ""))))[:8],
+                    "source_type": segment.get("source", "user_confirmed"),
+                }
+            )
+    if status in {"supported", "partially_supported"} and not evidence:
+        status = "needs_confirmation"
+    if status == "gap" and requirement not in explicit_gaps:
+        status = "needs_confirmation"
+    explanation = str(finding.get("explanation") or "").strip()
+    if not explanation:
+        explanation = {
+            "supported": "模型识别到已有确认经历提供了对应依据。",
+            "partially_supported": "模型识别到部分可迁移依据，还需要补充承担范围或结果。",
+            "gap": "确认资料明确显示该要求存在差距。",
+            "needs_confirmation": "当前资料没有足够依据，不能断言具备或不具备。",
+        }[status]
+    return status, evidence[:3], explanation[:500]
+
+
 def _number(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
@@ -321,6 +370,7 @@ def _interview_questions(dimensions: list[dict[str, Any]]) -> list[dict[str, Any
                     "dimension_key": dimension.get("key"),
                     "finding_type": finding,
                     "evidence_segment_keys": [item.get("segment_key") for item in requirement.get("evidence", []) if item.get("segment_key")],
+                    "method": "STAR",
                     "rule_version": "interview-question-basis-v1",
                 },
             }
@@ -333,6 +383,8 @@ def build_match_result(
     job_content: dict[str, Any],
     preference_content: dict[str, Any] | None = None,
     context_type: str = "seeker_pool",
+    ai_findings: dict[str, Any] | None = None,
+    prompt_version: str = "analysis-local-v1",
 ) -> dict[str, Any]:
     """生成可持久化、可复核的匹配报告。"""
 
@@ -342,12 +394,29 @@ def build_match_result(
     segments = _resume_segments(resume_content)
     explicit_gaps = set(resume_content.get("explicit_gaps", []))
     requirements = _requirements(job_fields)
+    model_requirements = {
+        str(item.get("requirement_id")): item
+        for item in (ai_findings or {}).get("requirements", [])
+        if isinstance(item, dict) and item.get("requirement_id")
+    }
     dimension_rows: dict[str, list[dict[str, Any]]] = {key: [] for key, _, _ in dimensions}
     for requirement in requirements:
-        dimension = requirement.get("dimension") or _dimension_for(requirement["text"], category)
+        model_finding = model_requirements.get(str(requirement["requirement_id"]))
+        model_dimension = str(model_finding.get("dimension_key", "")) if model_finding else ""
+        dimension = model_dimension or requirement.get("dimension") or _dimension_for(requirement["text"], category)
         if dimension not in dimension_rows:
             dimension = dimensions[0][0]
-        status, evidence = _classify(requirement["text"], segments, explicit_gaps)
+        validated_model = _model_classification(requirement["text"], model_finding, segments, explicit_gaps) if model_finding else None
+        if validated_model is None:
+            status, evidence = _classify(requirement["text"], segments, explicit_gaps)
+            explanation = {
+                "supported": "已有确认经历提供了对应依据。",
+                "partially_supported": "已有经历提供了部分可迁移依据，还需补充承担范围或结果。",
+                "gap": "确认资料明确显示该要求存在差距。",
+                "needs_confirmation": "当前资料没有足够依据，不能断言具备或不具备。",
+            }[status]
+        else:
+            status, evidence, explanation = validated_model
         dimension_rows[dimension].append(
             {
                 "requirement_id": requirement["requirement_id"],
@@ -355,12 +424,7 @@ def build_match_result(
                 "job_quote": requirement["text"],
                 "status": status,
                 "evidence": evidence,
-                "explanation": {
-                    "supported": "已有确认经历提供了对应依据。",
-                    "partially_supported": "已有经历提供了部分可迁移依据，还需补充承担范围或结果。",
-                    "gap": "确认资料明确显示该要求存在差距。",
-                    "needs_confirmation": "当前资料没有足够依据，不能断言具备或不具备。",
-                }[status],
+                "explanation": explanation,
             }
         )
 
@@ -444,5 +508,6 @@ def build_match_result(
         "overall_advice": advice,
         "scoring_rule_version": "ability-v0.1",
         "result_schema_version": "analysis-result-v1",
-        "prompt_version": "analysis-local-v1",
+        "prompt_version": prompt_version,
+        "ai_insights": ai_findings.get("insights", {}) if ai_findings else {},
     }

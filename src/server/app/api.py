@@ -35,7 +35,7 @@ from .config import settings
 from .db import get_db
 from .email_delivery import deliver_account_action_email
 from .errors import DomainError, NotFoundError
-from .model_provider import get_model_provider
+from .model_provider import get_model_provider, merge_model_results
 from .models import (
     Account,
     AccountRole,
@@ -3833,7 +3833,7 @@ def _save_interview_summary(db: Session, item: Interview, completion_type: str, 
 
 
 def _finish_interview_summary(db: Session, account: Account, item: Interview, completion_type: str) -> None:
-    """保留完整回答流程的内联汇总入口；提前结束使用独立总结任务。"""
+    """兼容旧调用方的汇总入口；正常完整流程会在同一任务内合并调用结果。"""
 
     question_values, answer_values = _interview_summary_input(db, item)
     value = get_model_provider().summary(question_values, answer_values, completion_type).value
@@ -3846,6 +3846,41 @@ def _validate_interview_summary_replay(task: Task, interview_id: str) -> None:
     task_input = task.input_data or {}
     if task_input.get("interview_id") != interview_id or task_input.get("completion_type") != "early":
         raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的任务输入不同", 409)
+
+
+def _interview_feedback_with_full_summary(
+    db: Session,
+    item: Interview,
+    question: InterviewQuestion,
+    answer_text: str,
+) -> Any:
+    """最后一轮反馈同时生成 STAR 总结，并合并 token/cost 记录。"""
+
+    provider = get_model_provider()
+    feedback_result = provider.feedback(
+        {"question_text": question.question_text, "question_type": question.question_type},
+        answer_text,
+    )
+    if feedback_result.value.get("needs_followup"):
+        return feedback_result
+    pending_main = db.scalar(
+        select(InterviewQuestion.id)
+        .where(
+            InterviewQuestion.interview_id == item.id,
+            InterviewQuestion.question_type == "main",
+            InterviewQuestion.status == "awaiting_answer",
+        )
+        .limit(1)
+    )
+    if pending_main is not None:
+        return feedback_result
+    question_values, answer_values = _interview_summary_input(db, item)
+    summary_result = provider.summary(question_values, answer_values, "full")
+    return merge_model_results(
+        feedback_result,
+        summary_result,
+        value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "STAR"},
+    )
 
 
 @router.post("/interviews/{interview_id}/answers", tags=["interviews"])
@@ -3897,12 +3932,11 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
         }
 
         def work() -> Any:
-            return get_model_provider().feedback(
-                {"question_text": question.question_text, "question_type": question.question_type},
-                answer.answer_text,
-            )
+            return _interview_feedback_with_full_summary(db, item, question, answer.answer_text)
 
         def save_feedback(feedback_value: dict[str, Any]) -> None:
+            summary_value = feedback_value.get("summary") if isinstance(feedback_value.get("summary"), dict) else None
+            feedback_value = feedback_value.get("feedback") if isinstance(feedback_value.get("feedback"), dict) else feedback_value
             feedback = db.scalar(
                 select(InterviewFeedback).where(
                     InterviewFeedback.interview_id == item.id,
@@ -3933,6 +3967,7 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                     followup_id = existing_followup.public_id
                 else:
                     last_position = db.scalar(select(func.max(InterviewQuestion.position_no)).where(InterviewQuestion.interview_id == item.id)) or 0
+                    followup_question = str(feedback_value.get("followup_question") or "请再补充你本人采取的具体行动和可以核对的结果。").strip()[:800]
                     followup = InterviewQuestion(
                         account_id=account.id,
                         interview_id=item.id,
@@ -3940,8 +3975,8 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                         main_no=question.main_no,
                         parent_question_id=question.id,
                         position_no=int(last_position) + 1,
-                        question_text="请再补充你本人采取的具体行动和可以核对的结果。",
-                        basis={"parent_question_id": question.public_id, "rule_version": "interview-followup-v1"},
+                        question_text=followup_question,
+                        basis={"parent_question_id": question.public_id, "method": "STAR", "rule_version": "interview-followup-v2"},
                         status="awaiting_answer",
                     )
                     db.add(followup)
@@ -3966,7 +4001,10 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                     item.status = "awaiting_answer"
                     item.revision += 1
                 else:
-                    _finish_interview_summary(db, account, item, "full")
+                    if summary_value is None:
+                        raise DomainError("INTERVIEW_SUMMARY_FAILED", "完整面试总结未生成，请重试", 503, "retry")
+                    _save_interview_summary(db, item, "full", summary_value)
+                    task_result.update({"summary": "full"})
                 task_result.update({"question_id": question.public_id, "needs_followup": False})
 
         try:
@@ -3977,6 +4015,8 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                 work,
                 on_success=save_feedback,
                 cost_feature="interview_feedback",
+                estimated_input_tokens=24000,
+                estimated_output_tokens=8000,
                 task_result=task_result,
             )
         except Exception as exc:

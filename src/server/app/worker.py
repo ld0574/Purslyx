@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .errors import DomainError, NotFoundError
-from .model_provider import ModelResult, get_model_provider
+from .model_provider import ModelResult, get_model_provider, merge_model_results
 from .models import (
     Account,
     Analysis,
@@ -103,6 +103,8 @@ def _run_model(
     cost_feature: str | None,
     on_success: Callable[[dict[str, Any]], None] | None = None,
     task_result: dict[str, Any] | None = None,
+    estimated_input_tokens: int = 12000,
+    estimated_output_tokens: int = 4000,
 ) -> None:
     """统一执行模型类任务，保留 provider/token 元数据并结算预算。"""
 
@@ -116,6 +118,8 @@ def _run_model(
         cost_feature=cost_feature,
         attempt=attempt,
         lease_owner=owner,
+        estimated_input_tokens=estimated_input_tokens,
+        estimated_output_tokens=estimated_output_tokens,
         task_result=task_result,
     )
 
@@ -592,9 +596,35 @@ class TaskWorker:
             raise DomainError("INTERVIEW_ANSWER_NOT_FOUND", "面试回答不存在", 409)
 
         def work() -> ModelResult:
-            return get_model_provider().feedback({"question_text": question.question_text, "question_type": question.question_type}, answer.answer_text)
+            provider = get_model_provider()
+            feedback_result = provider.feedback({"question_text": question.question_text, "question_type": question.question_type}, answer.answer_text)
+            if feedback_result.value.get("needs_followup"):
+                return feedback_result
+            pending_main = db.scalar(
+                select(InterviewQuestion.id)
+                .where(
+                    InterviewQuestion.interview_id == interview.id,
+                    InterviewQuestion.question_type == "main",
+                    InterviewQuestion.status == "awaiting_answer",
+                )
+                .limit(1)
+            )
+            if pending_main is not None:
+                return feedback_result
+            questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
+            answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == interview.id).order_by(InterviewAnswer.created_at)).all()
+            question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
+            answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
+            summary_result = provider.summary(question_values, answer_values, "full")
+            return merge_model_results(
+                feedback_result,
+                summary_result,
+                value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "STAR"},
+            )
 
         def save_feedback(value: dict[str, Any]) -> None:
+            summary_value = value.get("summary") if isinstance(value.get("summary"), dict) else None
+            value = value.get("feedback") if isinstance(value.get("feedback"), dict) else value
             feedback = db.scalar(
                 select(InterviewFeedback).where(
                     InterviewFeedback.interview_id == interview.id,
@@ -612,7 +642,8 @@ class TaskWorker:
                 existing = db.scalar(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id, InterviewQuestion.parent_question_id == question.id))
                 if existing is None:
                     last_position = db.scalar(select(InterviewQuestion.position_no).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no.desc()).limit(1)) or 0
-                    existing = InterviewQuestion(account_id=task.account_id, interview_id=interview.id, question_type="followup", main_no=question.main_no, parent_question_id=question.id, position_no=int(last_position) + 1, question_text="请再补充你本人采取的具体行动和可以核对的结果。", basis={"parent_question_id": question.public_id, "rule_version": "interview-followup-v1"}, status="awaiting_answer")
+                    followup_question = str(value.get("followup_question") or "请再补充你本人采取的具体行动和可以核对的结果。").strip()[:800]
+                    existing = InterviewQuestion(account_id=task.account_id, interview_id=interview.id, question_type="followup", main_no=question.main_no, parent_question_id=question.id, position_no=int(last_position) + 1, question_text=followup_question, basis={"parent_question_id": question.public_id, "method": "STAR", "rule_version": "interview-followup-v2"}, status="awaiting_answer")
                     db.add(existing)
                     db.flush()
                 interview.current_question_id = existing.public_id
@@ -625,8 +656,16 @@ class TaskWorker:
                     interview.status = "awaiting_answer"
                     interview.revision += 1
                 else:
-                    self._save_summary(db, interview, "full")
+                    if summary_value is None:
+                        raise DomainError("INTERVIEW_SUMMARY_FAILED", "完整面试总结未生成，请重试", 503, "retry")
+                    self._save_summary_value(db, interview, "full", summary_value)
+                    task_result.update({"summary": "full"})
 
+        task_result: dict[str, Any] = {
+            "resource_type": "interview",
+            "resource_id": interview.public_id,
+            "path": f"/api/v1/interviews/{interview.public_id}",
+        }
         _run_model(
             db,
             task,
@@ -635,20 +674,15 @@ class TaskWorker:
             work,
             owner=self.owner,
             cost_feature="interview_feedback",
+            estimated_input_tokens=24000,
+            estimated_output_tokens=8000,
             on_success=save_feedback,
-            task_result={
-                "resource_type": "interview",
-                "resource_id": interview.public_id,
-                "path": f"/api/v1/interviews/{interview.public_id}",
-            },
+            task_result=task_result,
         )
 
-    def _save_summary(self, db: Session, interview: Interview, completion_type: str) -> None:
-        questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
-        answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == interview.id).order_by(InterviewAnswer.created_at)).all()
-        question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
-        answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
-        value = get_model_provider().summary(question_values, answer_values, completion_type).value
+    def _save_summary_value(self, db: Session, interview: Interview, completion_type: str, value: dict[str, Any]) -> None:
+        """写入已经生成的总结，避免在反馈任务里重复调用且不记账。"""
+
         summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == interview.id))
         if summary is None:
             db.add(InterviewSummary(account_id=interview.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
@@ -659,6 +693,16 @@ class TaskWorker:
         interview.status = "completed" if completion_type == "full" else "ended_early"
         interview.current_question_id = None
         interview.revision += 1
+
+    def _save_summary(self, db: Session, interview: Interview, completion_type: str) -> None:
+        """为独立的提前结束任务生成并写入总结。"""
+
+        questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
+        answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == interview.id).order_by(InterviewAnswer.created_at)).all()
+        question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
+        answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
+        value = get_model_provider().summary(question_values, answer_values, completion_type).value
+        self._save_summary_value(db, interview, completion_type, value)
 
     def _handle_interview_summary(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
         interview = db.scalar(select(Interview).where(Interview.public_id == _input(task, "interview_id"), Interview.account_id == task.account_id, Interview.deleted_at.is_(None)))

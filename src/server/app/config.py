@@ -85,6 +85,7 @@ class Settings:
     )
     model_provider: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_PROVIDER", "local"))
     model_name: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL", "gpt-5.6-luna"))
+    model_reasoning_effort: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_REASONING_EFFORT", "none"))
     execution_mode: str = field(default_factory=lambda: os.getenv("PURSLYX_EXECUTION_MODE", "inline").strip().lower())
     model_input_usd_per_million: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_INPUT_USD_PER_MILLION", ""))
     model_cached_input_usd_per_million: str = field(default_factory=lambda: os.getenv("PURSLYX_MODEL_CACHED_INPUT_USD_PER_MILLION", ""))

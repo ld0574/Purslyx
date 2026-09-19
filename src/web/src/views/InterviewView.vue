@@ -21,6 +21,12 @@ const activeTask = ref<JsonMap | null>(null);
 const startForm = reactive({ pool_id: "", title: "岗位面试练习" });
 const answerText = ref("");
 let pollingTimer: number | undefined;
+const starParts = [
+  { key: "situation", label: "S · 情境" },
+  { key: "task", label: "T · 任务" },
+  { key: "action", label: "A · 行动" },
+  { key: "result", label: "R · 结果" },
+];
 
 const availablePools = computed(() => poolItems.value.filter((item) => item.latest_analysis?.id && item.resume_version_id));
 const currentQuestion = computed(() => selected.value?.questions?.find((item: JsonMap) => item.id === selected.value?.current_question_id)
@@ -191,7 +197,7 @@ onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); })
         <form v-if="selected.status === 'awaiting_answer' && currentQuestion" id="answer-form" class="answer-box" @submit.prevent="submitAnswer"><label for="interview-answer">你的回答</label><textarea id="interview-answer" v-model="answerText" class="textarea" placeholder="按背景、本人行动、可核对结果写下真实回答……" required /><div class="form-foot"><span class="micro">提交后先保存回答，再生成本轮反馈。</span><button class="button primary" :disabled="busy" type="submit">提交回答</button></div></form>
         <div v-else-if="selected.status === 'processing' || selected.status === 'opening'" class="callout opportunity"><span class="spinner" />正在生成内容，页面会自动刷新。</div>
         <div v-else-if="['feedback_failed','summary_failed','opening_failed'].includes(selected.status)" class="callout attention">已保存的回答不会丢失。<button v-if="selected.task?.retryable" class="button outline small" type="button" @click="retryTask">重试生成</button></div>
-        <div v-if="selected.summary" class="summary-box"><strong>练习总结 · {{ selected.summary.completion_type === 'full' ? '完整完成' : '提前结束' }}</strong><p>{{ summaryText(selected.summary.content) }}</p><p v-if="selected.summary.content?.next_steps?.length">下一步：{{ selected.summary.content.next_steps.join('；') }}</p></div>
+        <div v-if="selected.summary" class="summary-box"><strong>练习总结 · {{ selected.summary.completion_type === 'full' ? '完整完成' : '提前结束' }}</strong><p>{{ summaryText(selected.summary.content) }}</p><p v-if="selected.summary.content?.next_steps?.length">下一步：{{ selected.summary.content.next_steps.join('；') }}</p><div v-if="selected.summary.content?.star_assessment" class="star-grid"><article v-for="part in starParts" :key="part.key"><div class="item-title"><strong>{{ part.label }}</strong><span class="tag" :class="selected.summary.content.star_assessment[part.key]?.status === 'strong' ? 'success' : selected.summary.content.star_assessment[part.key]?.status === 'partial' ? 'opportunity' : 'attention'">{{ selected.summary.content.star_assessment[part.key]?.status || 'missing' }}</span></div><p>{{ selected.summary.content.star_assessment[part.key]?.feedback || '尚未提供足够信息。' }}</p></article></div></div>
         <button v-if="selected.status === 'awaiting_answer'" class="button outline small" style="margin-top:12px" type="button" @click="finishInterview">提前结束并总结</button>
 
         <section v-if="selected.questions?.length" class="interview-history" style="margin-top:22px"><div class="card-head"><div><h3>逐题记录</h3><p>问题、本人回答与反馈完整保留。</p></div></div><div class="card-list"><article v-for="question in selected.questions" :key="question.id" class="interview-question-row"><div class="item-title"><strong>第 {{ question.main_no }} 题{{ question.question_type === 'followup' ? ' · 追问' : '' }}</strong><span class="tag" :class="statusClass(question.status)">{{ statusLabel(question.status) }}</span></div><p class="micro" style="margin-top:7px">{{ question.question_text }}</p><div v-if="question.answer" class="compare-pane original" style="margin-top:9px"><h4>我的回答</h4><p>{{ question.answer.answer_text }}</p></div><div v-if="question.feedback" class="feedback-box"><strong>本题反馈</strong><ul><li v-for="item in feedbackItems(question, 'strengths')" :key="`s-${item}`">优势：{{ item }}</li><li v-for="item in feedbackItems(question, 'gaps')" :key="`g-${item}`">可补充：{{ item }}</li><li v-for="item in feedbackItems(question, 'suggestions')" :key="`n-${item}`">建议：{{ item }}</li></ul><span v-if="question.feedback.needs_followup" class="tag opportunity">需要一次追问</span></div></article></div></section>

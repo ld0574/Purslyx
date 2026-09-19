@@ -205,10 +205,19 @@ PURSLYX_PRODUCT_ORIGIN=https://purslyx.com
 PURSLYX_ALLOWED_ORIGINS=https://purslyx.com
 PURSLYX_COOKIE_SECURE=true
 PURSLYX_ALLOWED_BROWSER_ORIGINS=https://www.zhipin.com,https://zhipin.com,https://www.liepin.com,https://liepin.com
-PURSLYX_MODEL_PROVIDER=local
+# 生产环境使用真实模型；local 只用于离线开发和确定性测试。
+PURSLYX_MODEL_PROVIDER=openai
+PURSLYX_MODEL=gpt-4.1-mini
+PURSLYX_MODEL_REASONING_EFFORT=none
+OPENAI_API_KEY=<openai-api-key>
+OPENAI_BASE_URL=
+# 美元／百万 token，按实际模型价格填写；缺失会被预算层拒绝。
+PURSLYX_MODEL_INPUT_USD_PER_MILLION=0.40
+PURSLYX_MODEL_CACHED_INPUT_USD_PER_MILLION=0.10
+PURSLYX_MODEL_OUTPUT_USD_PER_MILLION=1.60
 ```
 
-首次初始化管理员时临时设置 `PURSLYX_ADMIN_EMAIL` 和 `PURSLYX_ADMIN_PASSWORD`。Redis 密码含 URL 特殊字符时需要先编码；`PGPASSWORD` 保留原始密码。
+首次初始化管理员时临时设置 `PURSLYX_ADMIN_EMAIL` 和 `PURSLYX_ADMIN_PASSWORD`。Redis 密码含 URL 特殊字符时需要先编码；`PGPASSWORD` 保留原始密码。`OPENAI_BASE_URL` 只有使用 OpenAI-compatible 服务时才填写；当前适配器要求该服务支持 Responses API 和严格 JSON Schema 输出。
 
 ## 7. 首次构建和部署
 
