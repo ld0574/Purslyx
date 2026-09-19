@@ -128,7 +128,7 @@ def test_csrf_rejects_invalid_write(
     assert error.value.status_code == 403
 
 
-def test_role_and_verification_guards() -> None:
+def test_role_and_verification_guards(monkeypatch: pytest.MonkeyPatch) -> None:
     seeker = SimpleNamespace(registration_role="seeker", email_verified_at=object())
     recruiter = SimpleNamespace(registration_role="recruiter", email_verified_at=None)
     require_seeker(seeker)
@@ -138,6 +138,13 @@ def test_role_and_verification_guards() -> None:
     with pytest.raises(DomainError) as role_error:
         require_seeker(recruiter)
     assert role_error.value.code == "ROLE_NOT_ALLOWED"
+
+    monkeypatch.setattr(security, "settings", SimpleNamespace(require_email_verification=True))
     with pytest.raises(DomainError) as verified_error:
         require_verified(recruiter)
     assert verified_error.value.code == "AUTH_EMAIL_UNVERIFIED"
+
+
+def test_verification_guard_can_be_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(security, "settings", SimpleNamespace(require_email_verification=False))
+    require_verified(SimpleNamespace(registration_role="seeker", email_verified_at=None))

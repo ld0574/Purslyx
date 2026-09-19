@@ -150,6 +150,7 @@ LOGGER = logging.getLogger("purslyx.api")
 
 # debug 且未配置密钥时使用随机进程密钥，重启后旧的去投递令牌自然失效。
 _PROCESS_TOKEN_SECRET = secrets.token_bytes(32)
+_CAPTCHA_TTL_SECONDS = 5 * 60
 
 
 def _meta(request: Request) -> dict[str, str]:
@@ -190,6 +191,54 @@ def _write_guard(request: Request, account: Account, *, verified: bool = True) -
 
 def _email_valid(value: str) -> bool:
     return bool(re.fullmatch(r"[^@\s]{1,128}@[\w.-]{1,200}", value.strip()))
+
+
+def _captcha_secret() -> bytes:
+    """验证码必须使用所有 API 槽位共享的密钥签名。"""
+
+    configured = settings.token_secret.strip()
+    return configured.encode("utf-8") if configured else _PROCESS_TOKEN_SECRET
+
+
+def _captcha_signature(payload: str) -> str:
+    return hmac.new(_captcha_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _issue_captcha() -> dict[str, Any]:
+    """签发不落库的简单算术验证码；captcha_id 不包含答案。"""
+
+    left = secrets.randbelow(9) + 1
+    right = secrets.randbelow(9) + 1
+    expires_at = int(now_utc().timestamp()) + _CAPTCHA_TTL_SECONDS
+    payload = f"v1.{secrets.token_urlsafe(12)}.{left}.{right}.{expires_at}"
+    captcha_id = f"{payload}.{_captcha_signature(payload)}"
+    return {
+        "captcha_id": captcha_id,
+        "question": f"{left} + {right} = ?",
+        "expires_in": _CAPTCHA_TTL_SECONDS,
+    }
+
+
+def _validate_captcha(captcha_id: str, answer: str) -> None:
+    """校验验证码签名、有效期和答案，不向客户端暴露具体失败原因。"""
+
+    parts = captcha_id.split(".")
+    if len(parts) != 6 or parts[0] != "v1":
+        raise DomainError("AUTH_CAPTCHA_INVALID", "验证码错误或已过期", 422)
+    payload = ".".join(parts[:5])
+    if not hmac.compare_digest(parts[5], _captcha_signature(payload)):
+        raise DomainError("AUTH_CAPTCHA_INVALID", "验证码错误或已过期", 422)
+    try:
+        left = int(parts[2])
+        right = int(parts[3])
+        expires_at = int(parts[4])
+    except ValueError as exc:
+        raise DomainError("AUTH_CAPTCHA_INVALID", "验证码错误或已过期", 422) from exc
+    if not 1 <= left <= 9 or not 1 <= right <= 9 or expires_at <= int(now_utc().timestamp()):
+        raise DomainError("AUTH_CAPTCHA_INVALID", "验证码错误或已过期", 422)
+    normalized = answer.strip()
+    if not re.fullmatch(r"\d{1,3}", normalized) or int(normalized) != left + right:
+        raise DomainError("AUTH_CAPTCHA_INVALID", "验证码错误或已过期", 422)
 
 
 def _is_allowed_origin(value: str, allowed: list[str]) -> bool:
@@ -628,6 +677,8 @@ class RegisterRequest(BaseModel):
     email: str = Field(min_length=3, max_length=254)
     password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     registration_role: Literal["seeker", "recruiter"]
+    captcha_id: str = Field(min_length=16, max_length=512)
+    captcha_answer: str = Field(min_length=1, max_length=8)
 
 
 class LoginRequest(BaseModel):
@@ -773,6 +824,14 @@ class ExportRequest(BaseModel):
 # ------------------------------ 用户与浏览器授权 ------------------------------
 
 
+@router.get("/auth/captcha", tags=["auth"])
+def captcha(request: Request, db: Session = Depends(get_db)) -> JSONResponse:
+    """签发注册用的短期算术验证码。"""
+
+    _rate_limit(db, request, "auth.captcha", limit=20, window_seconds=5 * 60)
+    return _ok(request, _issue_captcha())
+
+
 @router.post("/auth/register", tags=["auth"], status_code=202)
 def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)) -> JSONResponse:
     """注册时固定身份；身份后续不能通过接口切换。"""
@@ -780,16 +839,17 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
     email = payload.email.strip()
     normalized = normalize_email(email)
     _rate_limit(db, request, "auth.register", limit=5, subject=email)
+    _validate_captcha(payload.captcha_id, payload.captcha_answer)
     if not _email_valid(email):
         raise DomainError("AUTH_EMAIL_INVALID", "请输入有效邮箱", 422)
     existing = db.scalar(select(Account).where(Account.email_normalized == normalized))
     if existing is not None:
         data: dict[str, Any] = {
-            "status": "verification_requested",
-            "message": "如果该邮箱可以注册，我们会发送验证邮件。",
+            "status": "registration_requested",
+            "message": "如果该邮箱尚未注册，账号会创建成功。",
         }
         verification_token = None
-        if existing.email_verified_at is None:
+        if settings.require_email_verification and existing.email_verified_at is None:
             verification_token = _create_one_time_token(db, existing.id, "verify_email")
             if settings.debug:
                 data["verification_token"] = verification_token
@@ -801,29 +861,34 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         email_normalized=normalized,
         password_hash=hash_password(payload.password),
         registration_role=payload.registration_role,
-        status="active" if settings.auto_verify_local else "pending_verification",
-        email_verified_at=now_utc() if settings.auto_verify_local else None,
+        status="pending_verification" if settings.require_email_verification else "active",
+        email_verified_at=None,
     )
     db.add(account)
     db.flush()
     verification_token = None
-    if account.email_verified_at is None:
+    if settings.require_email_verification:
         verification_token = _create_one_time_token(db, account.id, "verify_email")
-    grants = grant_trial_if_needed(db, account) if settings.auto_verify_local else []
+    grants = grant_trial_if_needed(db, account) if not settings.require_email_verification else []
     db.commit()
     if verification_token:
         deliver_account_action_email(account.email, "verify_email", verification_token)
-    data: dict[str, Any] = {
-        "status": "verification_requested",
-        "message": "如果该邮箱可以注册，我们会发送验证邮件。",
-    }
+    data: dict[str, Any]
+    if settings.require_email_verification:
+        data = {
+            "status": "verification_requested",
+            "message": "如果该邮箱可以注册，我们会发送验证邮件。",
+        }
+    else:
+        data = {
+            "status": "registered",
+            "registration_ready": True,
+            "message": "注册成功，正在进入工作台。",
+        }
     # 只在本地 debug 返回一次性 token，线上由邮件服务发送，避免 token 进入业务日志。
     if settings.debug and verification_token:
         data["verification_token"] = verification_token
-    if settings.debug and settings.auto_verify_local:
-        # 仅供本地前端判断能否直接登录；线上保持中性注册响应，避免账号枚举。
-        data["local_auto_verified"] = True
-    # 本地自动验证仍然发放试用次数，但不把账号投影带入公开注册响应。
+    # 直接注册模式的试用次数已在事务内发放，但不把账号投影带入公开注册响应。
     _ = grants
     return _ok(request, data, code=202)
 
@@ -869,7 +934,7 @@ def resend_verification(payload: RecoveryRequest, request: Request, db: Session 
     account = db.scalar(select(Account).where(Account.email_normalized == normalize_email(payload.email)))
     data: dict[str, Any] = {"accepted": True, "message": "如果账号存在，验证邮件将发送到注册邮箱。"}
     token = None
-    if account and account.email_verified_at is None:
+    if settings.require_email_verification and account and account.email_verified_at is None:
         token = _create_one_time_token(db, account.id, "verify_email")
         if settings.debug:
             data["verification_token"] = token
@@ -888,8 +953,12 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         raise DomainError("AUTH_INVALID_CREDENTIALS", "邮箱或密码不正确", 401)
     if account.status == "suspended":
         raise DomainError("AUTH_ACCOUNT_SUSPENDED", "账号已暂停，可通过注册邮箱申请恢复", 403, "recover_account")
-    if account.email_verified_at is None:
+    if settings.require_email_verification and account.email_verified_at is None:
         raise DomainError("AUTH_EMAIL_UNVERIFIED", "请先完成邮箱验证", 403, "verify_email")
+    if not settings.require_email_verification and account.status == "pending_verification":
+        # 兼容关闭邮箱验证前创建的历史待验证账号；不伪造 email_verified_at。
+        account.status = "active"
+        grant_trial_if_needed(db, account)
     _, raw, csrf = _create_web_session(db, account)
     account.last_login_at = now_utc()
     db.add(SecurityEvent(account_id=account.id, event_type="login", outcome="succeeded", client_type="web"))
@@ -1042,7 +1111,9 @@ def exchange_browser_code(payload: BrowserExchangeRequest, request: Request, db:
     if code is None or code.consumed_at or code.expires_at <= now_utc() or code.origin != payload.origin or code.nonce != payload.nonce:
         raise DomainError("BROWSER_CODE_INVALID", "浏览器授权码无效或已过期", 401)
     account = db.get(Account, code.account_id)
-    if account is None or account.status != "active" or account.email_verified_at is None:
+    if account is None or account.status != "active" or (
+        settings.require_email_verification and account.email_verified_at is None
+    ):
         raise DomainError("AUTH_EMAIL_UNVERIFIED", "账号尚未完成邮箱验证", 403)
     code.consumed_at = now_utc()
     raw = issue_secret()

@@ -37,7 +37,7 @@ fi
 export DATABASE_URL="$database_url"
 export PGPASSWORD="$postgres_password"
 export PURSLYX_DEBUG="${PURSLYX_DEBUG:-true}"
-export PURSLYX_AUTO_VERIFY_LOCAL="${PURSLYX_AUTO_VERIFY_LOCAL:-true}"
+export PURSLYX_REQUIRE_EMAIL_VERIFICATION="${PURSLYX_REQUIRE_EMAIL_VERIFICATION:-false}"
 export PURSLYX_AUTO_CREATE_SCHEMA="${PURSLYX_AUTO_CREATE_SCHEMA:-false}"
 export PURSLYX_TOKEN_SECRET="${PURSLYX_TOKEN_SECRET:-purslyx-local-development-secret-2026-change-me}"
 

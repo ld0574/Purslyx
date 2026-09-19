@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -82,17 +83,27 @@ def assert_error(
         raise RuntimeError(f"{method} {path} 错误码为 {actual!r}，期望 {expected_code!r}")
 
 
+def registration_captcha(client: httpx.Client) -> dict[str, str]:
+    _, body = call(client, "GET", "/api/v1/auth/captcha", expected=(200,))
+    captcha = data_of(body)
+    match = re.fullmatch(r"(\d+) \+ (\d+) = \?", str(captcha.get("question") or ""))
+    if not match:
+        raise RuntimeError("注册验证码题目格式不正确")
+    return {"captcha_id": str(captcha["captcha_id"]), "captcha_answer": str(int(match[1]) + int(match[2]))}
+
+
 def register_and_login(client: httpx.Client, email: str) -> tuple[dict[str, Any], str, str]:
+    captcha = registration_captcha(client)
     _, body = call(
         client,
         "POST",
         "/api/v1/auth/register",
         expected=(202,),
-        json={"email": email, "password": PASSWORD, "registration_role": "seeker"},
+        json={"email": email, "password": PASSWORD, "registration_role": "seeker", **captcha},
     )
     registration = data_of(body)
-    if registration.get("status") != "verification_requested":
-        raise RuntimeError("注册没有返回中性受理状态")
+    if registration.get("status") not in {"verification_requested", "registered"}:
+        raise RuntimeError("注册没有返回预期状态")
     verification_token = registration.get("verification_token")
     if verification_token:
         call(client, "POST", "/api/v1/auth/verify-email", expected=(200,), json={"token": verification_token})

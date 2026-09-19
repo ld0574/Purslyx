@@ -204,6 +204,9 @@
       .identity-card span { display: grid; gap: 4px; }
       .identity-card strong { font-size: 12px; }
       .identity-card small { color: var(--muted); font-size: 11px; line-height: 1.4; }
+      .captcha-heading { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+      .captcha-question { padding: 12px 14px; border: 1px dashed #b9d3f6; border-radius: 10px; color: var(--brand); background: var(--brand-soft); font-size: 18px; font-weight: 800; letter-spacing: .08em; text-align: center; }
+      .captcha-field > small { color: var(--muted); }
       .auth-foot { margin-top: 18px; color: var(--muted); font-size: 11px; line-height: 1.55; }
 
       .workspace-layout { display: grid; grid-template-columns: 224px minmax(0, 1fr); gap: 34px; max-width: 1320px; margin: 0 auto; padding: 30px 28px 70px; }

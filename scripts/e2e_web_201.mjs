@@ -232,6 +232,13 @@ async function register(client, role, email) {
   }
   await setValue(client, "#auth-email", email);
   await setValue(client, "#auth-password", PASSWORD);
+  const captchaQuestion = await waitForValue(
+    () => client.evaluate("document.querySelector('[data-captcha-question]')?.textContent?.match(/\\d+ \\+ \\d+ = \\?/)?.[0] || ''"),
+    "等待注册验证码",
+  );
+  const captchaMatch = String(captchaQuestion).match(/(\d+) \+ (\d+) = \?/);
+  assert(captchaMatch, "注册页面没有可用的简单验证码");
+  await setValue(client, "#auth-captcha-answer", String(Number(captchaMatch[1]) + Number(captchaMatch[2])));
   await submit(client, "#auth-form");
   try {
     await waitForPath(client, `/app/${role}/dashboard`);

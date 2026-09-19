@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -31,6 +32,14 @@ def _expect(response: httpx.Response, *statuses: int) -> dict:
     if not isinstance(value, dict):
         raise RuntimeError("接口响应不是对象")
     return value
+
+
+def _captcha(client: httpx.Client) -> dict[str, str]:
+    data = _expect(client.get(f"{BASE_URL}/api/v1/auth/captcha"), 200)["data"]
+    match = re.fullmatch(r"(\d+) \+ (\d+) = \?", str(data.get("question") or ""))
+    if not match:
+        raise RuntimeError("注册验证码题目格式不正确")
+    return {"captcha_id": str(data["captcha_id"]), "captcha_answer": str(int(match[1]) + int(match[2]))}
 
 
 def _run_worker_once(*, unavailable_model: bool = False) -> None:
@@ -181,7 +190,7 @@ def main() -> None:
         health = _expect(client.get(f"{BASE_URL}/health"))
         if health.get("environment") != "201" or (health.get("database") or {}).get("backend") != "postgresql":
             raise RuntimeError("服务没有连接 201 PostgreSQL")
-        registration = _expect(client.post(f"{BASE_URL}/api/v1/auth/register", json={"email": email, "password": PASSWORD, "registration_role": "seeker"}), 202)
+        registration = _expect(client.post(f"{BASE_URL}/api/v1/auth/register", json={"email": email, "password": PASSWORD, "registration_role": "seeker", **_captcha(client)}), 202)
         token = (registration.get("data") or {}).get("verification_token")
         if token:
             _expect(client.post(f"{BASE_URL}/api/v1/auth/verify-email", json={"token": token}), 200)

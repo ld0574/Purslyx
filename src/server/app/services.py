@@ -256,7 +256,7 @@ def grant_feature(
 
 
 def grant_trial_if_needed(db: Session, account: Account) -> list[UsageGrant]:
-    """邮箱验证事务内只发放一次适用的试用次数。"""
+    """注册或邮箱验证事务内只发放一次适用的试用次数。"""
 
     grants: list[UsageGrant] = []
     for feature, count in TRIAL_COUNTS.get(account.registration_role, {}).items():
@@ -266,7 +266,7 @@ def grant_trial_if_needed(db: Session, account: Account) -> list[UsageGrant]:
             feature,
             count,
             source_type="trial",
-            reason="完成邮箱验证后的内测试用次数",
+            reason="完成注册后的内测试用次数",
             batch_key="internal-beta-v1",
         )
         if not existed:

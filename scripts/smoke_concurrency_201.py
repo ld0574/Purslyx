@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -27,13 +28,21 @@ def _data(response: httpx.Response, expected_status: int) -> dict[str, Any]:
     return value.get("data") or value
 
 
+def _captcha(client: httpx.Client) -> dict[str, str]:
+    data = _data(client.get(f"{BASE_URL}/api/v1/auth/captcha"), 200)
+    match = re.fullmatch(r"(\d+) \+ (\d+) = \?", str(data.get("question") or ""))
+    if not match:
+        raise RuntimeError("注册验证码题目格式不正确")
+    return {"captcha_id": str(data["captcha_id"]), "captcha_answer": str(int(match[1]) + int(match[2]))}
+
+
 def _register(suffix: str) -> tuple[str, dict[str, str]]:
     email = f"concurrency-interview-{suffix}@purslyx.local"
     with httpx.Client(timeout=30) as client:
         registration = _data(
             client.post(
                 f"{BASE_URL}/api/v1/auth/register",
-                json={"email": email, "password": PASSWORD, "registration_role": "seeker"},
+                json={"email": email, "password": PASSWORD, "registration_role": "seeker", **_captcha(client)},
             ),
             202,
         )

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 import time
@@ -26,6 +27,14 @@ def _data(response: httpx.Response, expected_status: int) -> dict:
     if not isinstance(body, dict):
         raise RuntimeError("接口响应不是对象")
     return body.get("data") or body
+
+
+def _captcha(client: httpx.Client) -> dict[str, str]:
+    data = _data(client.get(f"{BASE_URL}/api/v1/auth/captcha"), 200)
+    match = re.fullmatch(r"(\d+) \+ (\d+) = \?", str(data.get("question") or ""))
+    if not match:
+        raise RuntimeError("注册验证码题目格式不正确")
+    return {"captcha_id": str(data["captcha_id"]), "captcha_answer": str(int(match[1]) + int(match[2]))}
 
 
 def _run_worker_once() -> None:
@@ -52,6 +61,7 @@ def main() -> None:
                     "email": email,
                     "password": PASSWORD,
                     "registration_role": "seeker",
+                    **_captcha(client),
                 },
             ),
             202,

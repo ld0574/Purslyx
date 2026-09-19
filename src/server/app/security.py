@@ -198,5 +198,7 @@ def require_recruiter(account: Account) -> None:
 
 
 def require_verified(account: Account) -> None:
+    if not getattr(settings, "require_email_verification", True):
+        return
     if account.email_verified_at is None:
         raise DomainError("AUTH_EMAIL_UNVERIFIED", "请先完成邮箱验证", 403, "verify_email")

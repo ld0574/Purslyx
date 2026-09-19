@@ -31,14 +31,14 @@ describe("认证状态", () => {
     expect(localStorage.getItem(SESSION_KEY)).toBeNull();
   });
 
-  it("本地自动验证注册完成后直接建立会话", async () => {
+  it("验证码注册完成后直接建立会话", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { status: "verification_requested", local_auto_verified: true } }), { status: 202, headers: { "Content-Type": "application/json" } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: { status: "registered", registration_ready: true } }), { status: 202, headers: { "Content-Type": "application/json" } }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: {
         access_token: "token", csrf_token: "csrf", account: { id: "account-2", email: "new@example.com", registration_role: "recruiter", admin_permissions: [] },
       } }), { status: 200, headers: { "Content-Type": "application/json" } }));
     const store = useAuthStore();
-    await expect(store.register("new@example.com", "password-password", "recruiter")).resolves.toBe(true);
+    await expect(store.register("new@example.com", "password-password", "recruiter", "captcha-1", "12")).resolves.toBe(true);
     expect(store.role).toBe("recruiter");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -48,7 +48,7 @@ describe("认证状态", () => {
       status: 202, headers: { "Content-Type": "application/json" },
     }));
     const store = useAuthStore();
-    await expect(store.register("new@example.com", "password-password", "seeker")).resolves.toBe(false);
+    await expect(store.register("new@example.com", "password-password", "seeker", "captcha-1", "12")).resolves.toBe(false);
     expect(store.account).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });

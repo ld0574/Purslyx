@@ -38,7 +38,7 @@ flowchart LR
 
 | 模块 | 方法 | 路径 | 认证 | 结果 |
 | --- | --- | --- | --- | --- |
-| 用户 | POST | `/auth/register`、`/auth/login`、`/auth/verify-email`、`/auth/resend-verification`、`/auth/forgot-password`、`/auth/reset-password`、`/auth/request-account-recovery`、`/auth/recover-account` | 公开 | 同步或中性受理 |
+| 用户 | GET/POST | `/auth/captcha`、`/auth/register`、`/auth/login`、`/auth/verify-email`、`/auth/resend-verification`、`/auth/forgot-password`、`/auth/reset-password`、`/auth/request-account-recovery`、`/auth/recover-account` | 公开 | 注册验证码；其余同步或中性受理 |
 | 用户 | POST | `/auth/logout`、`/auth/browser-codes` | Web | 退出或一次性浏览器授权码 |
 | 用户 | GET | `/me` | Web | 当前账号、固定身份与后台权限 |
 | 用户 | POST | `/browser-auth/exchange` | 一次性授权码 | 浏览器令牌 |

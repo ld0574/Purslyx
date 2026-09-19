@@ -33,13 +33,29 @@
 | `csrf_token` | string | 否 | Web 写请求使用；不得写日志 |
 | `session_expires_at` | datetime | 否 | 当前 Web 会话到期时间 |
 
-密码长度为 8—128 个 Unicode 字符；服务端不静默截断。邮箱长度不超过 254，提交时去首尾空白并按服务端规则规范化。响应不返回密码规则判断细节以外的认证内部信息。
+密码长度为 8—128 个 Unicode 字符；服务端不静默截断。邮箱长度不超过 254，提交时去首尾空白并按服务端规则规范化。默认注册不要求邮箱所有权验证；`PURSLYX_REQUIRE_EMAIL_VERIFICATION=true` 时恢复邮件验证流程。响应不返回密码规则判断细节以外的认证内部信息。
 
 ## 2. 注册、验证与登录
 
+### GET `/api/v1/auth/captcha`
+
+公开接口，限频。返回注册使用的短期无状态算术验证码：
+
+```json
+{
+  "data": {
+    "captcha_id": "<签名后的验证码标识>",
+    "question": "7 + 4 = ?",
+    "expires_in": 300
+  }
+}
+```
+
+答案只在服务端用 `PURSLYX_TOKEN_SECRET` 校验，不写入数据库；验证码标识不可篡改，默认 5 分钟有效。
+
 ### POST `/api/v1/auth/register`
 
-公开接口，限频。
+公开接口，限频并需要简单算术验证码。
 
 请求：
 
@@ -47,23 +63,28 @@
 {
   "email": "seeker@example.test",
   "password": "correct horse battery staple",
-  "registration_role": "seeker"
+  "registration_role": "seeker",
+  "captcha_id": "<captcha_id>",
+  "captcha_answer": "11"
 }
 ```
 
-成功返回 202。无论邮箱新建、已有待验证账号或已有账号，均返回相同结构和中性文案；不会返回账号 ID。
+默认关闭邮箱认证时，新账号成功返回 202，并直接进入工作台：
 
 ```json
 {
   "data": {
-    "status": "verification_requested",
-    "message": "如果该邮箱可以注册，我们会发送验证邮件。"
+    "status": "registered",
+    "registration_ready": true,
+    "message": "注册成功，正在进入工作台。"
   },
   "meta": {"request_id": "01K5A2MZ6B2JQJ7G2XAJ5PSM8P", "server_time": "2026-09-14T08:30:00Z"}
 }
 ```
 
 `registration_role` 必须为 `seeker` 或 `recruiter`。已有账号不得借重复注册改变身份。
+
+当 `PURSLYX_REQUIRE_EMAIL_VERIFICATION=true` 时，新账号回到待验证状态并发送验证邮件；已有邮箱仍返回中性受理结果，不返回账号 ID。
 
 ### POST `/api/v1/auth/resend-verification`
 
@@ -84,7 +105,7 @@
 }
 ```
 
-成功返回 200 `AuthSession`，同时设置 `purslyx_session` Cookie。凭据错误返回 401 `AUTH_INVALID_CREDENTIALS`；未验证返回 403 `AUTH_EMAIL_UNVERIFIED`；暂停返回 403 `AUTH_ACCOUNT_SUSPENDED`。响应不会区分邮箱不存在与密码错误。
+成功返回 200 `AuthSession`，同时设置 `purslyx_session` Cookie。凭据错误返回 401 `AUTH_INVALID_CREDENTIALS`；开启邮箱认证且未验证时返回 403 `AUTH_EMAIL_UNVERIFIED`；暂停返回 403 `AUTH_ACCOUNT_SUSPENDED`。响应不会区分邮箱不存在与密码错误。
 
 ### POST `/api/v1/auth/logout`
 

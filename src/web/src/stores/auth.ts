@@ -40,15 +40,27 @@ export const useAuthStore = defineStore("auth", {
       this.account = result.account;
       this.persist();
     },
-    async register(email: string, password: string, registrationRole: RegistrationRole): Promise<boolean> {
+    async register(
+      email: string,
+      password: string,
+      registrationRole: RegistrationRole,
+      captchaId: string,
+      captchaAnswer: string,
+    ): Promise<boolean> {
       const registration = await api<JsonMap>("/api/v1/auth/register", {
         method: "POST",
-        body: { email, password, registration_role: registrationRole },
+        body: {
+          email,
+          password,
+          registration_role: registrationRole,
+          captcha_id: captchaId,
+          captcha_answer: captchaAnswer,
+        },
       });
       if (registration.verification_token) {
         await api("/api/v1/auth/verify-email", { method: "POST", body: { token: registration.verification_token } });
       }
-      if (registration.verification_token || registration.local_auto_verified) {
+      if (registration.registration_ready || registration.verification_token || registration.local_auto_verified) {
         await this.login(email, password);
         return true;
       }

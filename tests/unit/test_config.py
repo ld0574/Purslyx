@@ -53,3 +53,8 @@ def test_execution_mode_is_explicit() -> None:
         assert "inline" in str(exc)
     else:
         raise AssertionError("unsupported execution mode must be rejected")
+
+
+def test_email_verification_is_disabled_by_default() -> None:
+    assert Settings().require_email_verification is False
+    assert Settings(require_email_verification=True).require_email_verification is True

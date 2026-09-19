@@ -191,7 +191,8 @@ REDIS_URL=redis://:<url-encoded-redis-password>@host.docker.internal:6379/0
 
 PURSLYX_DEBUG=false
 PURSLYX_ENVIRONMENT=production
-PURSLYX_AUTO_VERIFY_LOCAL=false
+# 默认注册后直接进入工作台；需要邮箱认证时改为 true。
+PURSLYX_REQUIRE_EMAIL_VERIFICATION=false
 PURSLYX_AUTO_CREATE_SCHEMA=false
 PURSLYX_EXECUTION_MODE=worker
 PURSLYX_TOKEN_SECRET=<至少32个字符的随机值>

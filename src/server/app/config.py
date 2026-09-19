@@ -33,7 +33,10 @@ class Settings:
     auto_create_schema: bool = field(
         default_factory=lambda: _bool("PURSLYX_AUTO_CREATE_SCHEMA", True)
     )
-    auto_verify_local: bool = field(default_factory=lambda: _bool("PURSLYX_AUTO_VERIFY_LOCAL", False))
+    # 默认先不要求邮箱所有权验证；生产需要时设置为 true 即恢复验证流程。
+    require_email_verification: bool = field(
+        default_factory=lambda: _bool("PURSLYX_REQUIRE_EMAIL_VERIFICATION", False)
+    )
     session_days: int = field(default_factory=lambda: int(os.getenv("PURSLYX_SESSION_DAYS", "7")))
     verification_token_hours: int = field(
         default_factory=lambda: int(os.getenv("PURSLYX_VERIFICATION_TOKEN_HOURS", "24"))
