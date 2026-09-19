@@ -956,6 +956,39 @@ def usage_view(
     }
 
 
+_TASK_RESULT_KEYS = frozenset(
+    {
+        "resource_type",
+        "resource_id",
+        "path",
+        "export_id",
+        "file_ready",
+        "question_id",
+        "needs_followup",
+        "document_id",
+        "draft_id",
+        "followup_id",
+        "summary",
+    }
+)
+
+
+def _task_result_view(value: Any) -> dict[str, Any] | None:
+    """任务列表只返回稳定的资源引用，不把模型正文当作任务结果公开。"""
+
+    if not isinstance(value, dict):
+        return None
+    return {
+        key: value[key]
+        for key in _TASK_RESULT_KEYS
+        if key in value
+        and (
+            value[key] is None
+            or isinstance(value[key], (str, int, float, bool))
+        )
+    }
+
+
 def task_view(task: Task) -> dict[str, Any]:
     """统一任务摘要，避免把内部自增 ID 返回给客户端。"""
 
@@ -981,7 +1014,7 @@ def task_view(task: Task) -> dict[str, Any]:
             if task.usage_feature
             else None
         ),
-        "result": task.result,
+        "result": _task_result_view(task.result),
         "failure": task.failure,
         "required_actions": task.required_actions or [],
         "retryable": retryable,

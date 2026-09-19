@@ -33,6 +33,7 @@ from server.app.services import (
     reserve_feature,
     run_local_task,
     settle_feature,
+    task_view,
 )
 
 
@@ -366,3 +367,34 @@ def test_worker_execution_attempt_does_not_short_circuit(monkeypatch: pytest.Mon
     assert completed == [{"resource_type": "analysis", "resource_id": "analysis-1"}]
     assert published == [20]
     assert db.commits == 2
+
+
+def test_task_view_only_exposes_safe_result_references() -> None:
+    timestamp = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    task = Task(
+        id=20,
+        public_id="task-20",
+        account_id=7,
+        task_type="analysis",
+        status="succeeded",
+        current_step="completed",
+        progress={"completed": 1, "total": 1},
+        input_data={},
+        result={
+            "resource_type": "analysis",
+            "resource_id": "analysis-1",
+            "path": "/api/v1/analyses/analysis-1",
+            "content": {"resume": "must not be exposed"},
+            "internal_trace": "must not be exposed",
+        },
+        created_at=timestamp,
+        updated_at=timestamp,
+    )
+
+    view = task_view(task)
+
+    assert view["result"] == {
+        "resource_type": "analysis",
+        "resource_id": "analysis-1",
+        "path": "/api/v1/analyses/analysis-1",
+    }
