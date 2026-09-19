@@ -1016,7 +1016,7 @@ def run_local_task(
     的任务记录。真实队列接入时可复用同一组状态迁移函数。
     """
 
-    if settings.execution_mode == "worker":
+    if settings.execution_mode == "worker" and attempt is None:
         # HTTP 进程只负责创建任务、预留次数和提交 outbox；独立 Worker 会在提交后执行。
         # 不在这里预先认领，避免 API 进程和 Worker 同时写同一执行代次。
         db.commit()

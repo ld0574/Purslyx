@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from server.app.errors import DomainError
 from server.app.models import (
     Account,
     Task,
+    TaskAttempt,
     TaskInputRef,
     TaskOutbox,
     UsageBalance,
@@ -29,6 +31,7 @@ from server.app.services import (
     payload_hash,
     release_feature,
     reserve_feature,
+    run_local_task,
     settle_feature,
 )
 
@@ -326,3 +329,40 @@ def test_create_task_idempotency_conflict_does_not_create_new_rows() -> None:
         )
     assert error.value.code == "IDEMPOTENCY_CONFLICT"
     assert conflict_db.added == []
+
+
+def test_worker_execution_attempt_does_not_short_circuit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """HTTP worker 模式只入队，已认领的独立 Worker 必须继续执行任务。"""
+
+    class ExecutionSession:
+        def __init__(self) -> None:
+            self.commits = 0
+            self.refreshed: list[Any] = []
+
+        def commit(self) -> None:
+            self.commits += 1
+
+        def refresh(self, value: Any) -> None:
+            self.refreshed.append(value)
+
+    task = Task(id=20, account_id=7, task_type="analysis", input_data={}, status="running")
+    attempt = TaskAttempt(id=30, task_id=20, execution_generation=1, status="running")
+    db = ExecutionSession()
+    completed: list[dict[str, Any]] = []
+    published: list[int] = []
+    monkeypatch.setattr(services, "settings", SimpleNamespace(execution_mode="worker", model_provider="local", model_name="test"))
+    monkeypatch.setattr(services, "finish_task", lambda _db, _task, _reservation, result, **_kwargs: completed.append(result))
+    monkeypatch.setattr(services, "mark_outbox_published", lambda _db, task_id: published.append(task_id))
+
+    run_local_task(
+        db,  # type: ignore[arg-type]
+        task,
+        None,
+        lambda: {"generated": True},
+        attempt=attempt,
+        task_result={"resource_type": "analysis", "resource_id": "analysis-1"},
+    )
+
+    assert completed == [{"resource_type": "analysis", "resource_id": "analysis-1"}]
+    assert published == [20]
+    assert db.commits == 2
