@@ -1,13 +1,16 @@
 // ==UserScript==
 // @name         Purslyx 岗位自动获取
-// @namespace    https://purslyx.local/
-// @version      0.2.0
+// @namespace    https://purslyx.com/
+// @version      0.3.0
 // @description  在支持的 BOSS 直聘／猎聘详情页自动上传待确认岗位草稿。
+// @downloadURL  https://purslyx.com/purslyx-job-capture.user.js
+// @updateURL    https://purslyx.com/purslyx-job-capture.user.js
 // @match        https://www.zhipin.com/job_detail/*
 // @match        https://zhipin.com/job_detail/*
 // @match        https://www.liepin.com/job/*
 // @match        https://liepin.com/job/*
 // @grant        GM_xmlhttpRequest
+// @connect      purslyx.com
 // @connect      127.0.0.1
 // @connect      localhost
 // ==/UserScript==
@@ -15,8 +18,8 @@
 (function () {
   "use strict";
 
-  // 本地环境由【本地开发环境.md】启动并连接 201 PostgreSQL；部署时替换产品地址。
-  const API_ORIGIN = "http://127.0.0.1:8001";
+  // 官网安装版直接连接生产 API；本地开发时可将这两个地址改为本地服务地址。
+  const API_ORIGIN = "https://purslyx.com";
   const PRODUCT_ORIGIN = API_ORIGIN;
   const DRAFT_KEY = "purslyx.pending-job-drafts.v1";
   const TOKEN_KEY = "purslyx.browser-token.v1";

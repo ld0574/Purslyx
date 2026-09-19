@@ -87,6 +87,22 @@
       .section-heading h2 { margin-top: 7px; font-size: 25px; }
       .section-heading p { max-width: 620px; color: var(--muted); font-size: 13px; line-height: 1.65; }
       .product-section { margin-top: 72px; scroll-margin-top: 90px; }
+      .sync-panel { max-width: 760px; margin: 0 auto; padding: 28px; border: 1px solid #b9d3f6; border-radius: 20px; background: #f8fbff; box-shadow: var(--shadow); }
+      .sync-panel h2 { margin-top: 8px; font-size: 24px; }
+      .sync-panel p { margin-top: 9px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+      .sync-panel .hero-actions { margin-top: 20px; }
+      .install-layout { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(300px, .92fr); gap: 16px; align-items: stretch; }
+      .install-card { padding: 26px; border: 1px solid var(--line); border-radius: 20px; background: #fff; box-shadow: var(--shadow); }
+      .install-card-primary { border-color: #b9d3f6; background: linear-gradient(145deg, #f8fbff, #fff); }
+      .install-card h3 { margin-top: 22px; font-size: 20px; }
+      .install-card > p:not(.micro) { margin-top: 11px; color: var(--muted); font-size: 13px; line-height: 1.7; }
+      .install-card .hero-actions { margin-top: 22px; }
+      .install-card .micro { margin-top: 16px; }
+      .install-steps { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; counter-reset: install-step; }
+      .install-steps li { position: relative; display: grid; gap: 5px; min-height: 86px; padding: 18px 18px 18px 58px; border: 1px solid var(--line); border-radius: 16px; background: rgba(255,255,255,.9); box-shadow: var(--shadow); counter-increment: install-step; }
+      .install-steps li::before { position: absolute; top: 17px; left: 18px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; color: var(--brand); background: var(--brand-soft); content: counter(install-step, decimal-leading-zero); font-size: 10px; font-weight: 900; }
+      .install-steps strong { font-size: 13px; }
+      .install-steps span { color: var(--muted); font-size: 12px; line-height: 1.55; }
       .capability-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
       .capability-card { position: relative; min-height: 245px; padding: 26px; overflow: hidden; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,.9); box-shadow: var(--shadow); }
       .capability-card::after { position: absolute; right: -46px; bottom: -62px; width: 150px; height: 150px; border-radius: 50%; background: var(--brand-soft); content: ""; }
@@ -340,6 +356,7 @@
         .side-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
         .nav-button { flex: 0 0 auto; width: auto; white-space: nowrap; }
         .side-note { display: none; }
+        .install-layout { grid-template-columns: 1fr; }
       }
       @media (max-width: 680px) {
         .topbar { gap: 8px; min-height: 62px; overflow: hidden; }
@@ -349,6 +366,9 @@
         .hero, .hero-copy, .hero-visual, .visual-window { width: 100%; min-width: 0; }
         .hero h1 { max-width: 100%; overflow-wrap: anywhere; font-size: clamp(36px, 11vw, 42px); }
         .hero-copy > p { font-size: 15px; }
+        .sync-panel, .install-card { padding: 20px; }
+        .install-card .hero-actions { align-items: stretch; flex-direction: column; }
+        .install-card .button { width: 100%; }
         .hero-visual { max-width: 100%; min-height: 280px; padding: 18px; border-radius: 20px; }
         .visual-window { height: 244px; }
         .visual-score { right: 20px; bottom: 22px; width: 82px; height: 82px; }

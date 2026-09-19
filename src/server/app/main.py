@@ -27,6 +27,7 @@ WEB_DIST_ROOT = WEB_ROOT / "dist"
 WEB_INDEX = WEB_DIST_ROOT / "index.html"
 WEB_ASSET_ROOT = WEB_DIST_ROOT / "assets"
 WEB_FAVICON = WEB_DIST_ROOT / "favicon.svg"
+USERSCRIPT_FILE = Path(__file__).resolve().parents[2] / "userscript" / "purslyx-job-capture.user.js"
 
 
 def utcnow() -> datetime:
@@ -153,6 +154,19 @@ def favicon() -> FileResponse:
     if not WEB_FAVICON.is_file():
         raise DomainError("WEB_BUILD_MISSING", "前端站点图标尚未构建", 503)
     return FileResponse(WEB_FAVICON, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/purslyx-job-capture.user.js", include_in_schema=False)
+def userscript() -> FileResponse:
+    """提供篡改猴一键安装和自动更新脚本。"""
+
+    if not USERSCRIPT_FILE.is_file():
+        raise DomainError("USERSCRIPT_MISSING", "浏览器脚本尚未发布", 503)
+    return FileResponse(
+        USERSCRIPT_FILE,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
 
 
 def _web_index() -> FileResponse:

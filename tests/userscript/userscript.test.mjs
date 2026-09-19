@@ -181,7 +181,7 @@ test("BOSS 详情页自动提取并上传待确认草稿", async () => {
   assert.equal(runtime.requests.length, 1);
   const request = runtime.requests[0];
   const body = JSON.parse(request.data);
-  assert.equal(request.url, "http://127.0.0.1:8001/api/v1/browser/job-drafts");
+  assert.equal(request.url, "https://purslyx.com/api/v1/browser/job-drafts");
   assert.equal(request.headers.Authorization, "Bearer browser-token");
   assert.equal(body.platform, "boss");
   assert.equal(body.job_title, "高级前端工程师");
