@@ -1,0 +1,6 @@
+# Copy this file to the OpenResty conf.d directory before the first deployment.
+# scripts/release.sh replaces it atomically when traffic is switched.
+upstream purslyx_api {
+    server 127.0.0.1:18001;
+    keepalive 32;
+}

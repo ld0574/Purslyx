@@ -36,6 +36,14 @@ def test_other_postgres_host_is_rejected() -> None:
         raise AssertionError("the local environment must stay on the 201 PostgreSQL host")
 
 
+def test_configured_container_database_host_is_accepted() -> None:
+    configured = Settings(
+        database_url="postgresql+psycopg://u@host.docker.internal:5432/purslyx",
+        allowed_database_hosts="host.docker.internal",
+    )
+    assert configured.require_postgres_url().startswith("postgresql+")
+
+
 def test_execution_mode_is_explicit() -> None:
     Settings(execution_mode="inline").require_execution_mode()
     Settings(execution_mode="worker").require_execution_mode()

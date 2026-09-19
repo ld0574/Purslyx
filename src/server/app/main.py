@@ -72,7 +72,7 @@ def _error(request: Request, error: DomainError) -> JSONResponse:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """启动时只连接 201 PostgreSQL；建表行为由开发环境开关控制。"""
+    """启动时只连接已允许的 PostgreSQL；建表行为由环境开关控制。"""
 
     settings.require_postgres_url()
     settings.require_execution_mode()
@@ -84,7 +84,7 @@ async def lifespan(_: FastAPI):
         if settings.auto_create_schema:
             init_db()
     except SQLAlchemyError as exc:
-        raise RuntimeError("无法连接 201 环境 PostgreSQL，请检查 DATABASE_URL") from exc
+        raise RuntimeError("无法连接 PostgreSQL，请检查 DATABASE_URL 和数据库网络访问") from exc
     yield
 
 
@@ -179,15 +179,15 @@ def job_pool_page() -> FileResponse:
 
 @app.get("/health", tags=["system"])
 def health() -> dict[str, Any]:
-    """健康检查明确返回 PostgreSQL 后端，便于验证数据库约束。"""
+    """健康检查明确返回 PostgreSQL 后端和部署环境，便于验证运行事实。"""
 
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
     except SQLAlchemyError as exc:
-        raise DomainError("DATABASE_UNAVAILABLE", "201 环境 PostgreSQL 暂不可用", 503) from exc
+        raise DomainError("DATABASE_UNAVAILABLE", "PostgreSQL 暂不可用", 503) from exc
     return {
         "status": "ok",
         "database": {"backend": engine.url.get_backend_name(), "driver": engine.url.drivername},
-        "environment": "201",
+        "environment": settings.environment_name,
     }

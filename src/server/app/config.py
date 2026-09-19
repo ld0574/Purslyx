@@ -1,7 +1,7 @@
 """应用配置。
 
 数据库连接只允许由部署环境注入 PostgreSQL URL。这里不提供 SQLite、本地文件数据库或
-任何真实凭据的默认值，避免开发机的隐式配置与 201 环境产生偏差。
+任何真实凭据的默认值；允许的数据库主机由 PURSLYX_ALLOWED_DATABASE_HOSTS 控制。
 """
 
 from __future__ import annotations
@@ -22,7 +22,11 @@ def _bool(name: str, default: bool) -> bool:
 @dataclass(frozen=True)
 class Settings:
     app_name: str = field(default_factory=lambda: os.getenv("PURSLYX_APP_NAME", "Purslyx"))
+    environment_name: str = field(default_factory=lambda: os.getenv("PURSLYX_ENVIRONMENT", "201").strip())
     database_url: str = field(default_factory=lambda: os.getenv("DATABASE_URL", "").strip())
+    allowed_database_hosts: str = field(
+        default_factory=lambda: os.getenv("PURSLYX_ALLOWED_DATABASE_HOSTS", "10.10.10.201").strip()
+    )
     redis_url: str = field(default_factory=lambda: os.getenv("REDIS_URL", "").strip())
     data_dir: Path = field(default_factory=lambda: Path(os.getenv("PURSLYX_DATA_DIR", "data")))
     debug: bool = field(default_factory=lambda: _bool("PURSLYX_DEBUG", False))
@@ -100,16 +104,25 @@ class Settings:
         scheme = value.split(":", 1)[0].lower() if ":" in value else ""
         if not value:
             raise RuntimeError(
-                "未配置 DATABASE_URL；Purslyx 只能连接 201 环境提供的 PostgreSQL，"
+                "未配置 DATABASE_URL；Purslyx 只能连接已允许的 PostgreSQL，"
                 "请通过部署环境注入连接串。"
             )
         if scheme.startswith("sqlite"):
             raise RuntimeError("禁止使用 SQLite；请将 DATABASE_URL 配置为 PostgreSQL URL。")
         if scheme not in {"postgres", "postgresql"} and not scheme.startswith("postgresql+"):
             raise RuntimeError("DATABASE_URL 必须是 PostgreSQL URL，不能使用本地文件数据库。")
-        if urlparse(value).hostname != "10.10.10.201":
-            raise RuntimeError("DATABASE_URL 必须指向本地开发环境文件中的 201 PostgreSQL。")
+        hostname = urlparse(value).hostname
+        allowed_hosts = self.database_hosts
+        if allowed_hosts and hostname not in allowed_hosts:
+            allowed = ", ".join(allowed_hosts)
+            raise RuntimeError(f"DATABASE_URL 必须指向允许的 PostgreSQL 主机（当前允许：{allowed}）。")
         return value
+
+    @property
+    def database_hosts(self) -> list[str]:
+        """返回允许连接的 PostgreSQL 主机列表。"""
+
+        return [item.strip() for item in self.allowed_database_hosts.split(",") if item.strip()]
 
     def require_runtime_secrets(self) -> None:
         """校验线上必需的签名配置；单元测试可只调用数据库校验。"""

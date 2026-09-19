@@ -1,0 +1,81 @@
+name: purslyx
+
+services:
+  app:
+    image: purslyx-app:${PURSLYX_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile
+      args:
+        UV_VERSION: ${PURSLYX_UV_VERSION:-0.12.0}
+        PURSLYX_PYPI_INDEX_URL: ${PURSLYX_PYPI_INDEX_URL:-https://pypi.org/simple/}
+    env_file:
+      - ${PURSLYX_RUNTIME_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?请在 .env 中设置 DATABASE_URL}
+      PURSLYX_ALLOWED_DATABASE_HOSTS: ${PURSLYX_ALLOWED_DATABASE_HOSTS:?请在 .env 中设置 PURSLYX_ALLOWED_DATABASE_HOSTS}
+      PURSLYX_DATA_DIR: /var/lib/purslyx
+      PURSLYX_AUTO_CREATE_SCHEMA: "false"
+      PYTHONPATH: /app/src
+    command:
+      - /app/.venv/bin/uvicorn
+      - server.app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8001"
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    ports:
+      - "127.0.0.1:${PURSLYX_API_PORT:-18001}:8001"
+    volumes:
+      - ${PURSLYX_DATA_DIR_HOST:-/data/purslyx/data}:/var/lib/purslyx
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=3)
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  worker:
+    image: purslyx-app:${PURSLYX_IMAGE_TAG:-local}
+    env_file:
+      - ${PURSLYX_RUNTIME_ENV_FILE:-.env}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?请在 .env 中设置 DATABASE_URL}
+      PURSLYX_ALLOWED_DATABASE_HOSTS: ${PURSLYX_ALLOWED_DATABASE_HOSTS:?请在 .env 中设置 PURSLYX_ALLOWED_DATABASE_HOSTS}
+      PURSLYX_DATA_DIR: /var/lib/purslyx
+      PURSLYX_AUTO_CREATE_SCHEMA: "false"
+      PYTHONPATH: /app/src
+    command:
+      - /app/.venv/bin/python
+      - scripts/worker.py
+      - --batch-size
+      - "10"
+      - --poll-seconds
+      - "2"
+    volumes:
+      - ${PURSLYX_DATA_DIR_HOST:-/data/purslyx/data}:/var/lib/purslyx
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    depends_on:
+      app:
+        condition: service_healthy
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+networks:
+  default:
+    name: ${PURSLYX_NETWORK_NAME:-purslyx-blue}
+    ipam:
+      config:
+        - subnet: ${PURSLYX_NETWORK_SUBNET:-172.29.109.0/24}
