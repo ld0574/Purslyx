@@ -68,7 +68,7 @@ def test_explicit_bearer_session_takes_precedence_over_cookie() -> None:
     assert security._web_token(request, None) == "cookie-session"
 
 
-@pytest.mark.parametrize("length", [0, 11, 129])
+@pytest.mark.parametrize("length", [0, 7, 129])
 def test_password_length_is_enforced(length: int) -> None:
     with pytest.raises(DomainError) as error:
         hash_password("a" * length)
@@ -76,10 +76,10 @@ def test_password_length_is_enforced(length: int) -> None:
 
 
 def test_password_hash_verification_and_invalid_hash() -> None:
-    password_hash = hash_password("correct-password-2026")
-    assert verify_password(password_hash, "correct-password-2026") is True
-    assert verify_password(password_hash, "wrong-password-2026") is False
-    assert verify_password("not-an-argon-hash", "correct-password-2026") is False
+    password_hash = hash_password("12345678")
+    assert verify_password(password_hash, "12345678") is True
+    assert verify_password(password_hash, "wrong-password") is False
+    assert verify_password("not-an-argon-hash", "12345678") is False
 
 
 def test_csrf_allows_read_and_valid_write(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -102,6 +102,8 @@ from .parsing import (
 )
 from .pdf_export import render_resume_pdf
 from .security import (
+    PASSWORD_MAX_LENGTH,
+    PASSWORD_MIN_LENGTH,
     browser_account,
     browser_expiry,
     current_web_account,
@@ -624,7 +626,7 @@ def _unlink_after_commit(paths: list[Path]) -> None:
 class RegisterRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     email: str = Field(min_length=3, max_length=254)
-    password: str = Field(min_length=12, max_length=128)
+    password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
     registration_role: Literal["seeker", "recruiter"]
 
 
@@ -640,7 +642,7 @@ class TokenRequest(BaseModel):
 
 
 class PasswordResetRequest(TokenRequest):
-    new_password: str = Field(min_length=12, max_length=128)
+    new_password: str = Field(min_length=PASSWORD_MIN_LENGTH, max_length=PASSWORD_MAX_LENGTH)
 
 
 class RecoveryRequest(BaseModel):

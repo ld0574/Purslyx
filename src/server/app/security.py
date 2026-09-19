@@ -28,6 +28,8 @@ from .models import (
 )
 
 PASSWORD_HASHER = PasswordHasher()
+PASSWORD_MIN_LENGTH = 8
+PASSWORD_MAX_LENGTH = 128
 
 
 def now_utc() -> datetime:
@@ -57,8 +59,12 @@ def issue_secret() -> str:
 
 
 def hash_password(password: str) -> str:
-    if not 12 <= len(password) <= 128:
-        raise DomainError("AUTH_PASSWORD_INVALID", "密码长度需为 12 到 128 个字符", 422)
+    if not PASSWORD_MIN_LENGTH <= len(password) <= PASSWORD_MAX_LENGTH:
+        raise DomainError(
+            "AUTH_PASSWORD_INVALID",
+            f"密码长度需为 {PASSWORD_MIN_LENGTH} 到 {PASSWORD_MAX_LENGTH} 个字符",
+            422,
+        )
     return PASSWORD_HASHER.hash(password)
 
 
