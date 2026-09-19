@@ -4277,7 +4277,26 @@ def retry_task(
     item.failure = None
     item.retry_count += 1
     item.completed_at = None
-    db.add(TaskAttempt(task_id=item.id, execution_generation=item.retry_count + 1, status="queued"))
+    # 租约恢复可能已经留下一个 queued 代次；人工重试要明确淘汰它，避免
+    # 同一任务同时存在两个未来执行代次，最终留下永久 queued 的孤儿记录。
+    for queued_attempt in db.scalars(
+        select(TaskAttempt)
+        .where(TaskAttempt.task_id == item.id, TaskAttempt.status == "queued")
+        .with_for_update()
+    ).all():
+        queued_attempt.status = "cancelled"
+        queued_attempt.error_code = "TASK_RETRY_SUPERSEDED"
+        queued_attempt.finished_at = now_utc()
+    latest_generation = db.scalar(
+        select(func.max(TaskAttempt.execution_generation)).where(TaskAttempt.task_id == item.id)
+    ) or 0
+    db.add(
+        TaskAttempt(
+            task_id=item.id,
+            execution_generation=max(item.retry_count + 1, int(latest_generation) + 1),
+            status="queued",
+        )
+    )
     db.add(TaskOutbox(task_id=item.id, event_type="task.retry", payload={"retry_count": item.retry_count, "reason": payload.reason if payload else "user_retry", "idempotency_key": key}))
     db.commit()
     if settings.execution_mode == "inline":
