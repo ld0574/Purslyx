@@ -240,7 +240,7 @@ tempCodeRunnerFile.py
 marimo/_static/
 marimo/_lsp/
 __marimo__/
-
+.deploy/
 # Streamlit
 .streamlit/secrets.toml
 # 本地开发环境文件含凭据；公开部署约定可正常提交。
