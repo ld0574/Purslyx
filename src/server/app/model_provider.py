@@ -352,6 +352,50 @@ def _numeric_tokens(value: str) -> set[str]:
     return set(re.findall(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?%?", value))
 
 
+_REWRITE_SAFE_TERMS = frozenset(
+    "围绕结合根据针对目标岗位岗位相关经历经验能力工作项目团队个人本人具体内容结果过程方式通过并以及完成负责参与推动协作提升优化支持确保主导执行设计开发交付上线验证处理解决分析复盘沟通落地改进建立维护使用采用协同产出"
+)
+
+
+def _chinese_terms(value: str) -> set[str]:
+    terms: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", value):
+        terms.add(run)
+        for size in (2, 3, 4, 5, 6):
+            terms.update(run[index : index + size] for index in range(len(run) - size + 1))
+    return terms
+
+
+def _can_segment_chinese(run: str, terms: set[str]) -> bool:
+    reachable = [False] * (len(run) + 1)
+    reachable[0] = True
+    for start in range(len(run)):
+        if not reachable[start]:
+            continue
+        for end in range(start + 1, len(run) + 1):
+            if run[start:end] in terms:
+                reachable[end] = True
+    return reachable[-1]
+
+
+def _rewrite_is_grounded(suggested: str, source_texts: list[str]) -> bool:
+    """只允许原文、已引用事实和安全连接词构成改写，拒绝新增实体或能力词。"""
+
+    source = "\n".join(source_texts)
+    allowed_chinese = _chinese_terms(source) | _chinese_terms("".join(_REWRITE_SAFE_TERMS))
+    allowed_ascii = {
+        item.lower()
+        for item in re.findall(r"[A-Za-z][A-Za-z0-9+#._-]*", source)
+    }
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9+#._-]*", suggested):
+        if token.lower() not in allowed_ascii:
+            return False
+    for run in re.findall(r"[\u4e00-\u9fff]+", suggested):
+        if not _can_segment_chinese(run, allowed_chinese):
+            return False
+    return _numeric_tokens(suggested).issubset(_numeric_tokens(source))
+
+
 def _decimal_amount(value: Any) -> Decimal | None:
     try:
         return Decimal(str(value).replace(",", "").strip())
@@ -617,16 +661,21 @@ class OpenAIModelProvider(ModelProvider):
             suggested = normalize_text(str(raw.get("suggested_text") or ""))
             if not suggested:
                 raise DomainError("MODEL_OUTPUT_INVALID", "模型返回了空的改写结果", 503, "retry")
-            allowed_numbers = _numeric_tokens(original)
-            for fact in facts:
-                allowed_numbers.update(_numeric_tokens(str(fact.get("fact_text") or "")))
-            if not _numeric_tokens(suggested).issubset(allowed_numbers):
-                raise DomainError("MODEL_OUTPUT_INVALID", "改写引入了没有事实依据的新数字", 503, "retry")
-            evidence = [{"source_type": "resume", "source_id": key, "quote": original}]
-            for fact_id in raw.get("evidence_fact_ids", []):
+            fact_ids = raw.get("evidence_fact_ids") if isinstance(raw.get("evidence_fact_ids"), list) else []
+            selected_facts = []
+            for fact_id in fact_ids:
                 fact = fact_map.get(str(fact_id))
-                if fact and fact.get("fact_text"):
-                    evidence.append({"source_type": fact.get("source_type") or "fact", "source_id": str(fact["id"]), "quote": str(fact["fact_text"])})
+                if fact is None or not fact.get("fact_text"):
+                    raise DomainError("MODEL_OUTPUT_INVALID", "改写引用了不存在或未确认的事实", 503, "retry")
+                selected_facts.append(fact)
+            if not _rewrite_is_grounded(
+                suggested,
+                [original, *(str(fact.get("fact_text") or "") for fact in selected_facts)],
+            ):
+                raise DomainError("MODEL_OUTPUT_INVALID", "改写引入了原文和已确认事实之外的新内容", 503, "retry")
+            evidence = [{"source_type": "resume", "source_id": key, "quote": original}]
+            for fact in selected_facts:
+                evidence.append({"source_type": fact.get("source_type") or "fact", "source_id": str(fact["id"]), "quote": str(fact["fact_text"])})
             output.append({
                 "source_segment_key": key,
                 "original_text": original,

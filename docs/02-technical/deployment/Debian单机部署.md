@@ -173,6 +173,19 @@ sudo certbot renew --deploy-hook 'systemctl reload openresty'
 
 `purslyx.conf` 的 `proxy_pass` 指向 `http://purslyx_api;`；发布脚本会原子替换同目录的 `purslyx-upstream.conf`。
 
+### Cloudflare 代理和真实客户端 IP
+
+Cloudflare DNS 记录开启橙色云朵后，源站 TCP 连接的对端是 Cloudflare 节点。仓库里的 `purslyx.conf` 已配置 Cloudflare 官方 IPv4/IPv6 网段、`CF-Connecting-IP` 和 `real_ip_recursive`，所以应用限流、审计日志和 OpenResty 日志使用最终访客 IP。
+
+不要把 `set_real_ip_from 0.0.0.0/0` 或任意公网网段加入配置，否则客户端可以伪造 `CF-Connecting-IP` 绕过限流。Cloudflare 控制台建议设置：
+
+- SSL/TLS 加密模式：`Full (strict)`；
+- DNS：`purslyx.com` 和需要使用的子域名指向源站并开启代理；
+- 源站防火墙：只允许 Cloudflare 官方网段访问 80/443，SSH 只允许管理网段；
+- 证书续期：Let’s Encrypt 的 `fullchain.pem` 已包含源站需要的中间证书，不需要再手工拼接 Cloudflare 中间证书。
+
+Cloudflare 网段会偶尔更新。发布前应以 [Cloudflare 官方 IP 列表](https://www.cloudflare.com/ips/) 为准，更新 `set_real_ip_from` 后执行 `sudo openresty -t && sudo systemctl reload openresty`。
+
 ## 6. 生产环境变量
 
 ```bash

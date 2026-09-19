@@ -59,7 +59,7 @@ class _FakeResponses:
                 "insights": {"summary": "有直接项目证据。", "strengths": ["React"], "risks": ["结果数字待补充"], "recommended_actions": ["补充结果"]},
             },
             "rewrite_result_v2": {
-                "segments": [{"source_segment_key": "experience-1", "suggested_text": "负责 React 项目交付，推动岗位相关的前端协作。", "rationale": "突出岗位相关性。", "evidence_fact_ids": ["fact-1"]}],
+                "segments": [{"source_segment_key": "experience-1", "suggested_text": "负责 React 项目交付，推动跨团队协作。", "rationale": "突出岗位相关性。", "evidence_fact_ids": ["fact-1"]}],
             },
             "interview_opening_v2": {
                 "questions": [
@@ -147,6 +147,27 @@ def test_openai_rewrite_rejects_new_unverified_numbers() -> None:
     provider._json = fake_json  # type: ignore[method-assign]
     with pytest.raises(DomainError) as error:
         provider.rewrite([{"segment_key": "experience-1", "text": "负责项目交付"}], {}, [])
+    assert error.value.code == "MODEL_OUTPUT_INVALID"
+
+
+@pytest.mark.parametrize(
+    "suggested_text",
+    ["负责 Kubernetes 项目交付", "负责 React 项目交付，服务腾讯客户"],
+)
+def test_openai_rewrite_rejects_unverified_entities_and_skipped_fact_ids(suggested_text: str) -> None:
+    provider, _ = _provider()
+
+    def fake_json(*_: Any, **__: Any):
+        return SimpleNamespace(
+            value={"segments": [{"source_segment_key": "experience-1", "suggested_text": suggested_text, "rationale": "", "evidence_fact_ids": ["missing-fact"]}]},
+            model="test",
+            input_tokens=1,
+            output_tokens=1,
+        )
+
+    provider._json = fake_json  # type: ignore[method-assign]
+    with pytest.raises(DomainError) as error:
+        provider.rewrite([{"segment_key": "experience-1", "text": "负责 React 项目交付"}], {}, [])
     assert error.value.code == "MODEL_OUTPUT_INVALID"
 
 
