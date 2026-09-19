@@ -16,6 +16,7 @@ const DRAFT_KEY = "purslyx.pending-job-drafts.v1";
 function createRuntime({
   url,
   texts = {},
+  nodeTexts = {},
   token = null,
   requestStatus = 201,
   responseData = { id: "draft-1", job_title: "测试岗位", confirm_path: "/job-pool/items?browser_draft_id=draft-1" },
@@ -62,6 +63,14 @@ function createRuntime({
       if (selector === "#purslyx-capture-status") return panelExists ? panel : null;
       const value = texts[selector];
       return value === undefined ? null : { innerText: value, textContent: value };
+    },
+    querySelectorAll(selector) {
+      const values = nodeTexts[selector];
+      if (values !== undefined) {
+        return values.map((value) => ({ innerText: value, textContent: value }));
+      }
+      const value = texts[selector];
+      return value === undefined ? [] : [{ innerText: value, textContent: value }];
     },
     createElement(tagName) {
       assert.equal(tagName, "aside");
@@ -147,8 +156,19 @@ function createRuntime({
     requests,
     statusText,
     async runCapture() {
+      for (let attempt = 0; attempt < 5 && typeof timerCallback === "function"; attempt += 1) {
+        const callback = timerCallback;
+        timerCallback = null;
+        await callback();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+    },
+    async runScheduledCapture() {
       assert.equal(typeof timerCallback, "function");
-      await timerCallback();
+      const callback = timerCallback;
+      timerCallback = null;
+      await callback();
+      await new Promise((resolve) => setTimeout(resolve, 0));
     },
     async mutateAndCapture() {
       assert.equal(typeof observerCallback, "function");
@@ -160,6 +180,9 @@ function createRuntime({
     },
     setToken(value) {
       localStorage.setItem(TOKEN_KEY, value);
+    },
+    setText(selector, value) {
+      texts[selector] = value;
     },
   };
 }
@@ -210,6 +233,63 @@ test("猎聘详情页使用独立适配器并识别远程岗位", async () => {
   assert.equal(body.platform, "liepin");
   assert.equal(body.work_mode, "remote");
   assert.equal(body.company_name, "猎聘示例公司");
+});
+
+test("BOSS 多个正文节点会合并，避免只抓到职位描述的一半", async () => {
+  const runtime = createRuntime({
+    url: "https://www.zhipin.com/job_detail/multiple-sections.html",
+    token: "browser-token",
+    texts: {
+      "h1.job-name": "全栈工程师",
+      ".job-primary .text-desc": "杭州",
+    },
+    nodeTexts: {
+      ".job-sec-text": ["职位描述：负责 Agent 产品开发", "职位要求：熟悉 Python、TypeScript 和 PostgreSQL"],
+    },
+  });
+  await runtime.runCapture();
+  const body = JSON.parse(runtime.requests[0].data);
+  assert.match(body.job_description_text, /职位描述：负责 Agent 产品开发/);
+  assert.match(body.job_description_text, /职位要求：熟悉 Python、TypeScript 和 PostgreSQL/);
+});
+
+test("岗位正文动态加载时不会先上传半截内容", async () => {
+  const runtime = createRuntime({
+    url: "https://www.zhipin.com/job_detail/progressive.html",
+    token: "browser-token",
+    texts: {
+      "h1.job-name": "渐进加载岗位",
+      ".job-primary .text-desc": "杭州",
+      ".job-sec-text": "职位描述：首屏内容",
+    },
+  });
+  await runtime.runScheduledCapture();
+  assert.equal(runtime.requests.length, 0);
+  runtime.setText(".job-sec-text", "职位描述：首屏内容\n职位要求：完整正文和任职条件");
+  await runtime.mutateAndCapture();
+  assert.equal(runtime.requests.length, 1);
+  assert.match(JSON.parse(runtime.requests[0].data).job_description_text, /完整正文和任职条件/);
+});
+
+test("完整正文变化不会复用被截断的幂等键", async () => {
+  const prefix = "共同开头".repeat(30);
+  const runtime = createRuntime({
+    url: "https://www.zhipin.com/job_detail/full-key.html",
+    token: "browser-token",
+    texts: {
+      "h1.job-name": "完整指纹岗位",
+      ".job-primary .text-desc": "杭州",
+      ".job-sec-text": `${prefix}第一版`,
+    },
+  });
+  await runtime.runCapture();
+  runtime.setText(".job-sec-text", `${prefix}第二版`);
+  await runtime.mutateAndCapture();
+  assert.equal(runtime.requests.length, 2);
+  assert.notEqual(
+    runtime.requests[0].headers["Idempotency-Key"],
+    runtime.requests[1].headers["Idempotency-Key"],
+  );
 });
 
 test("未登录时保留本机草稿，登录后继续上传", async () => {

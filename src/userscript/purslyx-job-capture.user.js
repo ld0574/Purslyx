@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Purslyx 岗位自动获取
 // @namespace    https://purslyx.com/
-// @version      0.3.0
+// @version      0.4.0
 // @description  在支持的 BOSS 直聘／猎聘详情页自动上传待确认岗位草稿。
 // @downloadURL  https://purslyx.com/purslyx-job-capture.user.js
 // @updateURL    https://purslyx.com/purslyx-job-capture.user.js
@@ -23,8 +23,12 @@
   const PRODUCT_ORIGIN = API_ORIGIN;
   const DRAFT_KEY = "purslyx.pending-job-drafts.v1";
   const TOKEN_KEY = "purslyx.browser-token.v1";
+  const CAPTURE_DEBOUNCE_MS = 700;
+  const CAPTURE_STABILITY_MS = 1200;
   const seen = new Set();
   let captureTimer = 0;
+  let candidateFingerprint = "";
+  let candidateStableSamples = 0;
   let lastUrl = location.href;
   let syncWindow = null;
   let syncNonce = "";
@@ -65,13 +69,40 @@
       .trim();
   }
 
+  function textFromNode(node) {
+    if (!node) return "";
+    const visibleText = cleanText(node.innerText || "");
+    const rawText = cleanText(node.textContent || "");
+    // 页面经常把职位要求放在折叠节点里；如果 textContent 明显更完整，
+    // 优先保留它，避免只采到当前可见的半截正文。
+    return rawText.length > visibleText.length + 24 ? rawText : visibleText || rawText;
+  }
+
   function textOf(selectors) {
     for (const selector of selectors) {
       const node = document.querySelector(selector);
-      const text = cleanText(node && (node.innerText || node.textContent || ""));
+      const text = textFromNode(node);
       if (text) return text;
     }
     return "";
+  }
+
+  function textOfAll(selectors) {
+    const parts = [];
+    for (const selector of selectors) {
+      const nodes = typeof document.querySelectorAll === "function"
+        ? Array.from(document.querySelectorAll(selector))
+        : [document.querySelector(selector)].filter(Boolean);
+      for (const text of [...new Set(nodes.map(textFromNode).filter(Boolean))]) {
+        // 选择器通常同时命中父容器和子节点；保留更完整的那个，避免正文重复。
+        if (parts.some((existing) => existing === text || existing.includes(text))) continue;
+        for (let index = parts.length - 1; index >= 0; index -= 1) {
+          if (text.includes(parts[index])) parts.splice(index, 1);
+        }
+        parts.push(text);
+      }
+    }
+    return cleanText(parts.join("\n\n"));
   }
 
   function disclosedWorkMode(value) {
@@ -87,7 +118,7 @@
     const adapter = ADAPTERS[currentPlatform()];
     const locationText = textOf(adapter.location);
     const workModeText = textOf(adapter.workMode);
-    const description = textOf(adapter.description);
+    const description = textOfAll(adapter.description);
     const value = {
       platform: currentPlatform(),
       source_url: location.href,
@@ -111,7 +142,38 @@
 
   function fingerprint(value) {
     // 这里只做本机去重指纹；服务端仍会重新计算规范化摘要。
-    return [value.platform, value.source_url, value.job_title, value.company_name, value.job_description_text].join("|");
+    return JSON.stringify([
+      value.platform,
+      value.source_url,
+      value.job_title,
+      value.company_name,
+      value.job_description_text,
+    ]);
+  }
+
+  function pendingIdentity(value) {
+    return `${value.platform}|${String(value.source_url || "").split("#")[0]}`;
+  }
+
+  function fallbackHash(value) {
+    let first = 0x811c9dc5;
+    let second = 0x9e3779b9;
+    for (let index = 0; index < value.length; index += 1) {
+      const code = value.charCodeAt(index);
+      first = Math.imul(first ^ code, 16777619);
+      second = Math.imul(second ^ code, 2246822519);
+    }
+    return `${(first >>> 0).toString(16).padStart(8, "0")}${(second >>> 0).toString(16).padStart(8, "0")}`;
+  }
+
+  async function idempotencyKey(value) {
+    const input = fingerprint(value);
+    if (typeof TextEncoder !== "undefined" && typeof crypto !== "undefined" && crypto.subtle) {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
+      const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+      return `capture-${hex}`;
+    }
+    return `capture-${fallbackHash(input)}`;
   }
 
   function ensureStatusPanel() {
@@ -192,14 +254,15 @@
   }
 
   function savePending(value) {
-    const rows = readPending().filter((row) => row.fingerprint !== fingerprint(value));
+    const identity = pendingIdentity(value);
+    const rows = readPending().filter((row) => pendingIdentity(row.value) !== identity);
     rows.unshift({ fingerprint: fingerprint(value), value, saved_at: new Date().toISOString() });
     localStorage.setItem(DRAFT_KEY, JSON.stringify(rows.slice(0, 10)));
   }
 
   function removePending(value) {
-    const valueFingerprint = fingerprint(value);
-    localStorage.setItem(DRAFT_KEY, JSON.stringify(readPending().filter((row) => row.fingerprint !== valueFingerprint)));
+    const identity = pendingIdentity(value);
+    localStorage.setItem(DRAFT_KEY, JSON.stringify(readPending().filter((row) => pendingIdentity(row.value) !== identity)));
   }
 
   async function exchangeCode(data) {
@@ -249,10 +312,11 @@
     seen.add(valueFingerprint);
     setStatus("正在识别并上传待确认岗位…");
     try {
+      const requestKey = await idempotencyKey(value);
       const draft = await request({
         method: "POST",
         path: "/api/v1/browser/job-drafts",
-        headers: { Authorization: `Bearer ${browserToken}`, "Idempotency-Key": `capture-${valueFingerprint.slice(0, 80)}` },
+        headers: { Authorization: `Bearer ${browserToken}`, "Idempotency-Key": requestKey },
         body: value
       });
       removePending(value);
@@ -272,12 +336,38 @@
     }
   }
 
-  function scheduleCapture() {
-    window.clearTimeout(captureTimer);
-    captureTimer = window.setTimeout(() => upload(capturePage(), false), 700);
+  function captureStablePage() {
+    const value = capturePage();
+    if (!value || !value.job_description_text) {
+      setStatus("页面内容尚未稳定，继续等待岗位正文…");
+      return;
+    }
+    const valueFingerprint = fingerprint(value);
+    if (valueFingerprint !== candidateFingerprint) {
+      candidateFingerprint = valueFingerprint;
+      candidateStableSamples = 1;
+      setStatus("岗位正文加载中，等待完整内容…");
+      captureTimer = window.setTimeout(captureStablePage, CAPTURE_STABILITY_MS);
+      return;
+    }
+    candidateStableSamples += 1;
+    if (candidateStableSamples < 2) {
+      captureTimer = window.setTimeout(captureStablePage, CAPTURE_STABILITY_MS);
+      return;
+    }
+    void upload(value, false);
   }
 
-  const observer = new MutationObserver(scheduleCapture);
+  function scheduleCapture() {
+    window.clearTimeout(captureTimer);
+    captureTimer = window.setTimeout(captureStablePage, CAPTURE_DEBOUNCE_MS);
+  }
+
+  const observer = new MutationObserver((records = []) => {
+    const panel = document.querySelector("#purslyx-capture-status");
+    if (records.length && panel && typeof panel.contains === "function" && records.every((record) => panel.contains(record.target))) return;
+    scheduleCapture();
+  });
   observer.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener("load", scheduleCapture, { once: true });
   window.addEventListener("popstate", scheduleCapture);
@@ -286,6 +376,8 @@
     if (location.href !== lastUrl) {
       lastUrl = location.href;
       seen.clear();
+      candidateFingerprint = "";
+      candidateStableSamples = 0;
       scheduleCapture();
     }
   }, 1000);
