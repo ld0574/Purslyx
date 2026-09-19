@@ -27,6 +27,7 @@ WEB_DIST_ROOT = WEB_ROOT / "dist"
 WEB_INDEX = WEB_DIST_ROOT / "index.html"
 WEB_ASSET_ROOT = WEB_DIST_ROOT / "assets"
 WEB_FAVICON = WEB_DIST_ROOT / "favicon.svg"
+WEB_LOGO = WEB_DIST_ROOT / "purslyx-logo.png"
 USERSCRIPT_FILE = Path(__file__).resolve().parents[2] / "userscript" / "purslyx-job-capture.user.js"
 
 
@@ -154,6 +155,15 @@ def favicon() -> FileResponse:
     if not WEB_FAVICON.is_file():
         raise DomainError("WEB_BUILD_MISSING", "前端站点图标尚未构建", 503)
     return FileResponse(WEB_FAVICON, media_type="image/svg+xml", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/purslyx-logo.png", include_in_schema=False)
+def purslyx_logo() -> FileResponse:
+    """提供首页使用的品牌 Logo。"""
+
+    if not WEB_LOGO.is_file():
+        raise DomainError("WEB_BUILD_MISSING", "前端品牌 Logo 尚未构建", 503)
+    return FileResponse(WEB_LOGO, media_type="image/png", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/purslyx-job-capture.user.js", include_in_schema=False)

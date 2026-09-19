@@ -535,6 +535,8 @@ async function main() {
   assert(health.database?.backend === "postgresql", "当前服务不是 PostgreSQL");
   const favicon = await fetch(`${BASE_URL}/favicon.svg`);
   assert(favicon.status === 200 && favicon.headers.get("content-type")?.includes("image/svg+xml"), "站点图标不可用");
+  const logo = await fetch(`${BASE_URL}/purslyx-logo.png`);
+  assert(logo.status === 200 && logo.headers.get("content-type")?.includes("image/png"), "首页品牌 Logo 不可用");
 
   const port = await freePort();
   const profile = await mkdtemp(path.join(os.tmpdir(), "purslyx-e2e-"));

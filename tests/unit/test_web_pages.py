@@ -88,6 +88,7 @@ def test_api_client_preserves_auth_csrf_and_idempotency_boundaries() -> None:
 
 def test_key_pages_keep_browser_and_business_contracts() -> None:
     home = read("src/views/HomeView.vue")
+    shell = read("src/components/AppShell.vue")
     materials = read("src/views/MaterialsView.vue")
     pool = read("src/views/PoolView.vue")
     interview = read("src/views/InterviewView.vue")
@@ -96,6 +97,7 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert 'src="/purslyx-logo.png"' in home
     assert 'alt="Purslyx 品牌标志"' in home
     assert (WEB_ROOT / "public" / "purslyx-logo.png").is_file()
+    assert 'class="side-brand"' not in shell
     for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
         assert f'id="{selector}"' in materials
     assert 'id="pool-form"' in pool
@@ -113,6 +115,8 @@ def test_fastapi_serves_vite_dist_without_legacy_fallback() -> None:
     server = (PROJECT_ROOT / "src" / "server" / "app" / "main.py").read_text(encoding="utf-8")
     assert 'WEB_DIST_ROOT = WEB_ROOT / "dist"' in server
     assert 'app.mount("/assets", StaticFiles' in server
+    assert 'WEB_LOGO = WEB_DIST_ROOT / "purslyx-logo.png"' in server
+    assert '@app.get("/purslyx-logo.png"' in server
     assert '@app.get("/app/{path:path}"' in server
     assert "WEB_BUILD_MISSING" in server
     assert "WEB_PAGE_ROOT" not in server

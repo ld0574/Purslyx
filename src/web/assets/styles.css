@@ -241,8 +241,6 @@
 
       .workspace-layout { display: grid; grid-template-columns: 224px minmax(0, 1fr); gap: 34px; max-width: 1320px; margin: 0 auto; padding: 30px 28px 70px; }
       .sidebar { position: sticky; top: 96px; align-self: start; display: grid; gap: 26px; }
-      .side-brand { display: flex; gap: 10px; align-items: center; font-weight: 800; }
-      .side-brand small { display: block; margin-top: 3px; color: var(--muted); font-size: 11px; font-weight: 500; }
       .side-nav { display: grid; gap: 5px; }
       .nav-button { display: flex; justify-content: space-between; align-items: center; width: 100%; min-height: 42px; padding: 0 12px; border: 0; border-radius: 10px; color: var(--muted); background: transparent; text-align: left; font-size: 13px; font-weight: 700; text-decoration: none; }
       .nav-button:hover { color: var(--brand); background: var(--brand-soft); }
@@ -366,7 +364,6 @@
         .hero-visual { max-width: 600px; }
         .workspace-layout { grid-template-columns: 1fr; padding: 20px 18px 60px; }
         .sidebar { position: static; gap: 13px; }
-        .side-brand { display: none; }
         .side-nav { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
         .nav-button { flex: 0 0 auto; width: auto; white-space: nowrap; }
         .side-note { display: none; }

@@ -65,7 +65,6 @@ async function logout() {
   </header>
   <div class="workspace-layout" data-workspace-loaded="true">
     <aside class="sidebar">
-      <div class="side-brand"><img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" /><div>Purslyx<small>{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</small></div></div>
       <nav class="side-nav" aria-label="业务导航">
         <RouterLink v-for="item in mainNav" :key="item.to" class="nav-button" :to="item.to" :class="{ active: route.path === item.to }">
           <span>{{ item.label }}</span><small>{{ item.hint }}</small>
