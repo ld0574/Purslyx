@@ -420,6 +420,13 @@ class JobPoolItem(TimestampMixin, Base):
             unique=True,
             postgresql_where=text("idempotency_key IS NOT NULL"),
         ),
+        Index(
+            "uk_job_pool_browser_draft",
+            "account_id",
+            "source_browser_draft_id",
+            unique=True,
+            postgresql_where=text("source_browser_draft_id IS NOT NULL AND deleted_at IS NULL"),
+        ),
         CheckConstraint("source_type IN ('manual', 'browser_capture')", name="ck_job_pool_source_type"),
         CheckConstraint("platform IS NULL OR platform IN ('boss', 'liepin')", name="ck_job_pool_platform"),
         CheckConstraint(
@@ -441,6 +448,7 @@ class JobPoolItem(TimestampMixin, Base):
     job_fields: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     job_document_id: Mapped[int | None] = mapped_column(Integer, index=True)
     job_document_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    source_browser_draft_id: Mapped[int | None] = mapped_column(Integer, index=True)
     resume_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
     preference_id: Mapped[int | None] = mapped_column(Integer, index=True)
     analysis_status: Mapped[str] = mapped_column(String(32), default="awaiting_requirements", nullable=False)

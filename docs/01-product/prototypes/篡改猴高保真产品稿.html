@@ -78,7 +78,7 @@
         </article>
         <aside class="job-side"><div class="side-card"><h3>招聘者</h3><div class="recruiter"><div class="recruiter-avatar">陈</div><div><strong>陈女士 · 招聘经理</strong><small>刚刚活跃</small></div></div><button class="chat-button">立即沟通</button></div><div class="side-card"><h3>相似职位</h3><div class="side-job"><strong>前端开发工程师</strong><small>知行教育 · 杭州</small><em>18–25K</em></div><div class="side-job"><strong>资深 Web 工程师</strong><small>泊舟科技 · 杭州</small><em>25–35K</em></div></div></aside>
       </div>
-      <div class="success-toast hide" id="success-toast" role="status"><div class="toast-icon"><svg class="icon"><use href="#i-check"/></svg></div><div><strong>岗位信息获取完成</strong><p>已安全保存为待确认草稿，打开 Purslyx 即可检查并决定是否入池。</p></div></div>
+      <div class="success-toast hide" id="success-toast" role="status"><div class="toast-icon"><svg class="icon"><use href="#i-check"/></svg></div><div><strong>岗位信息获取完成</strong><p>已安全写入匹配池；需要分析时，在匹配池点击“匹配”并选择输入。</p></div></div>
       <aside class="capture-panel" id="capture-panel" aria-live="polite"></aside>
     </div>
   </section>
@@ -96,7 +96,7 @@
   const icon = name => `<svg class="icon"><use href="#i-${name}"/></svg>`;
   const clearTimers = () => {state.timers.forEach(clearTimeout);state.timers=[]};
   const view = {
-    complete:{connection:'ok',symbol:'complete',icon:'check',title:'岗位信息获取完成',desc:'已上传为待确认草稿。自动抓取本身不入池，也不会消耗分析次数。',steps:['done','done','done']},
+    complete:{connection:'ok',symbol:'complete',icon:'check',title:'岗位信息获取完成',desc:'已直接写入匹配池。匹配时再选择简历和岗位期望，不会消耗分析次数。',steps:['done','done','done']},
     loggedout:{connection:'off',symbol:'pending',icon:'lock',title:'登录后自动继续',desc:'当前 JD 已暂存在本机。登录 Purslyx 后会自动同步状态并继续上传。',steps:['done','','']},
     syncing:{connection:'work',symbol:'working',icon:'refresh',title:'正在同步登录状态',desc:'正在确认你的 Purslyx 会话，不会读取招聘平台账号、密码或 Cookie。',steps:['active','','']},
     extracting:{connection:'ok',symbol:'working',icon:'scan',title:'正在获取当前岗位',desc:'已识别岗位详情页，正在整理标题、正文、地点、方式与薪资原文。',steps:['done','active','']},
@@ -109,7 +109,7 @@
     return `<div class="connection" style="background:var(--opportunity-bg);color:var(--opportunity-ink)">${icon('lock')}<div class="connection-copy"><strong>尚未登录 Purslyx</strong><small style="color:#826D24">草稿会在本机短暂保留</small></div></div>`;
   }
   function actionMarkup(status){
-    if(status==='complete') return `<button class="primary" data-action="confirm">打开 Purslyx 确认入池 ${icon('external')}</button><button class="secondary" data-action="demo">重新演示自动获取</button>`;
+    if(status==='complete') return `<button class="primary" data-action="pool">打开 Purslyx 匹配池 ${icon('external')}</button><button class="secondary" data-action="demo">重新演示自动获取</button>`;
     if(status==='loggedout') return `<button class="primary" data-action="login">登录 Purslyx 并继续 ${icon('external')}</button><button class="text-action" data-action="manual">改为手动粘贴</button>`;
     if(status==='error') return `<button class="primary" data-action="demo">重新获取当前岗位</button><button class="secondary" data-action="manual">打开 Purslyx 手动粘贴</button>`;
     if(status==='unsupported') return `<button class="primary" data-action="supported">打开一个示例岗位</button><button class="secondary" data-action="manual">到 Purslyx 手动粘贴</button>`;
@@ -117,7 +117,7 @@
   }
   function renderPanel(){
     const data=platformData[state.platform],v=view[state.status];
-    $('#capture-panel').innerHTML=`<div class="panel-head"><img class="panel-logo" src="../../00-overview/brand/logo.png" alt="Purslyx"><div class="panel-brand"><strong>Purslyx</strong><small>岗位助手 · ${data.name}</small></div><span class="panel-status-dot" style="background:${v.connection==='off'?'var(--opportunity)':v.connection==='work'?'var(--brand)':'var(--success)'}"></span></div><div class="panel-body">${connectionMarkup(v.connection)}<div class="state-hero"><div class="state-symbol ${v.symbol}">${icon(v.icon)}</div><h2>${v.title}</h2><p>${v.desc}</p></div><div class="steps" aria-label="识别页面、获取字段、上传草稿">${v.steps.map(x=>`<span class="step ${x}"></span>`).join('')}</div>${['complete','extracting','error','loggedout'].includes(state.status)?`<div class="job-preview"><div class="job-preview-top"><div class="mini-logo">${data.logo}</div><div><h3>${data.title}</h3><p>${data.company} · ${data.city} · ${data.salary}</p></div></div><div class="preview-meta"><span>标题已识别</span><span>正文已识别</span><span>来源链接已保存</span></div></div>`:''}<div class="privacy-note">${icon('shield')}<span>${state.status==='complete'?'等待你确认前，这条岗位不会进入匹配池，也不会扣除分析次数。':'只处理当前打开的 JD，不后台爬取、不批量收集、不代填或自动投递。'}</span></div><div class="panel-actions">${actionMarkup(state.status)}</div></div><div class="panel-foot"><span>${icon('shield')}受限浏览器会话</span><span>草稿自动去重 · 24 小时过期</span></div>`;
+    $('#capture-panel').innerHTML=`<div class="panel-head"><img class="panel-logo" src="../../00-overview/brand/logo.png" alt="Purslyx"><div class="panel-brand"><strong>Purslyx</strong><small>岗位助手 · ${data.name}</small></div><span class="panel-status-dot" style="background:${v.connection==='off'?'var(--opportunity)':v.connection==='work'?'var(--brand)':'var(--success)'}"></span></div><div class="panel-body">${connectionMarkup(v.connection)}<div class="state-hero"><div class="state-symbol ${v.symbol}">${icon(v.icon)}</div><h2>${v.title}</h2><p>${v.desc}</p></div><div class="steps" aria-label="识别页面、获取字段、写入匹配池">${v.steps.map(x=>`<span class="step ${x}"></span>`).join('')}</div>${['complete','extracting','error','loggedout'].includes(state.status)?`<div class="job-preview"><div class="job-preview-top"><div class="mini-logo">${data.logo}</div><div><h3>${data.title}</h3><p>${data.company} · ${data.city} · ${data.salary}</p></div></div><div class="preview-meta"><span>标题已识别</span><span>正文已识别</span><span>来源链接已保存</span></div></div>`:''}<div class="privacy-note">${icon('shield')}<span>${state.status==='complete'?'这条岗位已进入匹配池；匹配时再选择简历和岗位期望，不会扣除分析次数。':'只处理当前打开的 JD，不后台爬取、不批量收集、不代填或自动投递。'}</span></div><div class="panel-actions">${actionMarkup(state.status)}</div></div><div class="panel-foot"><span>${icon('shield')}受限浏览器会话</span><span>岗位自动去重 · 24 小时过期</span></div>`;
     const rotating=$('.state-symbol .icon');if(['syncing'].includes(state.status)&&rotating)rotating.classList.add('spin');
     $('#success-toast').classList.toggle('hide',state.status!=='complete');
     document.querySelectorAll('[data-state]').forEach(b=>b.classList.toggle('active',b.dataset.state===state.status));
@@ -135,7 +135,7 @@
   }
   function openConfirm(){
     const d=platformData[state.platform];state.dialog=true;
-    $('#dialog-root').innerHTML=`<div class="confirm-layer"><section class="confirm-dialog"><div class="confirm-head"><div><h2>确认岗位并加入匹配池</h2><p>浏览器自动获取的内容已保存为待确认草稿，请检查后再决定是否分析。</p></div><button class="close" data-close aria-label="关闭">${icon('x')}</button></div><div class="confirm-body"><div class="confirm-grid"><div class="field"><label>岗位</label><strong>${d.title}</strong></div><div class="field"><label>公司</label><strong>${d.company}</strong></div><div class="field"><label>地点与方式</label><strong>${d.city} · ${d.chips[2]}</strong></div><div class="field"><label>薪资原文</label><strong>${d.salary}</strong></div><div class="field wide"><label>来源</label><strong>${d.name} · 当前岗位详情</strong></div></div><div class="usage-confirm">${icon('clock')}<div><strong>保存并分析将使用 1 次分析机会，当前剩余 14 次</strong><small>只保存岗位不会使用次数；确认后才会加入私有匹配池。</small></div></div></div><div class="confirm-actions"><button class="secondary" data-close>继续检查</button><button class="secondary" data-action="save-only">只保存岗位</button><button class="primary" data-action="finish">保存并分析</button></div></section></div>`;
+    $('#dialog-root').innerHTML=`<div class="confirm-layer"><section class="confirm-dialog"><div class="confirm-head"><div><h2>岗位已写入匹配池</h2><p>浏览器自动获取的内容已直接保存；需要分析时再选择输入。</p></div><button class="close" data-close aria-label="关闭">${icon('x')}</button></div><div class="confirm-body"><div class="confirm-grid"><div class="field"><label>岗位</label><strong>${d.title}</strong></div><div class="field"><label>公司</label><strong>${d.company}</strong></div><div class="field"><label>地点与方式</label><strong>${d.city} · ${d.chips[2]}</strong></div><div class="field"><label>薪资原文</label><strong>${d.salary}</strong></div><div class="field wide"><label>来源</label><strong>${d.name} · 当前岗位详情</strong></div></div><div class="usage-confirm">${icon('clock')}<div><strong>岗位入库不消耗分析次数</strong><small>点击匹配时再选择简历、岗位期望并确认一次分析消耗。</small></div></div></div><div class="confirm-actions"><button class="secondary" data-close>继续抓取</button><button class="primary" data-action="open-pool">打开匹配池</button></div></section></div>`;
   }
   function closeConfirm(){state.dialog=false;$('#dialog-root').innerHTML=''}
   document.addEventListener('click',event=>{
@@ -145,9 +145,10 @@
     const action=event.target.closest('[data-action]')?.dataset.action;
     if(action==='demo'||action==='login')demo(action==='login');
     if(action==='confirm')openConfirm();
+    if(action==='pool')window.alert('演示：将打开 Purslyx 匹配池；需要分析时再选择简历和岗位期望。');
     if(action==='supported'){state.status='extracting';renderPanel();state.timers.push(setTimeout(()=>{state.status='complete';renderPanel()},1300))}
     if(action==='manual')window.alert('演示：将打开 Purslyx 的手动粘贴页面，当前草稿仍会保留。');
-    if(action==='save-only'||action==='finish'){closeConfirm();window.alert(action==='finish'?'演示：岗位已入池，分析任务已开始。':'演示：岗位已保存，未使用分析次数。')}
+    if(action==='save-only'||action==='finish'){closeConfirm();window.alert('演示：岗位已在匹配池，点击匹配时再选择输入并确认消耗。')}
   });
   renderPlatform();
 })();

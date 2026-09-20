@@ -2994,6 +2994,106 @@ def _browser_draft_view(draft: BrowserJobDraft) -> dict[str, Any]:
     }
 
 
+def _browser_pool_idempotency_key(draft: BrowserJobDraft) -> str:
+    return f"browser-pool:{draft.public_id}"
+
+
+def _ensure_browser_pool_item(db: Session, account: Account, draft: BrowserJobDraft) -> JobPoolItem:
+    """把一次浏览器抓取直接落成待匹配岗位，不绑定简历、期望或分析任务。"""
+
+    existing = db.scalar(
+        select(JobPoolItem).where(
+            JobPoolItem.account_id == account.id,
+            JobPoolItem.source_browser_draft_id == draft.id,
+            JobPoolItem.deleted_at.is_(None),
+        )
+    )
+    if existing is not None:
+        return existing
+
+    fields, confirmed_text = _browser_draft_confirmation(draft, {})
+    content = {
+        "schema_version": "document-content-v1",
+        "sections": [],
+        "job_fields": fields,
+    }
+    source_key = _browser_pool_idempotency_key(draft)
+    request_hash = payload_hash({"browser_draft_id": draft.public_id, "content_hash": draft.content_hash})
+    document = Document(
+        account_id=account.id,
+        document_type="job_description",
+        subject_type="job_description",
+        title=fields.get("title") or "浏览器岗位",
+        source_type="text",
+        status="confirmed",
+        raw_text=confirmed_text,
+        idempotency_key=f"browser-document:{draft.public_id}",
+        request_hash=request_hash,
+        draft_content=content,
+    )
+    db.add(document)
+    db.flush()
+    db.add(
+        DocumentDraft(
+            account_id=account.id,
+            document_id=document.id,
+            content=content,
+            missing_field_codes=draft.missing_field_codes or [],
+            status="confirmed",
+            confirmed_at=now_utc(),
+            expires_at=now_utc() + timedelta(days=7),
+        )
+    )
+    job_version = DocumentVersion(
+        account_id=account.id,
+        document_id=document.id,
+        version_no=1,
+        content=content,
+        idempotency_key=f"browser-version:{draft.public_id}",
+        request_hash=request_hash,
+    )
+    db.add(job_version)
+    db.flush()
+    draft.status = "confirmed"
+    pool = JobPoolItem(
+        account_id=account.id,
+        source_type="browser_capture",
+        platform=draft.platform,
+        source_url=draft.source_url,
+        source_url_hash=draft.source_url_hash,
+        source_browser_draft_id=draft.id,
+        job_title=fields.get("title") or "未命名岗位",
+        company_name=fields.get("company_name"),
+        job_fields=fields,
+        job_document_id=document.id,
+        job_document_version_id=job_version.id,
+        analysis_status="awaiting_requirements",
+        blocking_reasons=["待选择简历和岗位期望"],
+        idempotency_key=source_key,
+        request_hash=request_hash,
+    )
+    db.add(pool)
+    db.flush()
+    return pool
+
+
+def _browser_capture_view(draft: BrowserJobDraft, pool: JobPoolItem) -> dict[str, Any]:
+    value = _browser_draft_view(draft)
+    # 浏览器受限接口只需要岗位引用和状态；不要把 Web 端的去投递签名令牌
+    # 或其它匹配池摘要暴露给用户脚本。
+    value["job_pool_item"] = {
+        "id": pool.public_id,
+        "source_type": pool.source_type,
+        "platform": pool.platform,
+        "job_title": pool.job_title,
+        "company_name": pool.company_name,
+        "analysis_status": pool.analysis_status,
+        "blocking_reasons": pool.blocking_reasons or [],
+    }
+    value["pool_path"] = f"/app/seeker/pool?pool_item_id={pool.public_id}"
+    return value
+
+
 @router.post("/browser/job-drafts", tags=["browser"])
 def create_browser_draft(payload: BrowserDraftRequest, request: Request, account: BrowserAccount, db: Session = Depends(get_db)) -> JSONResponse:
     key = _idempotency_key(request)
@@ -3012,11 +3112,15 @@ def create_browser_draft(payload: BrowserDraftRequest, request: Request, account
         if existing_by_key is not None:
             if existing_by_key.request_hash != request_digest:
                 raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的岗位草稿不同", 409)
-            return _ok(request, _browser_draft_view(existing_by_key))
+            pool = _ensure_browser_pool_item(db, account, existing_by_key)
+            db.commit()
+            return _ok(request, _browser_capture_view(existing_by_key, pool))
     content_hash = payload_hash(payload.model_dump(exclude={"source_url", "captured_at"}))
     existing = db.scalar(select(BrowserJobDraft).where(BrowserJobDraft.account_id == account.id, BrowserJobDraft.platform == payload.platform, BrowserJobDraft.source_url_hash == source_hash, BrowserJobDraft.content_hash == content_hash))
     if existing:
-        return _ok(request, _browser_draft_view(existing))
+        pool = _ensure_browser_pool_item(db, account, existing)
+        db.commit()
+        return _ok(request, _browser_capture_view(existing, pool))
     draft = BrowserJobDraft(
         account_id=account.id,
         platform=payload.platform,
@@ -3039,9 +3143,11 @@ def create_browser_draft(payload: BrowserDraftRequest, request: Request, account
         request_hash=request_digest,
     )
     db.add(draft)
+    db.flush()
+    pool = _ensure_browser_pool_item(db, account, draft)
     db.commit()
     db.refresh(draft)
-    return _ok(request, _browser_draft_view(draft), code=201)
+    return _ok(request, _browser_capture_view(draft, pool), code=201)
 
 
 @router.get("/browser/job-drafts/{draft_id}", tags=["browser"])
@@ -3078,6 +3184,20 @@ def get_browser_draft_for_web(
         draft.status = "expired"
         db.commit()
         raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
+    if draft.status == "confirmed":
+        # 新版脚本上传时已经完成入池；允许旧版 confirm_path 继续打开同一岗位，
+        # 但不再重复创建 JD、岗位或分析任务。
+        pool = db.scalar(
+            select(JobPoolItem).where(
+                JobPoolItem.account_id == account.id,
+                JobPoolItem.source_browser_draft_id == draft.id,
+                JobPoolItem.deleted_at.is_(None),
+            )
+        )
+        if pool is not None:
+            value = _browser_capture_view(draft, pool)
+            value["job_fields"] = _job_fields_from_draft(draft)
+            return _ok(request, value)
     if draft.status != "awaiting_confirmation":
         raise DomainError("JOB_DRAFT_NOT_CONFIRMABLE", "岗位草稿已经处理，不能重复确认", 409)
     value = _browser_draft_view(draft)
@@ -3404,13 +3524,29 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
     browser_draft: BrowserJobDraft | None = None
     if source_type == "browser_draft":
         draft_id = str(source.get("browser_draft_id", ""))
-        browser_draft = db.scalar(select(BrowserJobDraft).where(BrowserJobDraft.public_id == draft_id, BrowserJobDraft.account_id == account.id, BrowserJobDraft.status == "awaiting_confirmation"))
+        browser_draft = db.scalar(
+            select(BrowserJobDraft).where(
+                BrowserJobDraft.public_id == draft_id,
+                BrowserJobDraft.account_id == account.id,
+                BrowserJobDraft.status.in_(["awaiting_confirmation", "confirmed"]),
+            )
+        )
         if browser_draft is None:
             raise NotFoundError("浏览器岗位草稿不存在或已确认")
         if browser_draft.expires_at <= now_utc():
             browser_draft.status = "expired"
             db.commit()
             raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
+        if browser_draft.status == "confirmed":
+            existing_pool = db.scalar(
+                select(JobPoolItem).where(
+                    JobPoolItem.account_id == account.id,
+                    JobPoolItem.source_browser_draft_id == browser_draft.id,
+                    JobPoolItem.deleted_at.is_(None),
+                )
+            )
+            if existing_pool is not None:
+                return _ok(request, _pool_view(db, existing_pool))
         fields, confirmed_text = _browser_draft_confirmation(browser_draft, source)
         document = Document(account_id=account.id, document_type="job_description", subject_type="job_description", title=fields.get("title") or "浏览器岗位", source_type="text", status="confirmed", raw_text=confirmed_text, draft_content={"schema_version": "document-content-v1", "sections": [], "job_fields": fields})
         db.add(document)
@@ -3429,7 +3565,7 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
         fields = job_version.content.get("job_fields") or {}
     else:
         raise DomainError("POOL_SOURCE_INVALID", "只支持 browser_draft 或 document_version", 422)
-    pool = JobPoolItem(account_id=account.id, source_type="browser_capture" if browser_draft else "manual", platform=browser_draft.platform if browser_draft else None, source_url=browser_draft.source_url if browser_draft else None, source_url_hash=browser_draft.source_url_hash if browser_draft else None, job_title=fields.get("title") or "未命名岗位", company_name=fields.get("company_name"), job_fields=fields, job_document_id=job_version.document_id, job_document_version_id=job_version.id, preference_id=preference.preference_id if preference else None, analysis_status="awaiting_requirements", blocking_reasons=[], idempotency_key=key, request_hash=request_digest)
+    pool = JobPoolItem(account_id=account.id, source_type="browser_capture" if browser_draft else "manual", platform=browser_draft.platform if browser_draft else None, source_url=browser_draft.source_url if browser_draft else None, source_url_hash=browser_draft.source_url_hash if browser_draft else None, source_browser_draft_id=browser_draft.id if browser_draft else None, job_title=fields.get("title") or "未命名岗位", company_name=fields.get("company_name"), job_fields=fields, job_document_id=job_version.document_id, job_document_version_id=job_version.id, preference_id=preference.preference_id if preference else None, analysis_status="awaiting_requirements", blocking_reasons=[], idempotency_key=key, request_hash=request_digest)
     db.add(pool)
     db.flush()
     start_now = bool(payload.analysis.get("start_now"))

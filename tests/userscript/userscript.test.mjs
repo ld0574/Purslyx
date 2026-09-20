@@ -19,7 +19,7 @@ function createRuntime({
   nodeTexts = {},
   token = null,
   requestStatus = 201,
-  responseData = { id: "draft-1", job_title: "测试岗位", confirm_path: "/job-pool/items?browser_draft_id=draft-1" },
+  responseData = { id: "draft-1", job_title: "测试岗位", pool_path: "/app/seeker/pool?pool_item_id=pool-1", job_pool_item: { id: "pool-1" } },
 } = {}) {
   const location = new URL(url);
   const storage = new Map(token ? [[TOKEN_KEY, token]] : []);
@@ -187,7 +187,7 @@ function createRuntime({
   };
 }
 
-test("BOSS 详情页自动提取并上传待确认草稿", async () => {
+test("BOSS 详情页自动提取并直接写入匹配池", async () => {
   const runtime = createRuntime({
     url: "https://www.zhipin.com/job_detail/abc.html?ka=search_list_jname_1",
     token: "browser-token",
@@ -211,7 +211,7 @@ test("BOSS 详情页自动提取并上传待确认草稿", async () => {
   assert.equal(body.work_mode, "onsite");
   assert.equal(body.job_description_text, "负责 React 和 TypeScript 项目交付");
   assert.match(request.headers["Idempotency-Key"], /^capture-/);
-  assert.match(runtime.statusText.textContent, /已获取/);
+  assert.match(runtime.statusText.textContent, /直接写入匹配池/);
   assert.equal(runtime.draftLink.style.display, "inline-block");
 });
 

@@ -25,6 +25,7 @@ if not settings.database_url:
 from server.app import api as api_module  # noqa: E402
 from server.app.api import (  # noqa: E402
     _browser_draft_confirmation,
+    _ensure_browser_pool_item,
     _escape_csv_formula,
     _finish_interview_summary,
     _log_export_datetime,
@@ -39,6 +40,9 @@ from server.app.matching import build_match_result  # noqa: E402
 from server.app.models import (  # noqa: E402
     Base,
     BrowserJobDraft,
+    Document,
+    DocumentDraft,
+    DocumentVersion,
     Interview,
     InterviewAnswer,
     InterviewQuestion,
@@ -176,6 +180,51 @@ class _PoolSession:
     def scalar(self, statement: Any) -> JobPoolItem | None:
         self.statement = statement
         return self.result
+
+
+class _BrowserPoolSession:
+    def __init__(self) -> None:
+        self.added: list[Any] = []
+
+    def scalar(self, statement: Any) -> None:
+        return None
+
+    def add(self, value: Any) -> None:
+        self.added.append(value)
+
+    def flush(self) -> None:
+        return None
+
+
+def test_browser_capture_creates_a_waiting_pool_item_without_match_inputs() -> None:
+    draft = BrowserJobDraft(
+        id=5,
+        public_id="draft-1",
+        account_id=7,
+        platform="boss",
+        source_url="https://www.zhipin.com/job_detail/example.html",
+        source_url_hash="a" * 64,
+        content_hash="b" * 64,
+        job_title="高级前端工程师",
+        company_name="示例科技",
+        job_description_text="负责 Vue 与 TypeScript 工程化交付",
+        captured_payload={},
+        missing_field_codes=["work_mode"],
+        status="awaiting_confirmation",
+    )
+    db = _BrowserPoolSession()
+
+    pool = _ensure_browser_pool_item(db, SimpleNamespace(id=7), draft)  # type: ignore[arg-type]
+
+    assert pool.source_type == "browser_capture"
+    assert pool.source_browser_draft_id == 5
+    assert pool.analysis_status == "awaiting_requirements"
+    assert pool.resume_version_id is None
+    assert pool.preference_id is None
+    assert draft.status == "confirmed"
+    assert any(isinstance(value, Document) for value in db.added)
+    assert any(isinstance(value, DocumentDraft) for value in db.added)
+    assert any(isinstance(value, DocumentVersion) for value in db.added)
 
 
 def test_variant_pool_lookup_uses_internal_pk_with_isolation_predicates() -> None:

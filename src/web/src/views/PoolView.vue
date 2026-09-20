@@ -19,7 +19,6 @@ const documents = ref<JsonMap[]>([]);
 const preferences = ref<JsonMap[]>([]);
 const items = ref<JsonMap[]>([]);
 const selected = ref<JsonMap | null>(null);
-const browserDraft = ref<JsonMap | null>(null);
 const activeTask = ref<JsonMap | null>(null);
 const form = reactive({
   job_title: "",
@@ -28,9 +27,10 @@ const form = reactive({
   work_mode: "",
   salary_text: "",
   job_text: "",
+});
+const matchForm = reactive({
   resume_version_id: "",
   preference_version_id: "",
-  start_now: true,
 });
 
 const resumes = computed(() => documents.value.filter((item) => item.document_type === "resume" && item.latest_version));
@@ -44,6 +44,10 @@ function analysisReady(item: JsonMap): boolean {
   return ["available", "succeeded"].includes(String(item.latest_analysis?.status || ""));
 }
 
+function analysisInProgress(item: JsonMap): boolean {
+  return ["queued", "running", "retry_wait"].includes(String(item.analysis_status || item.latest_analysis?.status || ""));
+}
+
 async function refreshData() {
   const [documentResult, preferenceResult, poolResult] = await Promise.all([
     api<JsonMap>("/api/v1/documents"),
@@ -53,11 +57,11 @@ async function refreshData() {
   documents.value = documentResult.items || [];
   preferences.value = preferenceResult.items || [];
   items.value = poolResult.items || [];
-  if (!resumes.value.some((item) => item.latest_version?.id === form.resume_version_id)) {
-    form.resume_version_id = resumes.value[0]?.latest_version?.id || "";
+  if (!resumes.value.some((item) => item.latest_version?.id === matchForm.resume_version_id)) {
+    matchForm.resume_version_id = resumes.value[0]?.latest_version?.id || "";
   }
-  if (!preferences.value.some((item) => item.version?.id === form.preference_version_id)) {
-    form.preference_version_id = preferences.value.find((item) => item.is_default)?.version?.id || preferences.value[0]?.version?.id || "";
+  if (!preferences.value.some((item) => item.version?.id === matchForm.preference_version_id)) {
+    matchForm.preference_version_id = preferences.value.find((item) => item.is_default)?.version?.id || preferences.value[0]?.version?.id || "";
   }
 }
 
@@ -66,8 +70,25 @@ async function load() {
   error.value = "";
   try {
     await refreshData();
-    const draftId = String(route.query.browser_draft_id || "");
-    if (draftId) browserDraft.value = await api<JsonMap>(`/api/v1/browser/job-drafts/${encodeURIComponent(draftId)}/web`);
+    const poolId = String(route.query.pool_item_id || "");
+    if (poolId) await openItem({ id: poolId });
+    const legacyDraftId = String(route.query.browser_draft_id || "");
+    if (legacyDraftId) {
+      const draft = await api<JsonMap>(`/api/v1/browser/job-drafts/${encodeURIComponent(legacyDraftId)}/web`);
+      let pool = draft.job_pool_item;
+      if (!pool) {
+        const result = await api<JsonMap>("/api/v1/job-pool/items", {
+          method: "POST",
+          idempotencyKey: idempotencyKey(`legacy-browser-pool-${draft.id}`),
+          body: { source: { type: "browser_draft", browser_draft_id: draft.id } },
+        });
+        pool = result.job_pool_item || result;
+      }
+      await router.replace({ query: { ...route.query, browser_draft_id: undefined, pool_item_id: pool.id } });
+      await openItem(pool);
+      success.value = "岗位已直接写入匹配池；需要时再选择简历和岗位期望开始匹配。";
+      await refreshData();
+    }
   } catch (value) {
     message(value);
   } finally {
@@ -122,15 +143,12 @@ async function savePool() {
   error.value = "";
   success.value = "";
   try {
-    if (form.start_now && (!form.resume_version_id || !form.preference_version_id)) throw new Error("请先确认简历和岗位期望");
     const jobVersion = await createJobVersion();
     const result = await api<JsonMap>("/api/v1/job-pool/items", {
       method: "POST",
       idempotencyKey: idempotencyKey("pool"),
       body: {
         source: { type: "document_version", job_document_version_id: jobVersion.id },
-        preference_version_id: form.preference_version_id || null,
-        analysis: form.start_now ? { start_now: true, resume_document_version_id: form.resume_version_id, confirm_usage: true } : {},
       },
     });
     await settleAnalysis(result, "岗位已保存到匹配池");
@@ -141,47 +159,6 @@ async function savePool() {
     form.work_mode = "";
     form.salary_text = "";
     form.job_text = "";
-  } catch (value) {
-    message(value);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function confirmBrowserDraft() {
-  if (!browserDraft.value) return;
-  busy.value = true;
-  error.value = "";
-  success.value = "";
-  try {
-    if (!browserDraft.value.job_title?.trim()) throw new Error("请检查并补充岗位名称");
-    if (!browserDraft.value.job_description_text?.trim()) throw new Error("岗位正文不能为空");
-    if (form.start_now && (!form.resume_version_id || !form.preference_version_id)) throw new Error("请先选择已确认简历和岗位期望");
-    const result = await api<JsonMap>("/api/v1/job-pool/items", {
-      method: "POST",
-      idempotencyKey: idempotencyKey("browser-pool"),
-      body: {
-        source: {
-          type: "browser_draft",
-          browser_draft_id: browserDraft.value.id,
-          corrections: {
-            job_title: browserDraft.value.job_title,
-            company_name: browserDraft.value.company_name,
-            location_text: browserDraft.value.location_text,
-            work_mode: browserDraft.value.work_mode,
-            salary_text: browserDraft.value.salary_text,
-            job_description_text: browserDraft.value.job_description_text,
-          },
-        },
-        preference_version_id: form.preference_version_id || null,
-        analysis: form.start_now ? { start_now: true, resume_document_version_id: form.resume_version_id, confirm_usage: true } : {},
-      },
-    });
-    const draftId = browserDraft.value.id;
-    browserDraft.value = null;
-    await router.replace({ query: { ...route.query, browser_draft_id: undefined } });
-    await settleAnalysis(result, `浏览器岗位 ${draftId} 已确认入池`);
-    await refreshData();
   } catch (value) {
     message(value);
   } finally {
@@ -204,13 +181,13 @@ async function analyzeSelected() {
   error.value = "";
   success.value = "";
   try {
-    if (!form.resume_version_id || !form.preference_version_id) throw new Error("请先选择已确认简历和岗位期望");
+    if (!matchForm.resume_version_id || !matchForm.preference_version_id) throw new Error("请先选择已确认简历和岗位期望");
     const result = await api<JsonMap>(`/api/v1/job-pool/items/${encodeURIComponent(selected.value.id)}/analyze`, {
       method: "POST",
       idempotencyKey: idempotencyKey("pool-analysis"),
       body: {
-        resume_document_version_id: form.resume_version_id,
-        preference_version_id: form.preference_version_id,
+        resume_document_version_id: matchForm.resume_version_id,
+        preference_version_id: matchForm.preference_version_id,
         base_revision: selected.value.revision,
         confirm_usage: true,
       },
@@ -279,33 +256,18 @@ onMounted(load);
 
 <template>
   <AppShell>
-    <PageHeader eyebrow="MATCH POOL" title="匹配池" description="浏览器草稿和手动 JD 都先检查确认；分析前明确选择简历、完整期望并确认计次。"><button class="button outline small" type="button" @click="load">刷新</button></PageHeader>
+    <PageHeader eyebrow="MATCH POOL" title="匹配池" description="岗位先快速入库；需要分析时再选择简历和岗位期望，匹配与采集互不阻塞。"><button class="button outline small" type="button" @click="load">刷新</button></PageHeader>
     <AsyncState :loading="loading" :error="error" :success="success" />
     <div v-if="activeTask" class="callout opportunity task-inline-state"><span class="spinner" />{{ taskLabel(activeTask.task_type) }}：{{ statusLabel(activeTask.status) }} · {{ activeTask.current_step || "等待执行" }}</div>
 
-    <section v-if="browserDraft" class="card browser-draft-review" style="margin-bottom:18px">
-      <div class="card-head"><div><h3>检查浏览器岗位草稿</h3><p>{{ browserDraft.platform }} · 自动获取只生成草稿，修改后才确认入池。</p></div><span class="tag opportunity">待确认</span></div>
-      <form class="card-body form-card" @submit.prevent="confirmBrowserDraft">
-        <div v-if="browserDraft.missing_field_codes?.length" class="callout opportunity">仍需检查：{{ browserDraft.missing_field_codes.join("、") }}</div>
-        <div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="browserDraft.job_title" class="field" required /></div><div class="field-group"><label>公司</label><input v-model="browserDraft.company_name" class="field" placeholder="未披露可留空" /></div></div>
-        <div class="form-row"><div class="field-group"><label>工作地点</label><input v-model="browserDraft.location_text" class="field" placeholder="未披露可留空" /></div><div class="field-group"><label>办公方式</label><select v-model="browserDraft.work_mode" class="select"><option :value="null">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div>
-        <div class="field-group"><label>薪资原文</label><input v-model="browserDraft.salary_text" class="field" placeholder="面议或未披露请如实保留" /></div>
-        <div class="field-group"><label>岗位正文</label><textarea v-model="browserDraft.job_description_text" class="textarea" required /></div>
-        <p class="micro">原岗位链接：<a :href="browserDraft.source_url" target="_blank" rel="noreferrer">{{ browserDraft.source_url }}</a></p>
-        <div class="form-row"><div class="field-group"><label>本次简历</label><select v-model="form.resume_version_id" class="select" :required="form.start_now"><option value="" disabled>请选择</option><option v-for="item in resumes" :key="item.id" :value="item.latest_version.id">{{ item.title }} · v{{ item.latest_version.version_no }}</option></select></div><div class="field-group"><label>本次岗位期望</label><select v-model="form.preference_version_id" class="select" :required="form.start_now"><option value="" disabled>请选择完整的一条期望</option><option v-for="item in preferences" :key="item.id" :value="item.version.id">{{ item.display_name }} · v{{ item.version.version_no }}</option></select></div></div>
-        <label class="micro"><input v-model="form.start_now" type="checkbox" /> 入池后立即分析（确认消耗 1 次分析）</label>
-        <button class="button primary" :disabled="busy" type="submit">确认修正并入池</button>
-      </form>
-    </section>
-
     <div v-if="!loading" class="grid-2">
-      <section class="card"><div class="card-head"><div><h3>保存手动岗位</h3><p>明确填写采集不到的条件；只保存岗位本身不消耗次数。</p></div></div><form id="pool-form" class="card-body form-card" @submit.prevent="savePool"><div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="form.job_title" class="field" name="job_title" placeholder="例如：高级前端工程师" required /></div><div class="field-group"><label>公司</label><input v-model="form.company_name" class="field" name="company_name" placeholder="未披露可留空" /></div></div><div class="form-row"><div class="field-group"><label>工作地点</label><input v-model="form.location_text" class="field" name="location_text" placeholder="例如：杭州、上海" /></div><div class="field-group"><label>办公方式</label><select v-model="form.work_mode" class="select" name="work_mode"><option value="">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div><div class="field-group"><label>薪资原文</label><input v-model="form.salary_text" class="field" name="salary_text" placeholder="例如：20–30K/月·14薪；未知可留空" /></div><div class="field-group"><label>岗位 JD</label><textarea v-model="form.job_text" class="textarea" name="job_text" placeholder="粘贴完整职责和任职要求" required /></div><div class="form-row"><div class="field-group"><label>简历版本</label><select v-model="form.resume_version_id" class="select" name="resume_version_id" :required="form.start_now"><option value="" disabled>请选择</option><option v-for="item in resumes" :key="item.id" :value="item.latest_version.id">{{ item.title }} · v{{ item.latest_version.version_no }}</option></select></div><div class="field-group"><label>岗位期望</label><select v-model="form.preference_version_id" class="select" name="preference_version_id" :required="form.start_now"><option value="" disabled>请选择完整的一条期望</option><option v-for="item in preferences" :key="item.id" :value="item.version.id">{{ item.display_name }} · v{{ item.version.version_no }}</option></select></div></div><label class="micro"><input v-model="form.start_now" type="checkbox" name="start_now" /> 保存后立即分析（确认消耗 1 次）</label><button class="button primary" :disabled="busy" type="submit">{{ form.start_now ? "保存并开始分析" : "仅保存岗位" }}</button></form></section>
-      <section class="card"><div class="card-head"><div><h3>我的岗位</h3><p>逐条查看状态、报告历史和原平台入口。</p></div><span class="tag neutral">{{ items.length }} 条</span></div><div class="card-body data-list"><div v-if="!items.length" class="empty"><div><strong>匹配池还是空的</strong><p>先保存一份岗位。</p></div></div><article v-for="item in items" :key="item.id" class="data-row pool-item"><div><strong>{{ item.job_title }}</strong><small>{{ item.company_name || "未标注公司" }} · {{ statusLabel(item.analysis_status) }} · {{ item.latest_analysis?.ability_score ?? "—" }} 分</small></div><div class="item-actions"><span class="tag" :class="statusClass(item.analysis_status)">{{ statusLabel(item.analysis_status) }}</span><button class="button soft small" type="button" @click="openItem(item)">查看岗位</button><RouterLink v-if="analysisReady(item)" class="button outline small" :to="{ path: '/app/seeker/report', query: { analysis_id: item.latest_analysis.id } }">完整报告</RouterLink><button class="button link-button small" :disabled="busy" type="button" @click="deletePoolItem(item)">删除</button></div></article></div></section>
+      <section class="card"><div class="card-head"><div><h3>保存手动岗位</h3><p>先保存岗位本身，不需要选择简历或岗位期望；匹配时再决定使用哪一版。</p></div></div><form id="pool-form" class="card-body form-card" @submit.prevent="savePool"><div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="form.job_title" class="field" name="job_title" placeholder="例如：高级前端工程师" required /></div><div class="field-group"><label>公司</label><input v-model="form.company_name" class="field" name="company_name" placeholder="未披露可留空" /></div></div><div class="form-row"><div class="field-group"><label>工作地点</label><input v-model="form.location_text" class="field" name="location_text" placeholder="例如：杭州、上海" /></div><div class="field-group"><label>办公方式</label><select v-model="form.work_mode" class="select" name="work_mode"><option value="">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div><div class="field-group"><label>薪资原文</label><input v-model="form.salary_text" class="field" name="salary_text" placeholder="例如：20–30K/月·14薪；未知可留空" /></div><div class="field-group"><label>岗位 JD</label><textarea v-model="form.job_text" class="textarea" name="job_text" placeholder="粘贴完整职责和任职要求" required /></div><button class="button primary" :disabled="busy" type="submit">保存岗位</button></form></section>
+      <section class="card"><div class="card-head"><div><h3>我的岗位</h3><p>抓取或保存后立即入库；点击“匹配”时才选择简历和期望。</p></div><span class="tag neutral">{{ items.length }} 条</span></div><div class="card-body data-list"><div v-if="!items.length" class="empty"><div><strong>匹配池还是空的</strong><p>先抓取或保存一份岗位。</p></div></div><article v-for="item in items" :key="item.id" class="data-row pool-item"><div><strong>{{ item.job_title }}</strong><small>{{ item.company_name || "未标注公司" }} · {{ statusLabel(item.analysis_status) }} · {{ item.latest_analysis?.ability_score ?? "—" }} 分</small></div><div class="item-actions"><span class="tag" :class="statusClass(item.analysis_status)">{{ statusLabel(item.analysis_status) }}</span><button class="button soft small" type="button" @click="openItem(item)">{{ analysisReady(item) ? "查看岗位" : analysisInProgress(item) ? "查看进度" : "匹配" }}</button><RouterLink v-if="analysisReady(item)" class="button outline small" :to="{ path: '/app/seeker/report', query: { analysis_id: item.latest_analysis.id } }">完整报告</RouterLink><button class="button link-button small" :disabled="busy" type="button" @click="deletePoolItem(item)">删除</button></div></article></div></section>
     </div>
 
     <section v-if="selected" class="card" style="margin-top:18px">
       <div class="card-head"><div><h3>{{ selected.job_title }}</h3><p>{{ selected.company_name || "未标注公司" }} · {{ statusLabel(selected.analysis_status) }} · 版本 {{ selected.revision }}</p></div><button class="button link-button" type="button" @click="selected = null">关闭</button></div>
-      <div class="card-body"><div v-if="selected.blocking_reasons?.length" class="callout opportunity">{{ selected.blocking_reasons.join("；") }}</div><div class="job-condition-summary"><div><strong>地点</strong><span>{{ selectedFields.location_text || (selectedFields.locations || []).join("、") || "未披露" }}</span></div><div><strong>办公方式</strong><span>{{ statusLabel(selectedFields.work_mode || "unknown") }}</span></div><div><strong>薪资</strong><span>{{ selectedFields.salary_text || "未披露" }}</span></div></div><div class="version-strip"><span class="version-chip">岗位版本 · {{ selected.job_document_version?.id }}</span><span class="version-chip">简历版本 · {{ selected.resume_version_id || "待选择" }}</span></div><details class="raw-report"><summary>查看岗位结构化高级信息</summary><pre>{{ JSON.stringify(selected.job_content || {}, null, 2) }}</pre></details><div class="item-actions" style="margin-top:14px"><RouterLink v-if="analysisReady(selected)" class="button primary" :to="{ path: '/app/seeker/report', query: { analysis_id: selected.latest_analysis.id } }">打开完整报告</RouterLink><button v-if="selected.apply_action?.available" class="button soft" type="button" @click="goApply">去投递</button><span v-else-if="selected.source_url" class="tag neutral">原岗位链接当前不可用</span><button class="button outline" type="button" :disabled="busy" @click="analyzeSelected">用当前选择重新分析</button><button class="button link-button" type="button" :disabled="busy" @click="deletePoolItem(selected)">删除岗位</button></div></div>
+      <div class="card-body"><div v-if="selected.blocking_reasons?.length" class="callout opportunity">{{ selected.blocking_reasons.join("；") }}</div><div class="job-condition-summary"><div><strong>地点</strong><span>{{ selectedFields.location_text || (selectedFields.locations || []).join("、") || "未披露" }}</span></div><div><strong>办公方式</strong><span>{{ statusLabel(selectedFields.work_mode || "unknown") }}</span></div><div><strong>薪资</strong><span>{{ selectedFields.salary_text || "未披露" }}</span></div></div><div class="version-strip"><span class="version-chip">岗位版本 · {{ selected.job_document_version?.id }}</span><span class="version-chip">简历版本 · {{ selected.resume_version_id || "待选择" }}</span></div><details class="raw-report"><summary>查看岗位结构化高级信息</summary><pre>{{ JSON.stringify(selected.job_content || {}, null, 2) }}</pre></details><section v-if="analysisInProgress(selected)" class="callout opportunity" style="margin-top:18px">分析任务正在执行，请等待任务完成后再进行下一次匹配。</section><section v-else-if="!analysisReady(selected)" class="match-panel" style="margin-top:18px"><div class="card-head"><div><h3>开始匹配</h3><p>岗位已经入库；现在才选择本次匹配使用的简历和岗位期望，并确认消耗 1 次分析。</p></div><span class="tag opportunity">待匹配</span></div><div class="form-row"><div class="field-group"><label>简历版本</label><select v-model="matchForm.resume_version_id" class="select" required><option value="" disabled>请选择已确认简历</option><option v-for="item in resumes" :key="item.id" :value="item.latest_version.id">{{ item.title }} · v{{ item.latest_version.version_no }}</option></select></div><div class="field-group"><label>岗位期望</label><select v-model="matchForm.preference_version_id" class="select" required><option value="" disabled>请选择完整的一条期望</option><option v-for="item in preferences" :key="item.id" :value="item.version.id">{{ item.display_name }} · v{{ item.version.version_no }}</option></select></div></div></section><div class="item-actions" style="margin-top:14px"><RouterLink v-if="analysisReady(selected)" class="button primary" :to="{ path: '/app/seeker/report', query: { analysis_id: selected.latest_analysis.id } }">打开完整报告</RouterLink><button v-if="selected.apply_action?.available" class="button soft" type="button" @click="goApply">去投递</button><span v-else-if="selected.source_url" class="tag neutral">原岗位链接当前不可用</span><button v-if="!analysisInProgress(selected)" class="button primary" type="button" :disabled="busy" @click="analyzeSelected">{{ analysisReady(selected) ? "使用新输入重新匹配" : "开始匹配（消耗 1 次）" }}</button><button class="button link-button" type="button" :disabled="busy" @click="deletePoolItem(selected)">删除岗位</button></div></div>
     </section>
   </AppShell>
 </template>

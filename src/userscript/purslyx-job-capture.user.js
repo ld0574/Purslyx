@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Purslyx 岗位自动获取
 // @namespace    https://purslyx.com/
-// @version      0.4.1
-// @description  在支持的 BOSS 直聘／猎聘详情页自动上传待确认岗位草稿。
+// @version      0.5.0
+// @description  在支持的 BOSS 直聘／猎聘详情页自动抓取岗位并直接写入 Purslyx 匹配池。
 // @downloadURL  https://purslyx.com/purslyx-job-capture.user.js
 // @updateURL    https://purslyx.com/purslyx-job-capture.user.js
 // @match        https://www.zhipin.com/job_detail/*
@@ -209,7 +209,7 @@
     node = document.createElement("aside");
     node.id = "purslyx-capture-status";
     node.style.cssText = "position:fixed;right:18px;bottom:18px;z-index:2147483647;width:270px;padding:12px 14px;border:1px solid #cfe0ec;border-radius:12px;font:13px/1.5 -apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;color:#16324f;background:#f8fcff;box-shadow:0 8px 28px #16324f2b";
-    node.innerHTML = "<div data-status-text></div><div style=\"display:flex;gap:8px;margin-top:9px;flex-wrap:wrap\"><button type=\"button\" data-sync style=\"border:0;border-radius:7px;padding:6px 9px;background:#1264e8;color:white;cursor:pointer\">同步 Purslyx</button><button type=\"button\" data-retry style=\"border:1px solid #cfe0ec;border-radius:7px;padding:6px 9px;background:white;color:#16324f;cursor:pointer\">重试识别</button><a data-open-draft target=\"_blank\" rel=\"noreferrer\" style=\"display:none;border:1px solid #b9d3f6;border-radius:7px;padding:6px 9px;color:#1264e8;text-decoration:none;background:#eaf5ff\">打开确认页</a></div>";
+    node.innerHTML = "<div data-status-text></div><div style=\"display:flex;gap:8px;margin-top:9px;flex-wrap:wrap\"><button type=\"button\" data-sync style=\"border:0;border-radius:7px;padding:6px 9px;background:#1264e8;color:white;cursor:pointer\">同步 Purslyx</button><button type=\"button\" data-retry style=\"border:1px solid #cfe0ec;border-radius:7px;padding:6px 9px;background:white;color:#16324f;cursor:pointer\">重试识别</button><a data-open-draft target=\"_blank\" rel=\"noreferrer\" style=\"display:none;border:1px solid #b9d3f6;border-radius:7px;padding:6px 9px;color:#1264e8;text-decoration:none;background:#eaf5ff\">打开匹配池</a></div>";
     document.body.appendChild(node);
     node.querySelector("[data-sync]").addEventListener("click", openSyncWindow);
     node.querySelector("[data-retry]").addEventListener("click", scheduleCapture);
@@ -227,7 +227,7 @@
   function setDraftLink(path) {
     const link = ensureStatusPanel().querySelector("[data-open-draft]");
     if (!link) return;
-    if (typeof path === "string" && path.startsWith("/job-pool/items?browser_draft_id=")) {
+    if (typeof path === "string" && (path.startsWith("/app/seeker/pool?pool_item_id=") || path.startsWith("/job-pool/items?browser_draft_id="))) {
       link.href = `${PRODUCT_ORIGIN}${path}`;
       link.style.display = "inline-block";
     } else {
@@ -337,7 +337,7 @@
       return;
     }
     seen.add(valueFingerprint);
-    setStatus("正在识别并上传待确认岗位…");
+    setStatus("正在识别并写入匹配池…");
     try {
       const requestKey = await idempotencyKey(value);
       const draft = await request({
@@ -347,8 +347,8 @@
         body: value
       });
       removePending(value);
-      setDraftLink(draft.confirm_path);
-      setStatus(`已获取「${draft.job_title || "当前岗位"}」，请回 Purslyx 检查并确认入池。`, "success");
+      setDraftLink(draft.pool_path || draft.confirm_path);
+      setStatus(`已获取「${draft.job_title || "当前岗位"}」并直接写入匹配池；匹配时再选择简历和岗位期望。`, "success");
     } catch (error) {
       seen.delete(valueFingerprint);
       savePending(value);

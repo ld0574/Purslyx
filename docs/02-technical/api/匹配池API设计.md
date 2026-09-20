@@ -25,7 +25,7 @@
 | `salary_text` | string | 是 | 页面披露原文，不补猜口径 |
 | `job_description_text` | string | 是 | 职责与要求正文 |
 | `missing_field_codes` | string[] | 否 | 未获取字段的受控代码 |
-| `status` | enum | 否 | `awaiting_confirmation`、`confirmed`、`expired`、`failed` |
+| `status` | enum | 否 | `awaiting_confirmation`、`confirmed`、`expired`、`failed`；直接入池后为 `confirmed` |
 | `expires_at`、`created_at` | datetime | 否 | 到期和上传时间 |
 
 ### POST `/api/v1/browser/job-drafts`
@@ -48,7 +48,7 @@
 }
 ```
 
-服务端重新规范化 URL、校验平台域名，并从规范化字段计算内容指纹；不信任客户端摘要。正文建议上限 100,000 字符。首次创建返回 201；相同账号、平台、URL 与内容返回 200 原草稿。上传不入池、不创建任务、不预留次数。
+服务端重新规范化 URL、校验平台域名，并从规范化字段计算内容指纹；不信任客户端摘要。正文建议上限 100,000 字符。首次创建返回 201；相同账号、平台、URL 与内容返回 200 原草稿。上传事务会同时创建确认 JD 版本和 `awaiting_requirements` 的匹配池岗位，不绑定简历、岗位期望、不创建分析任务、不预留次数；响应包含 `job_pool_item` 和 `pool_path`。
 
 ### GET `/api/v1/browser/job-drafts/{id}`
 
@@ -65,10 +65,10 @@
   "platform": "boss",
   "job_title": "前端工程师",
   "company_name": "示例科技",
-  "analysis_status": "queued",
+  "analysis_status": "awaiting_requirements",
   "job_document_version": {"id": "...", "version_no": 1},
-  "preference_version": {"id": "...", "version_no": 2},
-  "latest_analysis": {"id": "...", "status": "queued"},
+  "preference_version": null,
+  "latest_analysis": null,
   "apply_action": {
     "available": true,
     "click_token": "<短期签名令牌>",
@@ -114,7 +114,7 @@
 }
 ```
 
-只入池返回 201 `JobPoolItem`。同时分析且输入、次数与预算前置检查通过时返回 202，包含岗位、分析任务和 1 次预留。缺少简历、期望或次数时仍保存岗位，返回 201，`analysis_status=awaiting_requirements` 和 `blocking_reasons`，不会暗中调用模型。
+只入池返回 201 `JobPoolItem`。浏览器脚本已经在上传接口完成入池；该接口保留给手动岗位和旧草稿兼容。分析必须另行调用匹配接口；缺少简历、期望或次数时仍保存岗位，返回 201，`analysis_status=awaiting_requirements` 和 `blocking_reasons`，不会暗中调用模型。
 
 ### GET `/api/v1/job-pool/items`
 

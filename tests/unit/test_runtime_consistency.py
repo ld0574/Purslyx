@@ -14,6 +14,7 @@ from server.app.models import (
     InterviewAnswer,
     InterviewFeedback,
     InterviewSummary,
+    JobPoolItem,
     LogExport,
     Preference,
     PreferenceVersion,
@@ -54,6 +55,7 @@ def test_business_idempotency_is_enforced_by_postgres_metadata() -> None:
         LogExport: "uk_log_exports_account_idempotency",
         UsageGrant: "uk_usage_grant_trial_batch",
         InterviewAnswer: "uk_interview_answers_account_idempotency",
+        JobPoolItem: "uk_job_pool_browser_draft",
     }
     for model, name in expected.items():
         assert name in _unique_names(model), f"{model.__name__} 缺少 {name}"
