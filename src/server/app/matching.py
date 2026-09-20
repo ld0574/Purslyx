@@ -152,7 +152,16 @@ def _model_classification(
         status = "needs_confirmation"
     if status == "gap" and requirement not in explicit_gaps:
         status = "needs_confirmation"
-    explanation = str(finding.get("explanation") or "").strip()
+    fallback_explanation = ""
+    if status == "needs_confirmation" and not evidence:
+        # 模型有时会漏填引用键，但要求文本和简历原文仍然存在可核对词项。
+        # 只把这种兜底结果降为“部分支持”，不直接提升为完全支持，避免漏引用把整份报告算成 0 分。
+        fallback_status, fallback_evidence = _classify(requirement, segments, explicit_gaps)
+        if fallback_status in {"supported", "partially_supported"} and fallback_evidence:
+            status = "partially_supported"
+            evidence = fallback_evidence
+            fallback_explanation = "模型未提交可用引用；服务端在确认资料中找到部分可核对依据，仍需补充完整经历。"
+    explanation = str(finding.get("explanation") or "").strip() or fallback_explanation
     if not explanation:
         explanation = {
             "supported": "模型识别到已有确认经历提供了对应依据。",
@@ -544,8 +553,14 @@ def build_match_result(
         ability_score = None
         coverage = None
     else:
-        ability_score = (total_score / applicable_weight * Decimal("100")).quantize(Decimal("0.1"))
         coverage = (total_coverage / applicable_weight).quantize(Decimal("0.0001"))
+        # needs_confirmation 不是“不具备能力”。覆盖率为零时没有可复核的评分依据，
+        # 不能把未知项的零贡献伪装成 0 分；页面应显示待补充并引导用户补事实。
+        ability_score = (
+            None
+            if total_coverage == 0
+            else (total_score / applicable_weight * Decimal("100")).quantize(Decimal("0.1"))
+        )
 
     conditions = compare_conditions(preference_content, job_fields)
     verification_items = _verification_items(dimension_output, conditions)
@@ -571,8 +586,18 @@ def build_match_result(
         "verification_items": verification_items,
         "interview_questions": interview_questions,
         "overall_advice": advice,
-        "scoring_rule_version": "ability-v0.1",
+        "scoring_rule_version": "ability-v0.2",
         "result_schema_version": "analysis-result-v1",
         "prompt_version": prompt_version,
-        "ai_insights": ai_findings.get("insights", {}) if ai_findings else {},
+        "ai_insights": {
+            **(ai_findings.get("insights", {}) if ai_findings else {}),
+            **(
+                {
+                    "model_score": ai_findings["model_score"],
+                    "model_score_rationale": ai_findings.get("model_score_rationale", ""),
+                }
+                if ai_findings and ai_findings.get("model_score") is not None
+                else {}
+            ),
+        },
     }

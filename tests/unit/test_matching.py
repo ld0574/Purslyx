@@ -66,6 +66,50 @@ def test_match_result_has_evidence_and_code_score() -> None:
     assert any(item["requirements"] for item in result["dimensions"])
 
 
+def test_unknown_requirements_do_not_render_as_zero_score() -> None:
+    result = build_match_result(
+        {"sections": [{"segments": [{"segment_key": "work-1", "text": "负责后端服务维护"}]}]},
+        {
+            "job_fields": {
+                "title": "大模型应用工程师",
+                "category": "engineering",
+                "requirements": ["熟悉量化交易风控模型与 CUDA 优化"],
+            }
+        },
+    )
+
+    assert result["ability_score"] is None
+    assert result["evidence_coverage"] == 0.0
+    assert result["overall_advice"]["status"] == "needs_more_information"
+
+
+def test_model_unknown_can_fall_back_to_partial_verified_evidence() -> None:
+    result = build_match_result(
+        {"sections": [{"segments": [{"segment_key": "work-1", "text": "负责后端服务开发与项目交付"}]}]},
+        {
+            "job_fields": {
+                "title": "后端工程师",
+                "category": "engineering",
+                "requirements": ["负责后端服务开发"],
+            }
+        },
+        ai_findings={
+            "requirements": [{
+                "requirement_id": "req-1",
+                "dimension_key": "technical",
+                "status": "needs_confirmation",
+                "evidence_segment_keys": [],
+                "explanation": "模型未提交引用。",
+            }],
+            "insights": {},
+        },
+    )
+
+    requirement = next(item for dimension in result["dimensions"] for item in dimension["requirements"])
+    assert requirement["status"] == "partially_supported"
+    assert requirement["evidence"]
+
+
 def test_salary_months_are_part_of_comparable_salary_basis() -> None:
     preference = {
         "status": "specified",

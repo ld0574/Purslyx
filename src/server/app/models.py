@@ -495,7 +495,7 @@ class Analysis(TimestampMixin, Base):
     evidence_coverage: Mapped[float | None] = mapped_column(Float)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     task_id: Mapped[int | None] = mapped_column(Integer, index=True)
-    scoring_rule_version: Mapped[str] = mapped_column(String(80), default="ability-v0.1", nullable=False)
+    scoring_rule_version: Mapped[str] = mapped_column(String(80), default="ability-v0.2", nullable=False)
     result_schema_version: Mapped[str] = mapped_column(String(80), default="analysis-result-v1", nullable=False)
     prompt_version: Mapped[str] = mapped_column(String(80), default="analysis-local-v1", nullable=False)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

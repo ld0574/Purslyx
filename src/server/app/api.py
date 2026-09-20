@@ -3694,7 +3694,7 @@ def _start_analysis(
         analysis.ability_score = report.get("ability_score")
         analysis.evidence_coverage = report.get("evidence_coverage")
         analysis.result = report
-        analysis.scoring_rule_version = report.get("scoring_rule_version", "ability-v0.1")
+        analysis.scoring_rule_version = report.get("scoring_rule_version", "ability-v0.2")
         analysis.result_schema_version = report.get("result_schema_version", "analysis-result-v1")
         analysis.prompt_version = report.get("prompt_version", "analysis-local-v1")
         analysis.completed_at = now_utc()
