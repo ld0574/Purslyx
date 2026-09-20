@@ -3238,24 +3238,28 @@ def _pool_blocking_reasons(item: JobPoolItem) -> list[str]:
 
 
 def _pool_analysis_summary(rows: list[Analysis]) -> dict[str, int]:
+    """只统计岗位当前报告；历史重试记录不应伪装成多份当前报告。"""
+
+    current = rows[0] if rows else None
     return {
-        "total": len(rows),
-        "available": sum(row.status in {"available", "succeeded"} for row in rows),
-        "active": sum(row.status in {"queued", "running"} for row in rows),
-        "failed": sum(row.status == "failed" for row in rows),
+        "total": 1 if current else 0,
+        "available": int(bool(current and current.status in {"available", "succeeded"})),
+        "active": int(bool(current and current.status in {"queued", "running"})),
+        "failed": int(bool(current and current.status == "failed")),
     }
 
 
 def _pool_match_score_expression() -> Any:
-    """返回岗位当前有效分析的最高匹配分，未分析岗位为 NULL。"""
+    """返回岗位最新报告的匹配分，未完成或失败的当前报告为 NULL。"""
 
     return (
-        select(func.max(Analysis.ability_score))
+        select(Analysis.ability_score)
         .where(
             Analysis.job_pool_item_id == JobPoolItem.id,
             Analysis.deleted_at.is_(None),
-            Analysis.status.in_(("available", "succeeded")),
         )
+        .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+        .limit(1)
         .correlate(JobPoolItem)
         .scalar_subquery()
     )
@@ -3268,7 +3272,7 @@ def _page_pool_rows_by_score(
     cursor: str | None,
     limit: int,
 ) -> tuple[list[JobPoolItem], dict[str, Any]]:
-    """按最高匹配分 DESC、岗位主键 DESC 稳定分页；无分岗位排在最后。"""
+    """按最新报告匹配分 DESC、岗位主键 DESC 稳定分页；无分岗位排在最后。"""
 
     if not 1 <= limit <= 100:
         raise DomainError("PAGINATION_LIMIT_INVALID", "limit 必须在 1 到 100 之间", 422)
@@ -3292,11 +3296,13 @@ def _page_pool_rows_by_score(
     next_cursor = None
     if has_more and rows:
         last_score = db.scalar(
-            select(func.max(Analysis.ability_score)).where(
+            select(Analysis.ability_score)
+            .where(
                 Analysis.job_pool_item_id == rows[-1].id,
                 Analysis.deleted_at.is_(None),
-                Analysis.status.in_(("available", "succeeded")),
             )
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+            .limit(1)
         )
         next_cursor = encode_score_page_cursor(float(last_score) if last_score is not None else None, rows[-1].id)
     return rows, {"next_cursor": next_cursor, "has_more": has_more, "limit": limit}
@@ -3310,14 +3316,15 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         db.scalars(
             select(Analysis)
             .where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))
-            .order_by(Analysis.created_at.desc())
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
         ).all()
     )
     analysis = analyses[0] if analyses else None
     analysis_task = db.get(Task, analysis.task_id) if analysis and analysis.task_id else None
-    match_score = max(
-        (row.ability_score for row in analyses if row.status in {"available", "succeeded"} and row.ability_score is not None),
-        default=None,
+    match_score = (
+        analysis.ability_score
+        if analysis and analysis.status in {"available", "succeeded"}
+        else None
     )
     preference_version = db.get(PreferenceVersion, analysis.preference_version_id) if analysis and analysis.preference_version_id else None
     browser_draft = db.get(BrowserJobDraft, item.source_browser_draft_id) if item.source_browser_draft_id else None

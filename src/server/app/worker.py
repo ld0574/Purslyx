@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import timedelta
 from typing import Any, Callable
 
@@ -67,6 +68,8 @@ SUPPORTED_TASK_TYPES = {
     "interview_summary",
     "log_export",
 }
+
+LOGGER = logging.getLogger("purslyx.worker")
 
 
 def _input(task: Task, name: str) -> Any:
@@ -199,6 +202,8 @@ class TaskWorker:
 
         task_id = 0
         attempt_id = 0
+        task_public_id = ""
+        task_type = ""
         try:
             with SessionLocal() as db:
                 task = db.get(Task, task.id)
@@ -207,11 +212,31 @@ class TaskWorker:
                     return
                 task_id = task.id
                 attempt_id = attempt.id
+                task_public_id = task.public_id
+                task_type = task.task_type
                 reservation = _reservation(db, task)
                 self._dispatch(db, task, attempt, reservation)
         except Exception as exc:
+            LOGGER.exception(
+                "worker task failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s error_type=%s error_code=%s",
+                event_id,
+                task_id or "unknown",
+                task_public_id or "unknown",
+                attempt_id or "unknown",
+                task_type or "unknown",
+                type(exc).__name__,
+                getattr(exc, "code", "TASK_EXECUTION_FAILED"),
+            )
             if task_id and attempt_id:
-                self._record_failure(task_id=task_id, attempt_id=attempt_id, error=exc)
+                try:
+                    self._record_failure(task_id=task_id, attempt_id=attempt_id, error=exc)
+                except Exception:
+                    LOGGER.exception(
+                        "worker could not persist failure event_id=%s task_id=%s attempt_id=%s",
+                        event_id,
+                        task_id,
+                        attempt_id,
+                    )
 
     def _record_failure(self, *, task_id: int, attempt_id: int, error: Exception) -> None:
         """兜底写失败状态；模型任务通常已经由 run_local_task 完成这一步。"""

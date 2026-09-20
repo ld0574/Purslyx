@@ -360,9 +360,10 @@ psql 'postgresql://purslyx@127.0.0.1:5432/purslyx' \
 ```bash
 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'
 docker logs --tail=200 purslyx-worker1
+docker logs --tail=200 purslyx-worker2
 ```
 
-当前 Worker 依赖 PostgreSQL outbox，不要只检查 Redis。
+双槽位发布时只有当前活动槽位对应的 Worker 会领取新任务；先执行 `scripts/release.sh status`，再查看对应容器。Worker 启动后会打印 owner、轮询参数；任务异常会打印任务类型、任务 ID、错误码和堆栈，但不会打印简历、JD 或模型输入正文。当前 Worker 依赖 PostgreSQL outbox，不要只检查 Redis。
 
 ### OpenResty 检查失败
 

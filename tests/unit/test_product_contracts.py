@@ -30,6 +30,7 @@ from server.app.api import (  # noqa: E402
     _finish_interview_summary,
     _log_export_datetime,
     _log_export_view,
+    _pool_analysis_summary,
     _pool_by_pk,
     _rewrite_view,
     _validate_admin_status_change,
@@ -240,6 +241,15 @@ def test_variant_pool_lookup_uses_internal_pk_with_isolation_predicates() -> Non
     missing = _PoolSession(None)
     with pytest.raises(NotFoundError):
         _pool_by_pk(missing, account_id=7, pool_id=42)
+
+
+def test_pool_analysis_summary_counts_only_the_current_report() -> None:
+    rows = [
+        SimpleNamespace(status="failed"),
+        SimpleNamespace(status="available"),
+    ]
+
+    assert _pool_analysis_summary(rows) == {"total": 1, "available": 0, "active": 0, "failed": 1}
 
 
 def test_browser_draft_confirmation_freezes_user_corrections() -> None:
