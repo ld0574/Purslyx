@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Purslyx 岗位自动获取
 // @namespace    https://purslyx.com/
-// @version      0.4.0
+// @version      0.4.1
 // @description  在支持的 BOSS 直聘／猎聘详情页自动上传待确认岗位草稿。
 // @downloadURL  https://purslyx.com/purslyx-job-capture.user.js
 // @updateURL    https://purslyx.com/purslyx-job-capture.user.js
@@ -40,7 +40,8 @@
       location: [".job-primary .text-desc", ".job-location", ".location-address", "[class*=location]"],
       workMode: [".job-primary .job-tags", ".job-primary .text-desc"],
       salary: [".job-primary .salary", ".salary", "[class*=salary]"],
-      description: [".job-sec-text", ".job-detail", ".job-description", ".job-sec", "[class*=job-detail]"]
+      description: [".job-sec-text", ".job-sec .text", ".job-detail", ".job-description", "[class*=job-description]", ".job-sec", "[class*=job-detail]"],
+      expanders: [".job-sec .look-all", ".job-sec .more", ".job-sec [class*=expand]", ".job-sec [class*=more]"]
     },
     liepin: {
       title: ["h1.job-title", ".job-title", ".job-name", "h1"],
@@ -48,7 +49,8 @@
       location: [".job-properties .job-properties-item", ".job-location", ".job-address", "[class*=location]"],
       workMode: [".job-properties", ".job-tags", "[class*=work-mode]"],
       salary: [".job-salary", ".salary", "[class*=salary]"],
-      description: [".job-description", ".job-intro", ".job-detail", ".content", "[class*=job-detail]"]
+      description: [".job-description", ".job-intro", ".job-detail", ".content", "[class*=job-description]", "[class*=job-detail]"],
+      expanders: [".job-description .look-all", ".job-description .more", ".job-description [class*=expand]", ".job-description [class*=more]", ".job-intro [class*=expand]", ".job-detail [class*=expand]"]
     }
   };
 
@@ -105,6 +107,30 @@
     return cleanText(parts.join("\n\n"));
   }
 
+  function nodesOf(selectors) {
+    const nodes = [];
+    for (const selector of selectors || []) {
+      const matches = typeof document.querySelectorAll === "function"
+        ? Array.from(document.querySelectorAll(selector))
+        : [document.querySelector(selector)].filter(Boolean);
+      for (const node of matches) if (!nodes.includes(node)) nodes.push(node);
+    }
+    return nodes;
+  }
+
+  function expandDescription(selectors) {
+    for (const node of nodesOf(selectors)) {
+      const label = cleanText(node.innerText || node.textContent || "");
+      if (!label || /登录|立即登录/.test(label) || !/展开|更多|查看全部|查看完整|显示全部/.test(label)) continue;
+      if (node.getAttribute && node.getAttribute("aria-expanded") === "true") continue;
+      if (typeof node.click === "function") node.click();
+    }
+  }
+
+  function descriptionNeedsUserAction(selectors) {
+    return nodesOf(selectors).some((node) => /登录(?:后)?查看完整|查看完整内容|登录查看/.test(cleanText(node.innerText || node.textContent || "")));
+  }
+
   function disclosedWorkMode(value) {
     const text = cleanText(value).toLowerCase();
     if (/remote|远程|居家/.test(text)) return "remote";
@@ -116,6 +142,7 @@
   function capturePage() {
     if (!isDetailPage()) return null;
     const adapter = ADAPTERS[currentPlatform()];
+    expandDescription(adapter.expanders);
     const locationText = textOf(adapter.location);
     const workModeText = textOf(adapter.workMode);
     const description = textOfAll(adapter.description);
@@ -344,6 +371,11 @@
     const value = capturePage();
     if (!value || !value.job_description_text) {
       setStatus("页面内容尚未稳定，继续等待岗位正文…");
+      return;
+    }
+    if (descriptionNeedsUserAction(ADAPTERS[currentPlatform()].description)) {
+      setStatus("岗位正文被平台折叠或要求登录，请先在原页面展开完整内容后再重试。", "error");
+      captureTimer = window.setTimeout(captureStablePage, CAPTURE_STABILITY_MS);
       return;
     }
     const valueFingerprint = fingerprint(value);

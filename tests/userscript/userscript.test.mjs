@@ -271,6 +271,23 @@ test("岗位正文动态加载时不会先上传半截内容", async () => {
   assert.match(JSON.parse(runtime.requests[0].data).job_description_text, /完整正文和任职条件/);
 });
 
+test("平台要求登录查看完整内容时不会保存半截正文", async () => {
+  const runtime = createRuntime({
+    url: "https://www.zhipin.com/job_detail/login-gated.html",
+    token: "browser-token",
+    texts: {
+      "h1.job-name": "登录限制岗位",
+      ".job-primary .text-desc": "杭州",
+    },
+    nodeTexts: {
+      ".job-sec-text": ["职位描述：当前可见内容\n登录查看完整内容"],
+    },
+  });
+  await runtime.runCapture();
+  assert.equal(runtime.requests.length, 0);
+  assert.match(runtime.statusText.textContent, /展开完整内容/);
+});
+
 test("升级后当前岗位的旧半截本机草稿会等待完整正文", async () => {
   const runtime = createRuntime({
     url: "https://www.zhipin.com/job_detail/legacy-pending.html",
