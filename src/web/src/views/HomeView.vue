@@ -57,7 +57,7 @@ onMounted(() => {
 
 <template>
   <div id="product-home">
-    <header class="topbar"><RouterLink class="brand-button" to="/"><img class="brand-mark" src="/purslyx-logo.png" alt="Purslyx 品牌标志" />Purslyx</RouterLink><span class="topbar-spacer" /><a class="button outline" href="/purslyx-job-capture.user.js">安装脚本</a><RouterLink class="button soft" to="/app/login">登录</RouterLink><RouterLink class="button primary" to="/app/register">创建账号</RouterLink></header>
+    <header class="topbar"><RouterLink class="brand-button" to="/"><img class="brand-mark" src="/purslyx-logo.png" alt="Purslyx 品牌标志" />Purslyx</RouterLink><RouterLink class="guide-link" to="/guide">使用说明</RouterLink><span class="topbar-spacer" /><a class="button outline" href="/purslyx-job-capture.user.js">安装脚本</a><RouterLink class="button soft" to="/app/login">登录</RouterLink><RouterLink class="button primary" to="/app/register">创建账号</RouterLink></header>
     <main class="public-main">
       <section class="hero">
         <div class="hero-copy"><div class="hero-brand"><img class="hero-logo" src="/purslyx-logo.png" alt="Purslyx 品牌标志" /><div><div class="eyebrow">EVIDENCE-FIRST CAREER SKILL</div><small>让每一次经历，都有下一步</small></div></div><h1>从真实经历，<span>走到下一步。</span></h1><p>从岗位页面获取 JD，AI 按证据完成匹配、事实约束改写和 STAR 面试练习；每个重要结论都能回到原始经历和冻结版本。</p><div class="hero-actions"><RouterLink class="button primary" to="/app/register">免费开始</RouterLink><RouterLink class="button outline" to="/app/login">登录工作台</RouterLink></div><div class="proof-row"><div><strong>证据优先</strong>不凭空补写经历</div><div><strong>条件分离</strong>能力与求职期望分开</div><div><strong>闭环协作</strong>岗位、简历与面试连起来</div></div></div>

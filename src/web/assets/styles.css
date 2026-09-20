@@ -44,6 +44,8 @@
       }
       .brand-button { display: inline-flex; align-items: center; gap: 10px; padding: 0; border: 0; background: transparent; color: var(--ink); font-weight: 800; font-size: 18px; text-decoration: none; }
       .brand-mark { display: block; flex: 0 0 36px; width: 36px; height: 36px; border-radius: 12px; object-fit: cover; background: var(--brand); box-shadow: 0 8px 18px rgba(18, 100, 232, 0.22); }
+      .guide-link { display: inline-flex; align-items: center; min-height: 34px; padding: 0 11px; border-radius: 10px; color: var(--brand); font-size: 12px; font-weight: 800; text-decoration: none; }
+      .guide-link:hover, .guide-link.active { background: var(--brand-soft); }
       .topbar-spacer { flex: 1; }
       .eyebrow { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
       .topbar .eyebrow { color: var(--muted); letter-spacing: 0.08em; }
@@ -117,6 +119,70 @@
       .install-steps li::before { position: absolute; top: 17px; left: 18px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; color: var(--brand); background: var(--brand-soft); content: counter(install-step, decimal-leading-zero); font-size: 10px; font-weight: 900; }
       .install-steps strong { font-size: 13px; }
       .install-steps span { color: var(--muted); font-size: 12px; line-height: 1.55; }
+      .guide-main { padding-top: 42px; }
+      .guide-hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(350px, .92fr); gap: 38px; align-items: center; padding: 16px 0 30px; }
+      .guide-hero h1 { max-width: 680px; margin-top: 14px; font-size: clamp(38px, 5.5vw, 64px); line-height: 1.08; }
+      .guide-hero > div:first-child > p { max-width: 650px; margin-top: 19px; color: var(--muted); font-size: 16px; line-height: 1.8; }
+      .guide-quick-card { padding: 25px; border: 1px solid #b9d3f6; border-radius: 22px; background: linear-gradient(145deg, #f8fbff, #fff); box-shadow: var(--shadow); }
+      .guide-quick-card h2 { margin-top: 8px; font-size: 21px; line-height: 1.45; }
+      .guide-quick-list { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 19px; }
+      .guide-quick-list > div { padding: 13px; border-radius: 12px; background: #fff; }
+      .guide-quick-list span { display: block; color: var(--brand); font-size: 10px; font-weight: 900; }
+      .guide-quick-list strong, .guide-quick-list small { display: block; }
+      .guide-quick-list strong { margin-top: 7px; font-size: 13px; }
+      .guide-quick-list small { margin-top: 4px; color: var(--muted); font-size: 11px; line-height: 1.45; }
+      .guide-anchor-bar { position: sticky; top: 70px; z-index: 10; display: flex; flex-wrap: wrap; gap: 5px; margin: 18px 0 0; padding: 8px; border: 1px solid var(--line); border-radius: 13px; background: rgba(255,255,255,.94); box-shadow: 0 8px 22px rgba(25,75,112,.06); backdrop-filter: blur(12px); }
+      .guide-anchor-bar a { padding: 8px 11px; border-radius: 8px; color: var(--muted); font-size: 12px; font-weight: 800; text-decoration: none; }
+      .guide-anchor-bar a:hover { color: var(--brand); background: var(--brand-soft); }
+      .guide-callout { display: flex; gap: 13px; align-items: flex-start; margin-top: 28px; padding: 17px 19px; border: 1px solid #f0d879; border-radius: 15px; background: var(--opportunity-soft); }
+      .guide-callout-icon { display: grid; flex: 0 0 27px; place-items: center; width: 27px; height: 27px; border-radius: 9px; color: #735500; background: #ffe889; font-weight: 900; }
+      .guide-callout strong { display: block; font-size: 13px; }
+      .guide-callout p { margin-top: 5px; color: #806b22; font-size: 12px; line-height: 1.65; }
+      .guide-section { margin-top: 66px; scroll-margin-top: 125px; }
+      .guide-step-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+      .guide-step-card { min-height: 230px; padding: 21px; border: 1px solid var(--line); border-radius: 17px; background: #fff; box-shadow: var(--shadow); }
+      .guide-step-no { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: var(--brand); background: var(--brand-soft); font-size: 11px; font-weight: 900; }
+      .guide-step-card h3 { margin-top: 21px; font-size: 17px; }
+      .guide-step-card p { margin-top: 9px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+      .guide-step-card a { display: inline-block; margin-top: 17px; color: var(--brand); font-size: 12px; font-weight: 800; text-decoration: none; }
+      .guide-flow { display: grid; grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr; gap: 9px; align-items: center; padding: 15px; border: 1px solid #b9d3f6; border-radius: 17px; background: #f8fbff; }
+      .guide-flow > div { min-width: 0; padding: 13px 10px; border-radius: 11px; text-align: center; background: #fff; }
+      .guide-flow span, .guide-flow small { display: block; }
+      .guide-flow span { color: var(--ink); font-size: 13px; font-weight: 800; }
+      .guide-flow small { margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+      .guide-flow i { color: var(--brand); font-size: 19px; font-style: normal; font-weight: 900; }
+      .guide-two-column { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-top: 16px; }
+      .guide-panel { padding: 21px; border: 1px solid var(--line); border-radius: 17px; background: #fff; box-shadow: var(--shadow); }
+      .guide-panel h3 { font-size: 17px; }
+      .guide-panel-title { display: flex; align-items: center; gap: 10px; }
+      .guide-panel-title h3 { margin: 0; }
+      .guide-list { display: grid; gap: 11px; margin: 17px 0 0; padding-left: 20px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+      .guide-list li::marker { color: var(--brand); font-weight: 900; }
+      .guide-list a { color: var(--brand); font-weight: 800; }
+      .guide-panel > .button { margin-top: 18px; }
+      .guide-panel .callout { margin-top: 17px; }
+      .guide-match-columns { align-items: start; }
+      .guide-status-list { display: grid; gap: 10px; margin-top: 16px; }
+      .guide-status-list > div { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 10px; align-items: center; padding: 10px; border-radius: 10px; background: #f7fafc; }
+      .guide-status-list p { color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .guide-feature-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 15px; }
+      .guide-feature-grid > div { padding: 16px; border-top: 3px solid var(--brand); border-radius: 0 0 13px 13px; background: #fff; box-shadow: var(--shadow); }
+      .guide-feature-grid strong { font-size: 13px; }
+      .guide-feature-grid p { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+      .guide-action-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+      .guide-action-grid article { padding: 18px; border: 1px solid var(--line); border-radius: 15px; background: #fff; box-shadow: var(--shadow); }
+      .guide-action-grid span { color: var(--brand); font-size: 11px; font-weight: 900; }
+      .guide-action-grid h3 { margin-top: 16px; font-size: 15px; }
+      .guide-action-grid p { margin-top: 7px; color: var(--muted); font-size: 11px; line-height: 1.65; }
+      .guide-recruiter { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 12px; align-items: center; padding: 18px; border: 1px solid var(--line); border-radius: 17px; background: #fff; box-shadow: var(--shadow); }
+      .guide-recruiter-step { min-height: 88px; padding: 13px; border-radius: 11px; background: #f7fafc; }
+      .guide-recruiter-step strong, .guide-recruiter-step span { display: block; }
+      .guide-recruiter-step strong { font-size: 12px; }
+      .guide-recruiter-step span { margin-top: 6px; color: var(--muted); font-size: 11px; line-height: 1.55; }
+      .guide-faq { display: grid; gap: 9px; }
+      .guide-faq details { padding: 15px 17px; border: 1px solid var(--line); border-radius: 13px; background: #fff; box-shadow: var(--shadow); }
+      .guide-faq summary { color: var(--ink); cursor: pointer; font-size: 13px; font-weight: 800; }
+      .guide-faq p { max-width: 860px; margin-top: 10px; color: var(--muted); font-size: 12px; line-height: 1.7; }
       .capability-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
       .capability-card { position: relative; min-height: 245px; padding: 26px; overflow: hidden; border: 1px solid var(--line); border-radius: 20px; background: rgba(255,255,255,.9); box-shadow: var(--shadow); }
       .capability-card::after { position: absolute; right: -46px; bottom: -62px; width: 150px; height: 150px; border-radius: 50%; background: var(--brand-soft); content: ""; }
@@ -368,6 +434,11 @@
         .nav-button { flex: 0 0 auto; width: auto; white-space: nowrap; }
         .side-note { display: none; }
         .install-layout { grid-template-columns: 1fr; }
+        .guide-hero { grid-template-columns: 1fr; gap: 28px; }
+        .guide-step-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .guide-action-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .guide-recruiter { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+        .guide-recruiter > .button { grid-column: 1 / -1; justify-self: start; }
       }
       @media (max-width: 680px) {
         .topbar { gap: 8px; min-height: 62px; overflow: hidden; }
@@ -386,6 +457,13 @@
         .visual-score { right: 20px; bottom: 22px; width: 82px; height: 82px; }
         .visual-score strong { font-size: 24px; }
         .capability-grid, .principle-grid, .report-grid, .two-col, .content-grid { grid-template-columns: 1fr; }
+        .guide-hero h1 { font-size: clamp(36px, 11vw, 48px); }
+        .guide-quick-list, .guide-step-grid, .guide-two-column, .guide-feature-grid, .guide-action-grid, .guide-recruiter { grid-template-columns: 1fr; }
+        .guide-anchor-bar { top: 62px; overflow-x: auto; flex-wrap: nowrap; }
+        .guide-anchor-bar a { flex: 0 0 auto; }
+        .guide-flow { grid-template-columns: 1fr; }
+        .guide-flow i { justify-self: center; transform: rotate(90deg); }
+        .guide-recruiter > .button { grid-column: auto; justify-self: start; }
         .insight-columns, .star-grid { grid-template-columns: 1fr 1fr; }
         .product-cta { align-items: flex-start; flex-direction: column; }
         .section-heading, .page-heading, .form-foot { align-items: flex-start; flex-direction: column; }

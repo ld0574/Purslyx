@@ -4,6 +4,7 @@ import { useAuthStore } from "@/stores/auth";
 
 const routes: RouteRecordRaw[] = [
   { path: "/", name: "home", component: () => import("@/views/HomeView.vue"), meta: { public: true, title: "Purslyx" } },
+  { path: "/guide", name: "guide", component: () => import("@/views/GuideView.vue"), meta: { public: true, title: "使用说明" } },
   { path: "/app/login", name: "login", component: () => import("@/views/AuthView.vue"), meta: { public: true, mode: "login", title: "登录" } },
   { path: "/app/register", name: "register", component: () => import("@/views/AuthView.vue"), meta: { public: true, mode: "register", title: "注册" } },
   { path: "/app/forgot-password", name: "forgot-password", component: () => import("@/views/AuthView.vue"), meta: { public: true, mode: "forgot", title: "找回密码" } },

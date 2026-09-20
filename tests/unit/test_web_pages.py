@@ -16,6 +16,7 @@ def test_vue_application_has_all_product_routes_and_views() -> None:
 
     expected_views = {
         "HomeView.vue",
+        "GuideView.vue",
         "AuthView.vue",
         "DashboardView.vue",
         "MaterialsView.vue",
@@ -59,6 +60,7 @@ def test_vue_application_has_all_product_routes_and_views() -> None:
     assert "/app/:role(seeker|recruiter)/tasks" in router
     assert "/app/:role(seeker|recruiter)/usage" in router
     assert "/app/:role(seeker|recruiter)/stats" in router
+    assert "/guide" in router
 
 
 def test_vite_and_typescript_are_the_production_frontend_contract() -> None:
@@ -91,6 +93,7 @@ def test_api_client_preserves_auth_csrf_and_idempotency_boundaries() -> None:
 
 def test_key_pages_keep_browser_and_business_contracts() -> None:
     home = read("src/views/HomeView.vue")
+    guide = read("src/views/GuideView.vue")
     shell = read("src/components/AppShell.vue")
     materials = read("src/views/MaterialsView.vue")
     pool = read("src/views/PoolView.vue")
@@ -99,6 +102,11 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     admin = "\n".join(read(f"src/views/admin/{name}") for name in ["AdminUsersView.vue", "AdminRolesView.vue", "AdminUsageView.vue", "AdminJobPoolView.vue", "AdminLogsView.vue"])
     assert 'src="/purslyx-logo.png"' in home
     assert 'alt="Purslyx 品牌标志"' in home
+    assert 'to="/guide"' in home
+    assert 'class="guide-link active"' in guide
+    assert "首次匹配完整流程" in guide
+    assert "同步 Purslyx" in guide
+    assert "合并为一次模型请求" in guide
     assert (WEB_ROOT / "public" / "purslyx-logo.png").is_file()
     assert 'src="/purslyx-logo.png"' in shell
     assert 'src="/purslyx-logo.png"' in read("src/views/AuthView.vue")
