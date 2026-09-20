@@ -1,5 +1,11 @@
 name: purslyx
 
+x-purslyx-logging: &purslyx-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   app:
     image: purslyx-app:${PURSLYX_IMAGE_TAG:-local}
@@ -12,11 +18,16 @@ services:
         PURSLYX_PYPI_INDEX_URL: ${PURSLYX_PYPI_INDEX_URL:-https://pypi.org/simple/}
     env_file:
       - ${PURSLYX_RUNTIME_ENV_FILE:-.env}
+    logging: *purslyx-logging
     environment:
       DATABASE_URL: ${DATABASE_URL:?请在 .env 中设置 DATABASE_URL}
       PURSLYX_ALLOWED_DATABASE_HOSTS: ${PURSLYX_ALLOWED_DATABASE_HOSTS:?请在 .env 中设置 PURSLYX_ALLOWED_DATABASE_HOSTS}
       PURSLYX_DATA_DIR: /var/lib/purslyx
       PURSLYX_AUTO_CREATE_SCHEMA: "false"
+      PURSLYX_LOG_DIR: /var/log/purslyx
+      PURSLYX_LOG_FILE: api.log
+      PURSLYX_LOG_MAX_BYTES: ${PURSLYX_LOG_MAX_BYTES:-52428800}
+      PURSLYX_LOG_BACKUP_COUNT: ${PURSLYX_LOG_BACKUP_COUNT:-10}
       PYTHONPATH: /app/src
     command:
       - /app/.venv/bin/uvicorn
@@ -31,6 +42,7 @@ services:
       - "127.0.0.1:${PURSLYX_API_PORT:-18001}:8001"
     volumes:
       - ${PURSLYX_DATA_DIR_HOST:-./upload}:/var/lib/purslyx
+      - ${PURSLYX_LOG_DIR_HOST:-./logs}:/var/log/purslyx
     extra_hosts:
       - host.docker.internal:host-gateway
     healthcheck:
@@ -52,11 +64,16 @@ services:
     container_name: ${PURSLYX_WORKER_CONTAINER_NAME:-purslyx-worker1}
     env_file:
       - ${PURSLYX_RUNTIME_ENV_FILE:-.env}
+    logging: *purslyx-logging
     environment:
       DATABASE_URL: ${DATABASE_URL:?请在 .env 中设置 DATABASE_URL}
       PURSLYX_ALLOWED_DATABASE_HOSTS: ${PURSLYX_ALLOWED_DATABASE_HOSTS:?请在 .env 中设置 PURSLYX_ALLOWED_DATABASE_HOSTS}
       PURSLYX_DATA_DIR: /var/lib/purslyx
       PURSLYX_AUTO_CREATE_SCHEMA: "false"
+      PURSLYX_LOG_DIR: /var/log/purslyx
+      PURSLYX_LOG_FILE: worker.log
+      PURSLYX_LOG_MAX_BYTES: ${PURSLYX_LOG_MAX_BYTES:-52428800}
+      PURSLYX_LOG_BACKUP_COUNT: ${PURSLYX_LOG_BACKUP_COUNT:-10}
       PYTHONPATH: /app/src
     command:
       - /app/.venv/bin/python
@@ -67,6 +84,7 @@ services:
       - "2"
     volumes:
       - ${PURSLYX_DATA_DIR_HOST:-./upload}:/var/lib/purslyx
+      - ${PURSLYX_LOG_DIR_HOST:-./logs}:/var/log/purslyx
     extra_hosts:
       - host.docker.internal:host-gateway
     depends_on:

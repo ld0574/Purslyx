@@ -1,5 +1,7 @@
 """数据库级幂等与面试轮次约束回归。"""
 
+from pathlib import Path
+
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.exc import IntegrityError
 
@@ -25,6 +27,17 @@ from server.app.models import (
     TaskAttempt,
     UsageGrant,
 )
+
+
+def test_container_logs_are_persisted_per_release_slot() -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    compose = (project_root / "compose.yaml").read_text(encoding="utf-8")
+    release = (project_root / "scripts" / "release.sh").read_text(encoding="utf-8")
+    assert "PURSLYX_LOG_DIR: /var/log/purslyx" in compose
+    assert "PURSLYX_LOG_DIR_HOST" in compose
+    assert "PURSLYX_LOG_ROOT_HOST" in release
+    assert "slot_log_dir" in release
+    assert "max-size: \"50m\"" in compose
 
 
 def _unique_names(model: type) -> set[str]:

@@ -34,7 +34,7 @@ sudo apt update
 sudo apt install -y ca-certificates curl gnupg lsb-release rsync util-linux
 sudo install -d -m 0755 /data
 sudo install -d -m 0755 -o "$USER" /data/purslyx
-sudo install -d -m 0750 /data/purslyx/upload /data/purslyx/.deploy
+sudo install -d -m 0750 /data/purslyx/upload /data/purslyx/logs /data/purslyx/.deploy
 sudo install -d -m 0755 -o www-data -g www-data /data/logs/openresty
 git clone <仓库地址> /data/purslyx
 cd /data/purslyx
@@ -214,6 +214,10 @@ PURSLYX_TOKEN_SECRET=<至少32个字符的随机值>
 PURSLYX_DATA_DIR=/var/lib/purslyx
 # 宿主机路径；应用实际写入 upload/files 和 upload/exports。
 PURSLYX_DATA_DIR_HOST=./upload
+# 发布脚本按 api1/api2 分目录保存应用和 Worker 日志，旧槽位容器删除后日志仍保留。
+PURSLYX_LOG_ROOT_HOST=/data/purslyx/logs
+PURSLYX_LOG_MAX_BYTES=52428800
+PURSLYX_LOG_BACKUP_COUNT=10
 
 PURSLYX_PRODUCT_ORIGIN=https://purslyx.com
 PURSLYX_ALLOWED_ORIGINS=https://purslyx.com
@@ -256,6 +260,19 @@ sudo scripts/release.sh status
 应用运行时数据挂载到仓库内的 `upload/` 目录，该目录已加入 Git 忽略；其中会自动创建
 `files/`（上传原件）和 `exports/`（生成的 PDF、日志导出）子目录。发布脚本会在启动容器前
 确保这些目录归容器用户 `10001:10001` 所有。
+
+应用和 Worker 的日志同时写 stdout 和宿主机目录：
+
+```text
+/data/purslyx/logs/api1/api.log
+/data/purslyx/logs/api1/worker.log
+/data/purslyx/logs/api2/api.log
+/data/purslyx/logs/api2/worker.log
+```
+
+每个日志文件默认 50 MiB 后轮转，保留 10 个历史文件；双槽位切换或删除旧容器不会删除这些
+宿主机日志。日志不包含简历、JD、Authorization、Cookie 或模型输入正文，只记录请求 ID、任务
+ID、状态、错误码、耗时和异常堆栈。`docker logs` 仍可用于实时查看，但宿主机文件是保留和检索的主来源。
 
 验收：
 
@@ -364,6 +381,18 @@ docker logs --tail=200 purslyx-worker2
 ```
 
 双槽位发布时只有当前活动槽位对应的 Worker 会领取新任务；先执行 `scripts/release.sh status`，再查看对应容器。Worker 启动后会打印 owner、轮询参数；任务异常会打印任务类型、任务 ID、错误码和堆栈，但不会打印简历、JD 或模型输入正文。当前 Worker 依赖 PostgreSQL outbox，不要只检查 Redis。
+
+宿主机查看当前槽位日志：
+
+```bash
+sudo scripts/release.sh status
+sudo tail -F /data/purslyx/logs/api1/worker.log
+sudo rg -n -i 'error|critical|exception|traceback|failed' /data/purslyx/logs/api1/worker.log
+```
+
+如果当前槽位是 `api2`，将路径中的 `api1` 替换为 `api2`。API 请求日志在同目录的 `api.log`，包含
+`request_id`、HTTP 状态码和耗时；匹配、解析等异步任务重点查看 `worker.log` 的 `task_id`、
+`task_public_id`、`attempt_id` 和 `error_code`。
 
 ### OpenResty 检查失败
 

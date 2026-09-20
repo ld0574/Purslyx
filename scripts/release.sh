@@ -41,6 +41,9 @@ usage() {
   PURSLYX_HEALTH_TIMEOUT=180  候选槽位健康检查超时秒数
   PURSLYX_DRAIN_SECONDS=30    切流量后等待旧请求排空的秒数
   PURSLYX_DEPLOY_STATE_DIR    默认 /data/purslyx/.deploy
+  PURSLYX_LOG_ROOT_HOST       默认 /data/purslyx/logs；每个槽位独立保留 api.log/worker.log
+  PURSLYX_LOG_MAX_BYTES       单个应用日志文件默认 52428800（50 MiB）
+  PURSLYX_LOG_BACKUP_COUNT    应用日志轮转文件数默认 10
   PURSLYX_ENV_FILE            默认仓库根目录 .env
 
 数据库迁移必须遵循 expand/contract：切流量时旧槽位仍可能短暂处理请求，
@@ -204,6 +207,41 @@ ensure_runtime_data_dir() {
   log "运行时目录已准备：$data_dir（10001:10001）"
 }
 
+runtime_log_root_host_dir() {
+  local configured="${PURSLYX_LOG_ROOT_HOST:-}"
+  if [[ -z "$configured" && -r "$ENV_FILE" ]]; then
+    configured="$(sed -n 's/^[[:space:]]*PURSLYX_LOG_ROOT_HOST[[:space:]]*=[[:space:]]*//p' "$ENV_FILE" | tail -n 1)"
+    configured="${configured#"${configured%%[![:space:]]*}"}"
+    configured="${configured%"${configured##*[![:space:]]}"}"
+    case "$configured" in
+      \"*\") configured="${configured:1:${#configured}-2}" ;;
+      \'*\') configured="${configured:1:${#configured}-2}" ;;
+    esac
+  fi
+  configured="${configured:-/data/purslyx/logs}"
+  if [[ "$configured" == /* ]]; then
+    printf '%s\n' "$configured"
+  else
+    printf '%s/%s\n' "$ROOT_DIR" "${configured#./}"
+  fi
+}
+
+slot_log_dir() {
+  local root
+  root="$(runtime_log_root_host_dir)"
+  printf '%s/%s\n' "${root%/}" "$1"
+}
+
+ensure_runtime_log_dir() {
+  local root log_dir slot="$1"
+  root="$(runtime_log_root_host_dir)"
+  [[ "$root" != '/' ]] || die 'PURSLYX_LOG_ROOT_HOST 不能指向根目录。'
+  log_dir="$(slot_log_dir "$slot")"
+  install -d -m 0750 "$root" "$log_dir"
+  chown 10001:10001 "$log_dir"
+  log "日志目录已准备：$log_dir（10001:10001）"
+}
+
 acquire_lock() {
   exec 9>"$STATE_DIR/release.lock"
   flock -n 9 || die '已有另一个 deploy/rollback 正在运行。'
@@ -213,12 +251,13 @@ compose_slot() {
   local slot="$1"
   local tag="$2"
   shift 2
-  local project port subnet app_container worker_container
+  local project port subnet app_container worker_container log_dir
   project="$(slot_project "$slot")"
   port="$(slot_port "$slot")"
   subnet="$(slot_subnet "$slot")"
   app_container="$(slot_app_container "$slot")"
   worker_container="$(slot_worker_container "$slot")"
+  log_dir="$(slot_log_dir "$slot")"
   env \
     PURSLYX_RUNTIME_ENV_FILE="$ENV_FILE" \
     PURSLYX_IMAGE_TAG="$tag" \
@@ -227,6 +266,7 @@ compose_slot() {
     PURSLYX_NETWORK_SUBNET="$subnet" \
     PURSLYX_APP_CONTAINER_NAME="$app_container" \
     PURSLYX_WORKER_CONTAINER_NAME="$worker_container" \
+    PURSLYX_LOG_DIR_HOST="$log_dir" \
     docker compose \
       --project-name "$project" \
       --env-file "$ENV_FILE" \
@@ -421,6 +461,7 @@ deploy() {
     old_release=''
   fi
   tag="$(release_id)"
+  ensure_runtime_log_dir "$candidate"
 
   trap 'if (( switched == 0 )); then cleanup_candidate "$candidate" "$tag"; fi' ERR
   build_candidate "$candidate" "$tag"
@@ -459,6 +500,8 @@ rollback() {
   local current_slot="$ACTIVE_SLOT"
   local current_release="$ACTIVE_RELEASE"
   local switched=0
+
+  ensure_runtime_log_dir "$rollback_slot"
 
   docker image inspect "$(image_name "$rollback_release")" >/dev/null 2>&1 || \
     die "找不到上一版本镜像：$(image_name "$rollback_release")；请勿在回滚前清理旧镜像。"

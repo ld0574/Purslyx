@@ -347,9 +347,16 @@ def _job_title_matches(expected: str, actual: str, job_fields: dict[str, Any]) -
     actual_tokens = _tokens(actual_value)
     if expected_tokens and actual_tokens and expected_tokens & actual_tokens:
         return True
+    responsibilities = job_fields.get("responsibilities") or []
+    if isinstance(responsibilities, str):
+        responsibilities = [responsibilities]
     responsibility_text = " ".join(
-        str(item.get("text", item))
-        for item in (job_fields.get("responsibilities") or [])
+        item
+        if isinstance(item, str)
+        else str(item.get("text", ""))
+        if isinstance(item, dict)
+        else str(item)
+        for item in responsibilities
     )
     return bool(expected_tokens & _tokens(responsibility_text))
 

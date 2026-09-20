@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +14,7 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -21,6 +23,9 @@ from .api import router as api_router
 from .config import settings
 from .db import engine, init_db
 from .errors import DomainError
+from .logging_config import configure_logging
+
+configure_logging("api")
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 WEB_DIST_ROOT = WEB_ROOT / "dist"
@@ -40,7 +45,7 @@ def utcnow() -> datetime:
 def _meta(request: Request) -> dict[str, str]:
     """为错误响应生成轻量元信息，方便定位一次请求。"""
 
-    request_id = request.headers.get("X-Request-ID", "").strip()
+    request_id = getattr(request.state, "request_id", "") or request.headers.get("X-Request-ID", "").strip()
     if not request_id or len(request_id) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", request_id):
         request_id = secrets.token_hex(12)
     request.state.request_id = request_id
@@ -96,6 +101,41 @@ app = FastAPI(
     description="Purslyx 求职、招聘与授权管理服务。",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def request_logging_middleware(request: Request, call_next: Any) -> Response:
+    """记录请求关联 ID、状态和耗时，但不记录 Cookie、Authorization 或请求正文。"""
+
+    request_id = request.headers.get("X-Request-ID", "").strip()
+    if not request_id or len(request_id) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", request_id):
+        request_id = secrets.token_hex(12)
+    request.state.request_id = request_id
+    started = time.perf_counter()
+    request_logger = logging.getLogger("purslyx.request")
+    try:
+        response = await call_next(request)
+    except Exception:
+        request_logger.exception(
+            "request failed request_id=%s method=%s path=%s duration_ms=%.1f",
+            request_id,
+            request.method,
+            request.url.path,
+            (time.perf_counter() - started) * 1000,
+        )
+        raise
+    duration_ms = (time.perf_counter() - started) * 1000
+    response.headers.setdefault("X-Request-ID", request_id)
+    request_logger.log(
+        logging.ERROR if response.status_code >= 500 else logging.WARNING if response.status_code >= 400 else logging.INFO,
+        "request completed request_id=%s method=%s path=%s status=%s duration_ms=%.1f",
+        request_id,
+        request.method,
+        request.url.path,
+        response.status_code,
+        duration_ms,
+    )
+    return response
 app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(set(settings.origins + settings.browser_origins)),

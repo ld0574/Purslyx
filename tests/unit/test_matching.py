@@ -88,6 +88,14 @@ def test_near_synonym_job_title_uses_direction_and_responsibilities() -> None:
     assert conditions[0]["status"] == "matched"
 
 
+def test_job_title_matching_accepts_string_responsibilities() -> None:
+    conditions = compare_conditions(
+        {"job_title": {"status": "specified", "value": "数据科学", "strength": "prefer"}},
+        {"title": "商业分析师", "responsibilities": ["负责用户增长数据复盘"]},
+    )
+    assert conditions[0]["status"] == "matched"
+
+
 def test_ac18_salary_boundary_matrix() -> None:
     expected = _salary(20_000, 30_000)
     assert compare_salary(expected, _salary(15_000, 25_000))["status"] == "matched"

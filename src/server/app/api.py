@@ -157,7 +157,7 @@ _CAPTCHA_TTL_SECONDS = 5 * 60
 
 
 def _meta(request: Request) -> dict[str, str]:
-    request_id = request.headers.get("X-Request-ID", "").strip()
+    request_id = getattr(request.state, "request_id", "") or request.headers.get("X-Request-ID", "").strip()
     if not request_id or len(request_id) > 64 or not re.fullmatch(r"[A-Za-z0-9._:-]+", request_id):
         request_id = str(uuid.uuid4())
     request.state.request_id = request_id

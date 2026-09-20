@@ -20,17 +20,14 @@ SRC_DIR = PROJECT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from server.app.logging_config import configure_logging
+
 
 LOGGER = logging.getLogger("purslyx.worker")
 
 
 def _configure_logging() -> None:
-    level_name = os.getenv("PURSLYX_LOG_LEVEL", "INFO").strip().upper()
-    level = getattr(logging, level_name, logging.INFO)
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
+    configure_logging("worker")
 
 
 def _args() -> argparse.Namespace:
