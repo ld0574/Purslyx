@@ -23,7 +23,7 @@ usage() {
 用法：
   sudo scripts/release.sh deploy      构建并发布下一版本
   sudo scripts/release.sh rollback    切回上一个已发布版本
-  scripts/release.sh cleanup          手动清理未使用的 Docker Buildx 构建缓存
+  scripts/release.sh clean            手动清理未使用的 Docker Buildx 构建缓存
   scripts/release.sh status           查看当前槽位、版本和容器状态
 
 发布过程：
@@ -156,7 +156,7 @@ require_docker() {
   docker buildx version >/dev/null 2>&1 || die '当前 Docker 未提供 buildx。'
 }
 
-cleanup_build_cache() {
+clean_build_cache() {
   require_docker
   log '清理未使用的 Docker Buildx 构建缓存'
   docker buildx prune -a -f
@@ -498,7 +498,7 @@ main() {
   case "${1:-}" in
     deploy) deploy ;;
     rollback) rollback ;;
-    cleanup) cleanup_build_cache ;;
+    clean) clean_build_cache ;;
     status) status ;;
     -h|--help|help) usage ;;
     *) usage; exit 2 ;;
