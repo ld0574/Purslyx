@@ -106,9 +106,14 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
         assert f'id="{selector}"' in materials
     assert 'id="pool-form"' in pool
-    assert "岗位先快速入库" in pool
-    assert "开始匹配（消耗 1 次）" in pool
+    assert "系统会自动使用全部有效岗位期望" in pool
+    assert "批量匹配" in pool
+    assert 'id="pool-search"' in pool
+    assert "下一页" in pool
+    assert "missing_conditions" in pool
     assert 'type: "document_version", job_document_version_id: jobVersion.id' in pool
+    assert "/api/v1/job-pool/items/batch-analyze" in pool
+    assert "preference_version_id" not in pool
     assert 'redirect: "manual"' in pool
     assert 'id="answer-form"' in interview
     assert 'data-action="retry-task"' in tasks

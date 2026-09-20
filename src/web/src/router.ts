@@ -15,7 +15,6 @@ const routes: RouteRecordRaw[] = [
   { path: "/app/seeker/resume", name: "seeker-materials", component: () => import("@/views/MaterialsView.vue"), meta: { role: "seeker", title: "简历与岗位期望" } },
   { path: "/app/recruiter/materials", name: "recruiter-materials", component: () => import("@/views/MaterialsView.vue"), meta: { role: "recruiter", title: "候选人资料" } },
   { path: "/app/seeker/pool", name: "pool", component: () => import("@/views/PoolView.vue"), meta: { role: "seeker", title: "匹配池" } },
-  { path: "/job-pool/items", redirect: (to) => ({ path: "/app/seeker/pool", query: to.query }) },
   { path: "/app/:role(seeker|recruiter)/report", name: "report", component: () => import("@/views/ReportView.vue"), meta: { roleRoute: true, title: "匹配报告" } },
   { path: "/app/seeker/rewrite", name: "rewrite", component: () => import("@/views/RewriteView.vue"), meta: { role: "seeker", title: "事实与改写" } },
   { path: "/app/seeker/variants", name: "variants", component: () => import("@/views/VariantsView.vue"), meta: { role: "seeker", title: "岗位版简历" } },

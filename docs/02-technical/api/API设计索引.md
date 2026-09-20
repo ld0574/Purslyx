@@ -59,8 +59,9 @@ flowchart LR
 | 简历 | POST | `/resumes`、`/resumes/{id}/versions`、`/exports` | 求职 Web | 岗位版、版本或导出任务 |
 | 简历 | GET | `/resumes`、`/resumes/{id}`、`/exports/{id}/file` | 求职 Web | 岗位版列表、详情或 PDF |
 | 匹配池 | POST | `/browser/job-drafts` | 浏览器会话 | 抓取岗位并直接写入匹配池 |
-| 匹配池 | GET | `/browser/job-drafts/{id}` | 浏览器会话 | 草稿状态与 Web 确认入口 |
-| 匹配池 | POST | `/job-pool/items`、`/job-pool/items/{id}/analyze` | 求职 Web | 岗位入池或分析任务 |
+| 匹配池 | GET | `/browser/job-drafts/{id}` | 浏览器会话 | 草稿状态 |
+| 匹配池 | POST | `/job-pool/items` | 求职 Web | 手动岗位入池 |
+| 匹配池 | POST | `/job-pool/items/batch-analyze`、`/job-pool/items/{id}/analyze` | 求职 Web | 批量或单岗位匹配任务 |
 | 匹配池 | GET | `/job-pool/items`、`/job-pool/items/{id}` | 求职 Web | 岗位列表或详情 |
 | 匹配池 | POST | `/job-pool/items/{id}/go-to-apply` | 求职 Web | 303 跳转 |
 | 匹配池 | POST | `/analyses` | 招聘 Web | 单人分析任务 |

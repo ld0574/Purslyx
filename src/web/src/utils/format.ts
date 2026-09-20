@@ -72,6 +72,14 @@ export function formatDate(value?: string): string {
   }).format(date);
 }
 
+export function formatDateTime(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).format(date);
+}
+
 export function errorMessage(value: unknown, fallback = "操作失败"): string {
   return value instanceof Error ? value.message : fallback;
 }

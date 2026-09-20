@@ -2867,15 +2867,19 @@ class BrowserDraftRequest(BaseModel):
 class PoolCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source: dict[str, Any]
-    preference_version_id: str | None = None
-    analysis: dict[str, Any] = Field(default_factory=dict)
 
 
 class AnalyzeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     resume_document_version_id: str
-    preference_version_id: str | None = None
     base_revision: int = Field(ge=1)
+    confirm_usage: bool
+
+
+class BatchAnalyzeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    pool_item_ids: list[str] = Field(min_length=1, max_length=50)
+    resume_document_version_id: str
     confirm_usage: bool
 
 
@@ -2990,7 +2994,6 @@ def _browser_draft_view(draft: BrowserJobDraft) -> dict[str, Any]:
         "expires_at": draft.expires_at.isoformat(),
         "created_at": draft.created_at.isoformat(),
         "updated_at": draft.updated_at.isoformat(),
-        "confirm_path": f"/job-pool/items?browser_draft_id={draft.public_id}",
     }
 
 
@@ -3012,6 +3015,7 @@ def _ensure_browser_pool_item(db: Session, account: Account, draft: BrowserJobDr
         return existing
 
     fields, confirmed_text = _browser_draft_confirmation(draft, {})
+    fields["missing_field_codes"] = draft.missing_field_codes or []
     content = {
         "schema_version": "document-content-v1",
         "sections": [],
@@ -3068,7 +3072,7 @@ def _ensure_browser_pool_item(db: Session, account: Account, draft: BrowserJobDr
         job_document_id=document.id,
         job_document_version_id=job_version.id,
         analysis_status="awaiting_requirements",
-        blocking_reasons=["待选择简历和岗位期望"],
+        blocking_reasons=["待选择简历"],
         idempotency_key=source_key,
         request_hash=request_hash,
     )
@@ -3162,49 +3166,6 @@ def get_browser_draft(request: Request, account: BrowserAccount, draft_id: str =
     return _ok(request, _browser_draft_view(draft))
 
 
-@router.get("/browser/job-drafts/{draft_id}/web", tags=["browser"])
-def get_browser_draft_for_web(
-    request: Request,
-    account: WebAccount,
-    draft_id: str = PathParam(min_length=1, max_length=36),
-    db: Session = Depends(get_db),
-) -> JSONResponse:
-    """让已登录 Web 工作台读取自己的浏览器草稿，不扩大浏览器 Bearer 权限。"""
-
-    require_seeker(account)
-    draft = db.scalar(
-        select(BrowserJobDraft).where(
-            BrowserJobDraft.public_id == draft_id,
-            BrowserJobDraft.account_id == account.id,
-        )
-    )
-    if draft is None:
-        raise NotFoundError("岗位草稿不存在")
-    if draft.expires_at <= now_utc() or draft.status == "expired":
-        draft.status = "expired"
-        db.commit()
-        raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
-    if draft.status == "confirmed":
-        # 新版脚本上传时已经完成入池；允许旧版 confirm_path 继续打开同一岗位，
-        # 但不再重复创建 JD、岗位或分析任务。
-        pool = db.scalar(
-            select(JobPoolItem).where(
-                JobPoolItem.account_id == account.id,
-                JobPoolItem.source_browser_draft_id == draft.id,
-                JobPoolItem.deleted_at.is_(None),
-            )
-        )
-        if pool is not None:
-            value = _browser_capture_view(draft, pool)
-            value["job_fields"] = _job_fields_from_draft(draft)
-            return _ok(request, value)
-    if draft.status != "awaiting_confirmation":
-        raise DomainError("JOB_DRAFT_NOT_CONFIRMABLE", "岗位草稿已经处理，不能重复确认", 409)
-    value = _browser_draft_view(draft)
-    value["job_fields"] = _job_fields_from_draft(draft)
-    return _ok(request, value)
-
-
 def _preference_version(
     db: Session,
     account_id: int,
@@ -3227,10 +3188,77 @@ def _preference_version(
     return row
 
 
+_POOL_MISSING_CONDITION_LABELS = {
+    "job_title": "岗位名称",
+    "job_location": "工作地点",
+    "location": "工作地点",
+    "location_text": "工作地点",
+    "work_mode": "办公方式",
+    "job_salary": "薪资",
+    "salary": "薪资",
+    "salary_text": "薪资",
+    "job_description": "岗位正文",
+}
+
+
+def _pool_missing_conditions(item: JobPoolItem) -> list[str]:
+    fields = item.job_fields or {}
+    raw_codes = fields.get("missing_field_codes")
+    codes = [str(code) for code in raw_codes if code] if isinstance(raw_codes, list) else []
+    if not codes:
+        if not fields.get("location_text") and not fields.get("locations"):
+            codes.append("job_location")
+        if not fields.get("work_mode"):
+            codes.append("work_mode")
+        salary = fields.get("salary")
+        if not fields.get("salary_text") and not (isinstance(salary, dict) and salary.get("status") == "specified"):
+            codes.append("job_salary")
+    labels: list[str] = []
+    for code in codes:
+        label = _POOL_MISSING_CONDITION_LABELS.get(code, code)
+        if label not in labels:
+            labels.append(label)
+    return labels
+
+
+def _pool_blocking_reasons(item: JobPoolItem) -> list[str]:
+    reasons = [str(reason) for reason in (item.blocking_reasons or []) if reason]
+    if item.resume_version_id is not None:
+        reasons = [reason for reason in reasons if "待选择简历" not in reason and "岗位期望" not in reason]
+    if item.analysis_status == "awaiting_requirements" and item.resume_version_id is None:
+        reasons = [reason for reason in reasons if "岗位期望" not in reason and "简历" not in reason]
+        reasons.insert(0, "待选择简历")
+    return reasons
+
+
+def _pool_analysis_summary(rows: list[Analysis]) -> dict[str, int]:
+    return {
+        "total": len(rows),
+        "available": sum(row.status in {"available", "succeeded"} for row in rows),
+        "active": sum(row.status in {"queued", "running"} for row in rows),
+        "failed": sum(row.status == "failed" for row in rows),
+    }
+
+
 def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[str, Any]:
     job_version = db.get(DocumentVersion, item.job_document_version_id) if item.job_document_version_id else None
     resume_version = db.get(DocumentVersion, item.resume_version_id) if item.resume_version_id else None
-    analysis = db.scalar(select(Analysis).where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None)).order_by(Analysis.created_at.desc()))
+    preference = db.get(Preference, item.preference_id) if item.preference_id else None
+    analyses = list(
+        db.scalars(
+            select(Analysis)
+            .where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))
+            .order_by(Analysis.created_at.desc())
+        ).all()
+    )
+    analysis = analyses[0] if analyses else None
+    preference_version = db.get(PreferenceVersion, analysis.preference_version_id) if analysis and analysis.preference_version_id else None
+    browser_draft = db.get(BrowserJobDraft, item.source_browser_draft_id) if item.source_browser_draft_id else None
+    fields = item.job_fields or {}
+    salary_value = fields.get("salary_text")
+    if not salary_value and isinstance(fields.get("salary"), dict) and fields["salary"].get("status") == "specified":
+        salary_value = fields["salary"].get("display") or fields["salary"].get("text")
+    location_value = fields.get("location_text") or ("、".join(fields.get("locations") or []) if fields.get("locations") else None)
     data: dict[str, Any] = {
         "id": item.public_id,
         "source_type": item.source_type,
@@ -3238,13 +3266,31 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         "job_title": item.job_title,
         "company_name": item.company_name,
         "analysis_status": item.analysis_status,
-        "blocking_reasons": item.blocking_reasons or [],
+        "blocking_reasons": _pool_blocking_reasons(item),
+        "missing_conditions": _pool_missing_conditions(item),
+        "match_ready": bool(item.resume_version_id) and item.analysis_status not in {"awaiting_requirements", "deleted"},
+        "job_conditions": {
+            "location": location_value,
+            "work_mode": fields.get("work_mode"),
+            "salary": salary_value,
+        },
         "job_document_version": {"id": job_version.public_id, "version_no": job_version.version_no} if job_version else None,
         "resume_version_id": resume_version.public_id if resume_version else None,
-        "preference_id": db.get(Preference, item.preference_id).public_id if item.preference_id and db.get(Preference, item.preference_id) else None,
-        "latest_analysis": {"id": analysis.public_id, "status": analysis.status, "ability_score": analysis.ability_score} if analysis else None,
+        "preference_id": preference.public_id if preference else None,
+        "latest_analysis": (
+            {
+                "id": analysis.public_id,
+                "status": analysis.status,
+                "ability_score": analysis.ability_score,
+                "preference_version_id": preference_version.public_id if preference_version else None,
+            }
+            if analysis
+            else None
+        ),
+        "analysis_summary": _pool_analysis_summary(analyses),
         "apply_action": _apply_action(item) if item.source_url else {"available": False},
         "revision": item.revision,
+        "captured_at": browser_draft.captured_at.isoformat() if browser_draft else item.created_at.isoformat(),
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
@@ -3252,8 +3298,15 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         data["source_url"] = item.source_url
         data["job_content"] = job_version.content if job_version else item.job_fields
         data["analysis_history"] = [
-            {"id": row.public_id, "status": row.status, "ability_score": row.ability_score, "completed_at": row.completed_at.isoformat() if row.completed_at else None}
-            for row in db.scalars(select(Analysis).where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None)).order_by(Analysis.created_at.desc())).all()
+            {
+                "id": row.public_id,
+                "status": row.status,
+                "ability_score": row.ability_score,
+                "resume_version_id": db.get(DocumentVersion, row.resume_version_id).public_id if db.get(DocumentVersion, row.resume_version_id) else None,
+                "preference_version_id": db.get(PreferenceVersion, row.preference_version_id).public_id if row.preference_version_id and db.get(PreferenceVersion, row.preference_version_id) else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+            for row in analyses
         ]
     return data
 
@@ -3482,6 +3535,114 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
     return analysis, task, False
 
 
+def _active_preference_versions(db: Session, account_id: int) -> list[PreferenceVersion]:
+    preferences = db.scalars(
+        select(Preference)
+        .where(
+            Preference.account_id == account_id,
+            Preference.deleted_at.is_(None),
+            Preference.status == "active",
+            Preference.subject_document_id.is_(None),
+        )
+        .order_by(Preference.updated_at.desc(), Preference.id.desc())
+    ).all()
+    return [version for preference in preferences if (version := _latest_preference_version(db, preference.id)) is not None]
+
+
+def _seeker_resume_version(db: Session, account_id: int, public_id: str) -> DocumentVersion:
+    version = _version(db, account_id, public_id)
+    document = db.get(Document, version.document_id)
+    latest = _latest_version(db, version.document_id, account_id)
+    if (
+        document is None
+        or document.document_type != "resume"
+        or latest is None
+        or latest.id != version.id
+    ):
+        raise DomainError("ANALYSIS_INPUT_INVALID", "请选择当前已确认的简历版本", 422)
+    return version
+
+
+def _batch_analyze_pool_items(
+    db: Session,
+    account: Account,
+    *,
+    pool_item_ids: list[str],
+    resume_document_version_id: str,
+    confirm_usage: bool,
+    request_key: str,
+) -> dict[str, Any]:
+    if not confirm_usage:
+        raise DomainError("USAGE_CONFIRMATION_REQUIRED", "开始匹配前需要确认按岗位期望数量消耗分析次数", 422)
+    if len(pool_item_ids) != len(set(pool_item_ids)):
+        raise DomainError("POOL_BATCH_INVALID", "批量岗位不能重复", 422)
+
+    resume_version = _seeker_resume_version(db, account.id, resume_document_version_id)
+    preferences = _active_preference_versions(db, account.id)
+    if not preferences:
+        raise DomainError("PREFERENCE_REQUIRED", "请先创建至少一条有效岗位期望", 422, "create_preference")
+
+    pools = [_pool(db, account.id, pool_item_id) for pool_item_id in pool_item_ids]
+    tasks: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    for pool in pools:
+        if pool.analysis_status in {"queued", "running"}:
+            blocked.append({"pool_item_id": pool.public_id, "reason": "岗位已有匹配任务执行中", "code": "ANALYSIS_IN_PROGRESS"})
+            continue
+        job_version = db.get(DocumentVersion, pool.job_document_version_id) if pool.job_document_version_id else None
+        if job_version is None:
+            blocked.append({"pool_item_id": pool.public_id, "reason": "岗位版本不存在", "code": "POOL_SOURCE_INVALID"})
+            continue
+        for preference in preferences:
+            task_key = f"{request_key}:{pool.public_id}:{preference.public_id}"
+            try:
+                analysis, task, existed = _start_analysis(
+                    db,
+                    account,
+                    context_type="seeker_pool",
+                    resume_version=resume_version,
+                    job_version=job_version,
+                    preference=preference,
+                    pool=pool,
+                    key=task_key,
+                )
+            except DomainError as exc:
+                # create_task 会先 flush 任务，再预留次数；次数不足时必须回滚这个
+                # 尚未关联分析的占位任务，否则后续同一批次成功提交时会留下孤儿任务。
+                db.rollback()
+                if exc.code not in {"USAGE_INSUFFICIENT", "TASK_QUEUE_LIMIT_REACHED", "BUDGET_LIMIT_REACHED", "BUDGET_CONCURRENCY_LIMIT"}:
+                    raise
+                blocked.append(
+                    {
+                        "pool_item_id": pool.public_id,
+                        "preference_id": preference.public_id,
+                        "reason": exc.message,
+                        "code": exc.code,
+                    }
+                )
+                continue
+            tasks.append(
+                {
+                    "pool_item_id": pool.public_id,
+                    "preference_id": preference.public_id,
+                    "analysis_id": analysis.public_id,
+                    "reused": existed,
+                    "task": task_view(task),
+                }
+            )
+
+    return {
+        "requested_items": len(pools),
+        "preference_count": len(preferences),
+        "analysis_count": len(pools) * len(preferences),
+        "started_count": len(tasks),
+        "new_count": sum(not item["reused"] for item in tasks),
+        "tasks": tasks,
+        "blocked": blocked,
+        "job_pool_items": [_pool_view(db, pool) for pool in pools],
+    }
+
+
 @router.post("/job-pool/items", tags=["job-pool"])
 def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
     _write_guard(request, account)
@@ -3519,78 +3680,35 @@ def create_pool_item(payload: PoolCreateRequest, request: Request, account: WebA
             return _ok(request, existing_view)
     source = payload.source
     source_type = source.get("type")
-    preference = _preference_version(db, account.id, payload.preference_version_id)
-    job_version: DocumentVersion | None = None
-    browser_draft: BrowserJobDraft | None = None
-    if source_type == "browser_draft":
-        draft_id = str(source.get("browser_draft_id", ""))
-        browser_draft = db.scalar(
-            select(BrowserJobDraft).where(
-                BrowserJobDraft.public_id == draft_id,
-                BrowserJobDraft.account_id == account.id,
-                BrowserJobDraft.status.in_(["awaiting_confirmation", "confirmed"]),
-            )
-        )
-        if browser_draft is None:
-            raise NotFoundError("浏览器岗位草稿不存在或已确认")
-        if browser_draft.expires_at <= now_utc():
-            browser_draft.status = "expired"
-            db.commit()
-            raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
-        if browser_draft.status == "confirmed":
-            existing_pool = db.scalar(
-                select(JobPoolItem).where(
-                    JobPoolItem.account_id == account.id,
-                    JobPoolItem.source_browser_draft_id == browser_draft.id,
-                    JobPoolItem.deleted_at.is_(None),
-                )
-            )
-            if existing_pool is not None:
-                return _ok(request, _pool_view(db, existing_pool))
-        fields, confirmed_text = _browser_draft_confirmation(browser_draft, source)
-        document = Document(account_id=account.id, document_type="job_description", subject_type="job_description", title=fields.get("title") or "浏览器岗位", source_type="text", status="confirmed", raw_text=confirmed_text, draft_content={"schema_version": "document-content-v1", "sections": [], "job_fields": fields})
-        db.add(document)
-        db.flush()
-        db.add(DocumentDraft(account_id=account.id, document_id=document.id, content=document.draft_content, status="confirmed", confirmed_at=now_utc(), expires_at=now_utc() + timedelta(days=7)))
-        db.flush()
-        job_version = DocumentVersion(account_id=account.id, document_id=document.id, version_no=1, content=document.draft_content)
-        db.add(job_version)
-        db.flush()
-        browser_draft.status = "confirmed"
-    elif source_type == "document_version":
-        job_version = _version(db, account.id, str(source.get("job_document_version_id", "")))
-        document = db.get(Document, job_version.document_id)
-        if document is None or not _document_type_is_job(document.document_type):
-            raise DomainError("POOL_SOURCE_INVALID", "岗位池来源必须是岗位版本", 422)
-        fields = job_version.content.get("job_fields") or {}
-    else:
-        raise DomainError("POOL_SOURCE_INVALID", "只支持 browser_draft 或 document_version", 422)
-    pool = JobPoolItem(account_id=account.id, source_type="browser_capture" if browser_draft else "manual", platform=browser_draft.platform if browser_draft else None, source_url=browser_draft.source_url if browser_draft else None, source_url_hash=browser_draft.source_url_hash if browser_draft else None, source_browser_draft_id=browser_draft.id if browser_draft else None, job_title=fields.get("title") or "未命名岗位", company_name=fields.get("company_name"), job_fields=fields, job_document_id=job_version.document_id, job_document_version_id=job_version.id, preference_id=preference.preference_id if preference else None, analysis_status="awaiting_requirements", blocking_reasons=[], idempotency_key=key, request_hash=request_digest)
+    if source_type != "document_version":
+        raise DomainError("POOL_SOURCE_INVALID", "岗位池只接受已确认的岗位版本", 422)
+    job_version = _version(db, account.id, str(source.get("job_document_version_id", "")))
+    document = db.get(Document, job_version.document_id)
+    if document is None or not _document_type_is_job(document.document_type):
+        raise DomainError("POOL_SOURCE_INVALID", "岗位池来源必须是岗位版本", 422)
+    fields = dict(job_version.content.get("job_fields") or {})
+    pool = JobPoolItem(account_id=account.id, source_type="manual", platform=None, source_url=None, source_url_hash=None, source_browser_draft_id=None, job_title=fields.get("title") or "未命名岗位", company_name=fields.get("company_name"), job_fields=fields, job_document_id=job_version.document_id, job_document_version_id=job_version.id, preference_id=None, analysis_status="awaiting_requirements", blocking_reasons=["待选择简历"], idempotency_key=key, request_hash=request_digest)
     db.add(pool)
     db.flush()
-    start_now = bool(payload.analysis.get("start_now"))
-    resume_version = _version(db, account.id, str(payload.analysis.get("resume_document_version_id", ""))) if start_now else None
-    if start_now:
-        if preference is None or resume_version is None or not payload.analysis.get("confirm_usage"):
-            pool.blocking_reasons = ["需要已确认简历版本、岗位期望版本和使用次数确认"]
-            db.commit()
-            return _ok(request, _pool_view(db, pool), code=201)
-        # 先保留岗位，再尝试预留分析次数；次数不足时岗位仍应可见并进入待满足条件，
-        # 不能因为一次计次失败把用户刚确认的岗位一并回滚。
-        db.commit()
-        try:
-            analysis, task, _ = _start_analysis(db, account, context_type="seeker_pool", resume_version=resume_version, job_version=job_version, preference=preference, pool=pool, key=key)
-        except DomainError as exc:
-            if exc.code not in {"USAGE_INSUFFICIENT", "TASK_QUEUE_LIMIT_REACHED", "BUDGET_LIMIT_REACHED", "BUDGET_CONCURRENCY_LIMIT"}:
-                raise
-            pool = _pool(db, account.id, pool.public_id)
-            pool.analysis_status = "awaiting_requirements"
-            pool.blocking_reasons = [exc.message]
-            db.commit()
-            return _ok(request, _pool_view(db, pool), code=201)
-        return _ok(request, {"job_pool_item": _pool_view(db, pool), "analysis": _analysis_view(db, analysis), "task": task_view(task)}, code=202)
     db.commit()
     return _ok(request, _pool_view(db, pool), code=201)
+
+
+@router.post("/job-pool/items/batch-analyze", tags=["job-pool"])
+def batch_analyze_pool_items(payload: BatchAnalyzeRequest, request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+    _write_guard(request, account)
+    require_seeker(account)
+    key = _idempotency_key(request)
+    assert key is not None
+    result = _batch_analyze_pool_items(
+        db,
+        account,
+        pool_item_ids=payload.pool_item_ids,
+        resume_document_version_id=payload.resume_document_version_id,
+        confirm_usage=payload.confirm_usage,
+        request_key=key,
+    )
+    return _ok(request, result, code=202)
 
 
 @router.get("/job-pool/items", tags=["job-pool"])
@@ -3599,6 +3717,7 @@ def list_pool_items(
     account: WebAccount,
     analysis_status: str | None = Query(default=None, max_length=32),
     platform: str | None = Query(default=None, max_length=32),
+    search: str | None = Query(default=None, max_length=120),
     created_from: datetime | None = Query(default=None),
     created_to: datetime | None = Query(default=None),
     cursor: str | None = Query(default=None, max_length=512),
@@ -3609,15 +3728,26 @@ def list_pool_items(
     statement = select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))
     if analysis_status:
         statement = statement.where(JobPoolItem.analysis_status == analysis_status)
-    if platform:
+    if platform == "manual":
+        statement = statement.where(JobPoolItem.source_type == "manual")
+    elif platform:
         statement = statement.where(JobPoolItem.platform == platform)
+    if search and search.strip():
+        search_pattern = f"%{search.strip()}%"
+        statement = statement.where(
+            or_(
+                JobPoolItem.job_title.ilike(search_pattern),
+                JobPoolItem.company_name.ilike(search_pattern),
+                JobPoolItem.source_url.ilike(search_pattern),
+            )
+        )
     if created_from:
         statement = statement.where(JobPoolItem.created_at >= created_from)
     if created_to:
         statement = statement.where(JobPoolItem.created_at < created_to)
     if created_from and created_to and created_from >= created_to:
         raise DomainError("POOL_RANGE_INVALID", "岗位时间范围无效", 422)
-    rows, page = page_rows(db, statement, JobPoolItem, cursor=cursor, limit=limit, timestamp_field="updated_at")
+    rows, page = page_rows(db, statement, JobPoolItem, cursor=cursor, limit=limit, timestamp_field="created_at")
     return _ok(request, {"items": [_pool_view(db, row) for row in rows], "page": page})
 
 
@@ -3632,18 +3762,18 @@ def analyze_pool_item(payload: AnalyzeRequest, request: Request, account: WebAcc
     _write_guard(request, account)
     require_seeker(account)
     key = _idempotency_key(request)
-    if not payload.confirm_usage:
-        raise DomainError("USAGE_CONFIRMATION_REQUIRED", "开始分析前需要确认消耗 1 次分析", 422)
     pool = _pool(db, account.id, item_id)
     if payload.base_revision != pool.revision:
         raise DomainError("ANALYSIS_INPUT_STALE", "岗位信息已变化，请刷新后重试", 409, "refresh")
-    resume_version = _version(db, account.id, payload.resume_document_version_id)
-    job_version = db.get(DocumentVersion, pool.job_document_version_id) if pool.job_document_version_id else None
-    if job_version is None:
-        raise NotFoundError("岗位版本不存在")
-    preference = _preference_version(db, account.id, payload.preference_version_id)
-    analysis, task, _ = _start_analysis(db, account, context_type="seeker_pool", resume_version=resume_version, job_version=job_version, preference=preference, pool=pool, key=key)
-    return _ok(request, {"job_pool_item": _pool_view(db, pool), "analysis": _analysis_view(db, analysis), "task": task_view(task)}, code=202)
+    result = _batch_analyze_pool_items(
+        db,
+        account,
+        pool_item_ids=[pool.public_id],
+        resume_document_version_id=payload.resume_document_version_id,
+        confirm_usage=payload.confirm_usage,
+        request_key=key,
+    )
+    return _ok(request, result, code=202)
 
 
 @router.post("/analyses", tags=["analyses"])

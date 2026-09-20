@@ -52,7 +52,7 @@
 
 ### GET `/api/v1/browser/job-drafts/{id}`
 
-需要创建该草稿的 Browser Bearer。返回草稿当前状态和 Purslyx Web 确认入口的产品路径；不返回简历、报告、用量或其他草稿。过期返回 410 `JOB_DRAFT_EXPIRED`。
+需要创建该草稿的 Browser Bearer。返回草稿当前状态；岗位上传时已经同步写入匹配池，不再提供 Web 确认入口。不返回简历、报告、用量或其他草稿。过期返回 410 `JOB_DRAFT_EXPIRED`。
 
 ## 2. 私有岗位
 
@@ -66,8 +66,11 @@
   "job_title": "前端工程师",
   "company_name": "示例科技",
   "analysis_status": "awaiting_requirements",
+  "missing_conditions": ["办公方式", "薪资"],
+  "job_conditions": {"location": "杭州", "work_mode": null, "salary": "20-30K"},
+  "analysis_summary": {"total": 0, "available": 0, "active": 0, "failed": 0},
   "job_document_version": {"id": "...", "version_no": 1},
-  "preference_version": null,
+  "preference_id": null,
   "latest_analysis": null,
   "apply_action": {
     "available": true,
@@ -75,6 +78,7 @@
     "expires_at": "2026-09-14T08:40:00Z"
   },
   "revision": 1,
+  "captured_at": "2026-09-14T08:30:00Z",
   "created_at": "2026-09-14T08:30:00Z",
   "updated_at": "2026-09-14T08:30:00Z"
 }
@@ -84,45 +88,40 @@
 
 ### POST `/api/v1/job-pool/items`
 
-仅求职 Web，会话已验证，需 CSRF 和幂等键。浏览器草稿入池请求：
-
-```json
-{
-  "source": {
-    "type": "browser_draft",
-    "browser_draft_id": "c9082888-2d2c-43d4-bd15-13cc560d09a8"
-  },
-  "preference_version_id": "823e0e45-9536-441c-8b4b-a3834d8aee41",
-  "analysis": {
-    "start_now": true,
-    "resume_document_version_id": "1f523350-2faf-4f23-bf42-b4462f39fd59",
-    "confirm_usage": true
-  }
-}
-```
-
-手动 JD 使用：
+仅求职 Web，会话已验证，需 CSRF 和幂等键。岗位入池只接受已确认的岗位版本：
 
 ```json
 {
   "source": {
     "type": "document_version",
     "job_document_version_id": "ee90c239-aa8a-45d5-9e4a-c890f705667d"
-  },
-  "preference_version_id": "823e0e45-9536-441c-8b4b-a3834d8aee41",
-  "analysis": {"start_now": false}
+  }
 }
 ```
 
-只入池返回 201 `JobPoolItem`。浏览器脚本已经在上传接口完成入池；该接口保留给手动岗位和旧草稿兼容。分析必须另行调用匹配接口；缺少简历、期望或次数时仍保存岗位，返回 201，`analysis_status=awaiting_requirements` 和 `blocking_reasons`，不会暗中调用模型。
+只入池返回 201 `JobPoolItem`。浏览器脚本已经在上传接口完成入池；该接口用于手动岗位。分析必须另行调用匹配接口；岗位始终先保存，不绑定简历或岗位期望，也不会暗中调用模型。
 
 ### GET `/api/v1/job-pool/items`
 
-查询 `analysis_status`、`platform`、`created_from`、`created_to`、`cursor`、`limit`。默认按更新时间倒序返回摘要。
+查询 `search`、`analysis_status`、`platform`、`created_from`、`created_to`、`cursor`、`limit`。`search` 会匹配岗位名称、公司和来源链接；默认按入池时间倒序返回紧凑摘要，响应包含 `captured_at`、岗位条件和具体 `missing_conditions`。
 
 ### GET `/api/v1/job-pool/items/{id}`
 
 返回完整 `JobPoolItem`、确认 JD、所用期望、历史分析列表和最新任务。只有当前保存的原链接仍通过白名单校验时才返回可用 `apply_action`；不直接返回可由客户端替换的目标链接。
+
+### POST `/api/v1/job-pool/items/batch-analyze`
+
+需要 CSRF、幂等键和求职 Web 会话。一次请求可以提交多个岗位，但只选择一份当前简历；服务端自动读取当前账号全部 `active` 且不关联候选人资料的岗位期望，并为每个“岗位 × 岗位期望”创建一份分析任务。每份任务消耗 1 次分析。次数或队列不足时允许部分成功，响应在 `blocked` 中逐项说明原因。
+
+```json
+{
+  "pool_item_ids": ["pool-1", "pool-2", "pool-3"],
+  "resume_document_version_id": "1f523350-2faf-4f23-bf42-b4462f39fd59",
+  "confirm_usage": true
+}
+```
+
+响应包含 `requested_items`、`preference_count`、`analysis_count`、`started_count`、`tasks`、`blocked` 和刷新后的 `job_pool_items`。例如 3 个岗位、2 条有效期望会提交 6 次匹配。
 
 ### POST `/api/v1/job-pool/items/{id}/analyze`
 
@@ -131,13 +130,12 @@
 ```json
 {
   "resume_document_version_id": "1f523350-2faf-4f23-bf42-b4462f39fd59",
-  "preference_version_id": "823e0e45-9536-441c-8b4b-a3834d8aee41",
   "base_revision": 1,
   "confirm_usage": true
 }
 ```
 
-成功返回 202 分析任务。主动使用新资料或期望会生成新报告并计一次分析；恢复原失败任务应调用任务重试接口。
+这是批量接口的单岗位快捷入口，仍然自动使用全部有效岗位期望；成功返回 202 和任务集合。主动使用新简历会为每条期望生成新报告并分别计次；恢复原失败任务应调用任务重试接口。
 
 ## 3. 分析报告
 

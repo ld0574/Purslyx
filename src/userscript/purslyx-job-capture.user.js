@@ -227,7 +227,7 @@
   function setDraftLink(path) {
     const link = ensureStatusPanel().querySelector("[data-open-draft]");
     if (!link) return;
-    if (typeof path === "string" && (path.startsWith("/app/seeker/pool?pool_item_id=") || path.startsWith("/job-pool/items?browser_draft_id="))) {
+    if (typeof path === "string" && path.startsWith("/app/seeker/pool?pool_item_id=")) {
       link.href = `${PRODUCT_ORIGIN}${path}`;
       link.style.display = "inline-block";
     } else {
@@ -347,7 +347,7 @@
         body: value
       });
       removePending(value);
-      setDraftLink(draft.pool_path || draft.confirm_path);
+      setDraftLink(draft.pool_path);
       setStatus(`已获取「${draft.job_title || "当前岗位"}」并直接写入匹配池；匹配时再选择简历和岗位期望。`, "success");
     } catch (error) {
       seen.delete(valueFingerprint);

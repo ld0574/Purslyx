@@ -720,17 +720,10 @@ def main() -> None:
         if data_of(draft_repeat_body).get("id") != browser_draft.get("id"):
             raise RuntimeError("浏览器岗位重复获取没有命中去重")
 
-        _, browser_pool_body = call(
-            client,
-            "POST",
-            "/api/v1/job-pool/items",
-            expected=(201,),
-            headers={**web_headers, "Idempotency-Key": f"browser-pool-{suffix}"},
-            json={
-                "source": {"type": "browser_draft", "browser_draft_id": browser_draft["id"]},
-                "preference_version_id": preference_version,
-            },
-        )
+        browser_pool_id = (browser_draft.get("job_pool_item") or {}).get("id")
+        if not browser_pool_id:
+            raise RuntimeError("浏览器岗位上传响应没有返回匹配池岗位引用")
+        _, browser_pool_body = call(client, "GET", f"/api/v1/job-pool/items/{browser_pool_id}", headers=web_headers)
         browser_pool = data_of(browser_pool_body)
         click_token = (browser_pool.get("apply_action") or {}).get("click_token")
         if not click_token:
