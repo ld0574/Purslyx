@@ -36,6 +36,7 @@ const adminNav = computed(() => {
     { label: "用户管理", to: "/app/admin/users", hint: "账号与状态", visible: p.has("admin.users.read") },
     { label: "角色权限", to: "/app/admin/roles", hint: "授权组合", visible: p.has("admin.roles.manage") },
     { label: "次数管理", to: "/app/admin/usage", hint: "发放与流水", visible: p.has("admin.usage.grant") },
+    { label: "抓取岗位", to: "/app/admin/job-pool", hint: "JD 统一管理", visible: p.has("admin.job_pool.read") },
     { label: "日志管理", to: "/app/admin/logs", hint: "审计与导出", visible: [...p].some((value) => value.startsWith("admin.logs.")) },
   ];
   return items.filter((item) => item.visible);

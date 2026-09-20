@@ -204,7 +204,30 @@ csrf_token=<当前 Web CSRF>
 
 服务端从令牌解析一次性 UUID、岗位 ID、当前链接摘要和过期时间，重新检查账号、岗位、平台、HTTPS 与域名白名单。事件提交成功后返回 303 和 `Location`；相同令牌重试不增加计数。JSON 调用可以把 CSRF 放请求头，但仍只返回 303。记录失败、链接变化或不受支持时返回错误且不跳转。
 
-## 5. 删除与错误
+## 5.1 管理端抓取岗位
+
+管理端岗位接口与求职端岗位接口分开，避免跨账号读取时返回去投递令牌或完整分析报告。需要已验证 Web 会话和对应后台权限：
+
+- `admin.job_pool.read`：读取跨账号岗位摘要、来源账号脱敏信息、抓取时间、岗位条件和完整 JD 详情。
+- `admin.job_pool.manage`：读取下架影响并执行下架；该权限不自动授予读取权限。
+
+### GET `/api/v1/admin/job-pool/items`
+
+支持 `search`、`platform`（`boss`、`liepin`、`manual`）、`source_type`（`browser_capture`、`manual`）、`status`／`analysis_status`、`created_from`、`created_to`、`include_deleted`、`cursor`、`limit`。默认只列出当前在池岗位；`status=deleted` 只列已下架岗位，`include_deleted=true` 可查看全部记录。搜索会匹配岗位、公司、来源账号和抓取正文。列表不会返回分析报告正文或短期去投递令牌。
+
+### GET `/api/v1/admin/job-pool/items/{id}`
+
+返回来源账号脱敏摘要、原岗位链接、完整 JD 正文、结构化采集字段、缺失条件、抓取时间、入池时间、匹配历史摘要和当前是否在池。已下架记录仍保留审计所需的原始 JD 内容，但不再返回可用岗位链接。
+
+### GET `/api/v1/admin/job-pool/items/{id}/deletion-impact`
+
+需要 `admin.job_pool.manage`。返回分析、改写、面试、岗位版简历、导出、投递入口和执行中任务的影响数量，以及必须回传的 `impact_version`。
+
+### DELETE `/api/v1/admin/job-pool/items/{id}`
+
+需要 `admin.job_pool.manage`、CSRF 和 `If-Match: "<impact_version>"`。这是受控下架而非物理删除：软删除岗位和关联报告，撤销关联任务并释放未结算次数，清理岗位版导出文件，保留原始采集事实和管理员审计事件。抓取草稿会标记为过期，不能通过重复上传把已下架岗位恢复入池。
+
+## 6. 删除与错误
 
 岗位和分析使用公共删除协议。删除岗位立即关闭报告、原 JD 和去投递入口；已记录点击只保留无原链接的统计事实。
 

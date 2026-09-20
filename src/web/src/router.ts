@@ -26,6 +26,7 @@ const routes: RouteRecordRaw[] = [
   { path: "/app/admin/users", name: "admin-users", component: () => import("@/views/admin/AdminUsersView.vue"), meta: { permission: "admin.users.read", title: "用户管理" } },
   { path: "/app/admin/roles", name: "admin-roles", component: () => import("@/views/admin/AdminRolesView.vue"), meta: { permission: "admin.roles.manage", title: "角色权限" } },
   { path: "/app/admin/usage", name: "admin-usage", component: () => import("@/views/admin/AdminUsageView.vue"), meta: { permission: "admin.usage.grant", title: "次数管理" } },
+  { path: "/app/admin/job-pool", name: "admin-job-pool", component: () => import("@/views/admin/AdminJobPoolView.vue"), meta: { permission: "admin.job_pool.read", title: "抓取岗位管理" } },
   { path: "/app/admin/logs", name: "admin-logs", component: () => import("@/views/admin/AdminLogsView.vue"), meta: { permission: "admin", title: "日志管理" } },
   { path: "/app/forbidden", name: "forbidden", component: () => import("@/views/PermissionDeniedView.vue"), meta: { title: "没有访问权限" } },
   { path: "/:pathMatch(.*)*", component: () => import("@/views/NotFoundView.vue"), meta: { public: true, title: "页面不存在" } },

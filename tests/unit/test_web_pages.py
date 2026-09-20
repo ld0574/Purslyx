@@ -32,6 +32,7 @@ def test_vue_application_has_all_product_routes_and_views() -> None:
         "admin/AdminUsersView.vue",
         "admin/AdminRolesView.vue",
         "admin/AdminUsageView.vue",
+        "admin/AdminJobPoolView.vue",
         "admin/AdminLogsView.vue",
     }
     for name in expected_views:
@@ -49,6 +50,7 @@ def test_vue_application_has_all_product_routes_and_views() -> None:
         "/app/admin/users",
         "/app/admin/roles",
         "/app/admin/usage",
+        "/app/admin/job-pool",
         "/app/admin/logs",
     }
     assert all(route in router for route in expected_routes)
@@ -94,7 +96,7 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     pool = read("src/views/PoolView.vue")
     interview = read("src/views/InterviewView.vue")
     tasks = read("src/views/TasksView.vue")
-    admin = "\n".join(read(f"src/views/admin/{name}") for name in ["AdminUsersView.vue", "AdminRolesView.vue", "AdminUsageView.vue", "AdminLogsView.vue"])
+    admin = "\n".join(read(f"src/views/admin/{name}") for name in ["AdminUsersView.vue", "AdminRolesView.vue", "AdminUsageView.vue", "AdminJobPoolView.vue", "AdminLogsView.vue"])
     assert 'src="/purslyx-logo.png"' in home
     assert 'alt="Purslyx 品牌标志"' in home
     assert (WEB_ROOT / "public" / "purslyx-logo.png").is_file()
@@ -122,6 +124,9 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert 'data-action="open-admin-user"' in admin
     assert 'data-action="export-logs"' in admin
     assert 'data-action="admin-log-type"' in admin
+    assert 'id="admin-job-pool-search"' in admin
+    assert "/api/v1/admin/job-pool/items" in admin
+    assert "完整 JD 正文" in admin
 
 
 def test_fastapi_serves_vite_dist_without_legacy_fallback() -> None:
@@ -133,3 +138,9 @@ def test_fastapi_serves_vite_dist_without_legacy_fallback() -> None:
     assert '@app.get("/app/{path:path}"' in server
     assert "WEB_BUILD_MISSING" in server
     assert "WEB_PAGE_ROOT" not in server
+
+
+def test_admin_job_pool_permissions_are_seeded() -> None:
+    seed = (PROJECT_ROOT / "src" / "server" / "app" / "seed.py").read_text(encoding="utf-8")
+    assert '"admin.job_pool.read"' in seed
+    assert '"admin.job_pool.manage"' in seed

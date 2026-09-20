@@ -25,6 +25,8 @@ PERMISSIONS = [
     ("admin.roles.manage", "管理角色权限", "维护角色和权限组合"),
     ("admin.usage.grant", "发放使用次数", "给适用账号追加次数"),
     ("admin.stats.read", "查看站点概况", "查看聚合统计、成本和反馈"),
+    ("admin.job_pool.read", "查看抓取岗位", "跨账号查看抓取 JD、来源和匹配状态"),
+    ("admin.job_pool.manage", "管理抓取岗位", "下架抓取岗位并取消关联任务"),
     ("admin.logs.operations.read", "查看管理日志", "查看管理操作审计"),
     ("admin.logs.security.read", "查看安全日志", "查看登录和会话安全事件"),
     ("admin.logs.tasks.read", "查看任务日志", "查看任务执行摘要"),

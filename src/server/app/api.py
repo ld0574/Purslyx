@@ -3202,7 +3202,10 @@ _POOL_MISSING_CONDITION_LABELS = {
 
 
 def _pool_missing_conditions(item: JobPoolItem) -> list[str]:
-    fields = item.job_fields or {}
+    return _missing_conditions_for_fields(item.job_fields or {})
+
+
+def _missing_conditions_for_fields(fields: dict[str, Any]) -> list[str]:
     raw_codes = fields.get("missing_field_codes")
     codes = [str(code) for code in raw_codes if code] if isinstance(raw_codes, list) else []
     if not codes:
@@ -4830,6 +4833,399 @@ def _admin_user_summary(db: Session, target: Account, *, include_counts: bool = 
             ),
         }
     return result
+
+
+def _admin_pool(db: Session, public_id: str, *, active_only: bool = False) -> JobPoolItem:
+    """跨账号读取岗位池记录；管理员接口仍显式区分有效记录和已下架记录。"""
+
+    conditions = [JobPoolItem.public_id == public_id]
+    if active_only:
+        conditions.append(JobPoolItem.deleted_at.is_(None))
+    item = db.scalar(select(JobPoolItem).where(*conditions))
+    if item is None:
+        raise NotFoundError("管理端岗位不存在")
+    return item
+
+
+def _admin_job_pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[str, Any]:
+    """管理员专用岗位投影。
+
+    管理端需要跨账号排障，但不应复用求职端的去投递令牌或完整分析报告；这里只返回
+    岗位原文、采集摘要、账号脱敏信息和分析状态。完整报告正文仍留在业务账号边界内。
+    """
+
+    owner = db.get(Account, item.account_id)
+    browser_draft = db.get(BrowserJobDraft, item.source_browser_draft_id) if item.source_browser_draft_id else None
+    job_version = db.get(DocumentVersion, item.job_document_version_id) if item.job_document_version_id else None
+    document = db.get(Document, item.job_document_id) if item.job_document_id else None
+    version_fields = (job_version.content or {}).get("job_fields") if job_version and isinstance(job_version.content, dict) else {}
+    fields = dict(item.job_fields or {})
+    if not fields and isinstance(version_fields, dict):
+        fields = dict(version_fields)
+    analyses = list(
+        db.scalars(
+            select(Analysis)
+            .where(Analysis.job_pool_item_id == item.id)
+            .order_by(Analysis.created_at.desc(), Analysis.id.desc())
+        ).all()
+    )
+    active_analyses = [row for row in analyses if row.deleted_at is None]
+    analysis = active_analyses[0] if active_analyses else None
+    salary_value = fields.get("salary_text")
+    if not salary_value and isinstance(fields.get("salary"), dict) and fields["salary"].get("status") == "specified":
+        salary_value = fields["salary"].get("display") or fields["salary"].get("text")
+    location_value = fields.get("location_text") or ("、".join(fields.get("locations") or []) if fields.get("locations") else None)
+    captured_at = browser_draft.captured_at if browser_draft else item.created_at
+    data: dict[str, Any] = {
+        "id": item.public_id,
+        "source_type": item.source_type,
+        "platform": item.platform,
+        "source_url": item.source_url,
+        "job_title": item.job_title,
+        "company_name": item.company_name,
+        "source_account": {
+            "id": owner.public_id if owner else None,
+            "email_masked": _masked_email(owner.email) if owner else None,
+            "registration_role": owner.registration_role if owner else None,
+            "status": owner.status if owner else None,
+        },
+        "analysis_status": item.analysis_status,
+        "status": item.analysis_status,
+        "in_pool": item.deleted_at is None,
+        "deleted_at": item.deleted_at.isoformat() if item.deleted_at else None,
+        "blocking_reasons": _pool_blocking_reasons(item) if item.deleted_at is None else [],
+        "missing_conditions": _missing_conditions_for_fields(fields),
+        "job_conditions": {
+            "location": location_value,
+            "work_mode": fields.get("work_mode"),
+            "salary": salary_value,
+        },
+        "job_document_version": {"id": job_version.public_id, "version_no": job_version.version_no} if job_version else None,
+        "analysis_summary": _pool_analysis_summary(active_analyses),
+        "analysis_count": len(analyses),
+        "latest_analysis": (
+            {
+                "id": analysis.public_id,
+                "status": analysis.status,
+                "ability_score": analysis.ability_score,
+                "completed_at": analysis.completed_at.isoformat() if analysis.completed_at else None,
+            }
+            if analysis
+            else None
+        ),
+        "captured_at": captured_at.isoformat(),
+        "created_at": item.created_at.isoformat(),
+        "updated_at": item.updated_at.isoformat(),
+        "revision": item.revision,
+    }
+    if detail:
+        data["job_content"] = job_version.content if job_version else {"job_fields": fields}
+        data["job_description_text"] = (
+            browser_draft.job_description_text
+            if browser_draft and browser_draft.job_description_text
+            else document.raw_text if document and document.raw_text else fields.get("source_text")
+        )
+        data["captured_fields"] = {
+            "job_title": browser_draft.job_title if browser_draft else item.job_title,
+            "company_name": browser_draft.company_name if browser_draft else item.company_name,
+            "location_text": browser_draft.location_text if browser_draft else fields.get("location_text"),
+            "work_mode": browser_draft.work_mode if browser_draft else fields.get("work_mode"),
+            "salary_text": browser_draft.salary_text if browser_draft else fields.get("salary_text"),
+            "missing_field_codes": browser_draft.missing_field_codes if browser_draft else fields.get("missing_field_codes", []),
+        }
+        data["source_draft"] = (
+            {
+                "id": browser_draft.public_id,
+                "status": browser_draft.status,
+                "capture_schema_version": browser_draft.capture_schema_version,
+                "captured_at": browser_draft.captured_at.isoformat(),
+                "expires_at": browser_draft.expires_at.isoformat(),
+                "created_at": browser_draft.created_at.isoformat(),
+                "updated_at": browser_draft.updated_at.isoformat(),
+            }
+            if browser_draft
+            else None
+        )
+        data["analysis_history"] = [
+            {
+                "id": row.public_id,
+                "status": row.status,
+                "ability_score": row.ability_score,
+                "deleted_at": row.deleted_at.isoformat() if row.deleted_at else None,
+                "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+            }
+            for row in analyses
+        ]
+    return data
+
+
+def _admin_pool_deletion_snapshot(db: Session, item: JobPoolItem) -> dict[str, Any]:
+    """计算管理员下架影响，并返回执行删除所需的关联资源快照。"""
+
+    account_id = item.account_id
+    analysis_rows = db.scalars(
+        select(Analysis).where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))
+    ).all()
+    analysis_ids = {row.id for row in analysis_rows}
+    rewrite_rows = (
+        db.scalars(
+            select(Rewrite).where(
+                Rewrite.account_id == account_id,
+                Rewrite.analysis_id.in_(analysis_ids),
+                Rewrite.deleted_at.is_(None),
+            )
+        ).all()
+        if analysis_ids
+        else []
+    )
+    interview_rows = (
+        db.scalars(
+            select(Interview).where(
+                Interview.account_id == account_id,
+                Interview.analysis_id.in_(analysis_ids),
+                Interview.deleted_at.is_(None),
+            )
+        ).all()
+        if analysis_ids
+        else []
+    )
+    variant_rows = db.scalars(
+        select(ResumeVariant).where(
+            ResumeVariant.account_id == account_id,
+            ResumeVariant.job_pool_item_id == item.id,
+            ResumeVariant.deleted_at.is_(None),
+        )
+    ).all()
+    variant_ids = {row.id for row in variant_rows}
+    variant_version_rows = (
+        db.scalars(
+            select(ResumeVariantVersion).where(
+                ResumeVariantVersion.account_id == account_id,
+                ResumeVariantVersion.resume_variant_id.in_(variant_ids),
+            )
+        ).all()
+        if variant_ids
+        else []
+    )
+    variant_version_ids = {row.id for row in variant_version_rows}
+    export_rows = (
+        db.scalars(
+            select(Export).where(
+                Export.account_id == account_id,
+                Export.resume_variant_version_id.in_(variant_version_ids),
+            )
+        ).all()
+        if variant_version_ids
+        else []
+    )
+    resource_ids = {
+        item.public_id,
+        *(row.public_id for row in analysis_rows),
+        *(row.public_id for row in rewrite_rows),
+        *(row.public_id for row in interview_rows),
+        *(row.public_id for row in variant_rows),
+        *(row.public_id for row in variant_version_rows),
+        *(row.public_id for row in export_rows),
+    }
+    related_task_ids = {row.task_id for row in [*analysis_rows, *rewrite_rows, *interview_rows, *export_rows] if row.task_id}
+    active_tasks = db.scalars(
+        select(Task).where(
+            Task.account_id == account_id,
+            Task.status.in_(["queued", "running", "retry_wait"]),
+            Task.deleted_at.is_(None),
+        )
+    ).all()
+    task_ids = {
+        row.id
+        for row in active_tasks
+        if row.id in related_task_ids or _task_references(row, resource_ids)
+    }
+    affected = {
+        "analyses": len(analysis_rows),
+        "rewrites": len(rewrite_rows),
+        "interviews": len(interview_rows),
+        "job_variants": len(variant_rows),
+        "exports": len(export_rows),
+        "apply_entry": db.scalar(select(func.count(ApplyClick.id)).where(ApplyClick.job_pool_item_id == item.id)) or 0,
+        "running_tasks": len(task_ids),
+    }
+    affected["impact_version"] = _impact_version(item.public_id, item.revision, item.updated_at.isoformat(), *affected.values())
+    return {
+        "analysis_rows": analysis_rows,
+        "rewrite_rows": rewrite_rows,
+        "interview_rows": interview_rows,
+        "variant_rows": variant_rows,
+        "variant_version_rows": variant_version_rows,
+        "export_rows": export_rows,
+        "resource_ids": resource_ids,
+        "task_ids": task_ids,
+        "affected": affected,
+    }
+
+
+@router.get("/admin/job-pool/items", tags=["admin"])
+def admin_job_pool_items(
+    request: Request,
+    account: WebAccount,
+    search: str | None = Query(default=None, max_length=160),
+    platform: Literal["boss", "liepin", "manual"] | None = Query(default=None),
+    source_type: Literal["manual", "browser_capture"] | None = Query(default=None),
+    analysis_status: Literal["awaiting_requirements", "queued", "running", "available", "failed", "deleted"] | None = Query(default=None),
+    status_filter: Literal["awaiting_requirements", "queued", "running", "available", "failed", "deleted"] | None = Query(default=None, alias="status"),
+    created_from: datetime | None = Query(default=None),
+    created_to: datetime | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    _admin_guard(request, account, db, "admin.job_pool.read")
+    selected_status = status_filter or analysis_status
+    if created_from and created_to and created_from >= created_to:
+        raise DomainError("ADMIN_JOB_POOL_RANGE_INVALID", "岗位时间范围无效", 422)
+    statement = (
+        select(JobPoolItem)
+        .join(Account, Account.id == JobPoolItem.account_id)
+        .outerjoin(BrowserJobDraft, BrowserJobDraft.id == JobPoolItem.source_browser_draft_id)
+    )
+    if selected_status == "deleted":
+        statement = statement.where(JobPoolItem.deleted_at.is_not(None))
+    elif selected_status:
+        statement = statement.where(JobPoolItem.deleted_at.is_(None), JobPoolItem.analysis_status == selected_status)
+    elif not include_deleted:
+        statement = statement.where(JobPoolItem.deleted_at.is_(None))
+    if source_type:
+        statement = statement.where(JobPoolItem.source_type == source_type)
+    if platform == "manual":
+        statement = statement.where(JobPoolItem.source_type == "manual")
+    elif platform:
+        statement = statement.where(JobPoolItem.platform == platform)
+    if search and search.strip():
+        pattern = f"%{search.strip()}%"
+        statement = statement.where(
+            or_(
+                JobPoolItem.job_title.ilike(pattern),
+                JobPoolItem.company_name.ilike(pattern),
+                JobPoolItem.source_url.ilike(pattern),
+                BrowserJobDraft.job_description_text.ilike(pattern),
+                Account.email_normalized.ilike(pattern.casefold()),
+            )
+        )
+    if created_from:
+        statement = statement.where(JobPoolItem.created_at >= created_from)
+    if created_to:
+        statement = statement.where(JobPoolItem.created_at < created_to)
+    rows, page = page_rows(db, statement, JobPoolItem, cursor=cursor, limit=limit, timestamp_field="created_at")
+    return _ok(request, {"items": [_admin_job_pool_view(db, row) for row in rows], "page": page})
+
+
+@router.get("/admin/job-pool/items/{item_id}", tags=["admin"])
+def admin_job_pool_item_detail(
+    request: Request,
+    account: WebAccount,
+    item_id: str = PathParam(min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    _admin_guard(request, account, db, "admin.job_pool.read")
+    return _ok(request, _admin_job_pool_view(db, _admin_pool(db, item_id), detail=True))
+
+
+@router.get("/admin/job-pool/items/{item_id}/deletion-impact", tags=["admin"])
+def admin_job_pool_deletion_impact(
+    request: Request,
+    account: WebAccount,
+    item_id: str = PathParam(min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    _admin_guard(request, account, db, "admin.job_pool.manage")
+    item = _admin_pool(db, item_id, active_only=True)
+    snapshot = _admin_pool_deletion_snapshot(db, item)
+    version = snapshot["affected"]["impact_version"]
+    return _ok(
+        request,
+        {
+            "resource_id": item.public_id,
+            "resource_type": "admin_job_pool_item",
+            "affected": {key: value for key, value in snapshot["affected"].items() if key != "impact_version"},
+            "impact_version": version,
+        },
+        headers={"ETag": f'"{version}"'},
+    )
+
+
+@router.delete("/admin/job-pool/items/{item_id}", tags=["admin"])
+def admin_delete_job_pool_item(
+    request: Request,
+    account: WebAccount,
+    item_id: str = PathParam(min_length=1, max_length=36),
+    db: Session = Depends(get_db),
+) -> Response:
+    _admin_guard(request, account, db, "admin.job_pool.manage", write=True)
+    item = _admin_pool(db, item_id, active_only=True)
+    snapshot = _admin_pool_deletion_snapshot(db, item)
+    _require_deletion_match(request, snapshot["affected"]["impact_version"])
+    owner = db.get(Account, item.account_id)
+    before = {
+        "job_pool_item_id": item.public_id,
+        "job_title": item.job_title,
+        "source_type": item.source_type,
+        "platform": item.platform,
+        "analysis_status": item.analysis_status,
+        "revision": item.revision,
+        "affected": {key: value for key, value in snapshot["affected"].items() if key != "impact_version"},
+    }
+    storage_keys = {row.file_path for row in snapshot["export_rows"] if row.file_path}
+    files = _mark_files_deleted(db, item.account_id, storage_keys=storage_keys, purposes={"resume_pdf"})
+    for value in storage_keys:
+        path = private_path(value, settings.data_dir)
+        if path not in files:
+            files.append(path)
+    now = now_utc()
+    _mark_tasks_cancelled(
+        db,
+        item.account_id,
+        resource_ids=snapshot["resource_ids"],
+        task_ids=snapshot["task_ids"],
+        reason="管理员下架匹配池岗位",
+    )
+    item.deleted_at = now
+    item.analysis_status = "deleted"
+    item.source_url = None
+    item.job_fields = {}
+    if item.source_browser_draft_id:
+        draft = db.get(BrowserJobDraft, item.source_browser_draft_id)
+        if draft is not None:
+            # 保留原始采集事实，但阻止浏览器端再次用同一草稿把已下架岗位恢复入池。
+            draft.status = "expired"
+    db.query(Analysis).filter(Analysis.id.in_({row.id for row in snapshot["analysis_rows"]})).update(
+        {Analysis.deleted_at: now, Analysis.result: None}, synchronize_session=False
+    ) if snapshot["analysis_rows"] else None
+    db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in snapshot["rewrite_rows"]})).update(
+        {Rewrite.deleted_at: now}, synchronize_session=False
+    ) if snapshot["rewrite_rows"] else None
+    db.query(Interview).filter(Interview.id.in_({row.id for row in snapshot["interview_rows"]})).update(
+        {Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None},
+        synchronize_session=False,
+    ) if snapshot["interview_rows"] else None
+    db.query(ResumeVariant).filter(ResumeVariant.id.in_({row.id for row in snapshot["variant_rows"]})).update(
+        {ResumeVariant.deleted_at: now, ResumeVariant.status: "deleted"}, synchronize_session=False
+    ) if snapshot["variant_rows"] else None
+    db.query(Export).filter(Export.id.in_({row.id for row in snapshot["export_rows"]})).update(
+        {Export.status: "expired", Export.file_path: None, Export.failure_code: "SOURCE_DELETED"}, synchronize_session=False
+    ) if snapshot["export_rows"] else None
+    _admin_audit(
+        db,
+        account,
+        "job_pool.admin.delete",
+        owner,
+        request,
+        "管理员下架抓取岗位",
+        before=before,
+        after={"job_pool_item_id": item.public_id, "status": "deleted", "deleted_at": now.isoformat()},
+    )
+    db.commit()
+    _unlink_after_commit(files)
+    return _no_content(request)
 
 
 @router.get("/admin/users", tags=["admin"])

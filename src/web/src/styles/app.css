@@ -114,6 +114,16 @@
 .field-static { display: flex; align-items: center; min-height: 40px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: #f7fafc; font-size: 12px; }
 .pool-detail .micro { display: block; margin-top: 7px; }
 .log-filter-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.filter-actions { align-items: end; }
+.admin-job-table { padding: 0 20px 4px; }
+.admin-job-table .mini-table { min-width: 980px; }
+.admin-job-table td strong, .admin-job-table td small { display: block; }
+.admin-job-table td small { margin-top: 5px; color: var(--muted); line-height: 1.45; }
+.admin-source-link { color: var(--brand); overflow-wrap: anywhere; }
+.admin-job-detail { border-color: #b9d3f6; background: #f8fbff; }
+.admin-job-description { margin-top: 18px; }
+.admin-job-description h4 { margin-bottom: 9px; font-size: 13px; }
+.admin-job-description pre { max-height: 520px; margin: 0; padding: 16px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; color: #36576d; background: #fff; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.65; }
 .log-detail-grid { display: grid; grid-template-columns: 130px minmax(0, 1fr); margin-top: 18px; border-top: 1px solid var(--line); }
 .log-detail-grid dt, .log-detail-grid dd { padding: 10px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 .log-detail-grid dt { color: var(--muted); font-weight: 800; }

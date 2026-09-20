@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | 用户 | [用户 API 设计](用户API设计.md) | `/auth/*`、`/me`、`/browser-auth/*`、`/admin/users*`、`/admin/roles*` |
 | 简历 | [简历 API 设计](简历API设计.md) | `/documents*`、`/preferences*`、`/facts*`、`/rewrites*`、`/resumes*`、`/exports*` |
-| 匹配池 | [匹配池 API 设计](匹配池API设计.md) | `/browser/job-drafts*`、`/job-pool/items*`、`/analyses*` |
+| 匹配池 | [匹配池 API 设计](匹配池API设计.md) | `/browser/job-drafts*`、`/job-pool/items*`、`/admin/job-pool/items*`、`/analyses*` |
 | 面试 | [面试 API 设计](面试API设计.md) | `/interviews*` |
 | 任务 | [任务 API 设计](任务API设计.md) | `/tasks*` |
 | 用量 | [用量 API 设计](用量API设计.md) | `/usage`、`/admin/usage-grants*` |
@@ -63,6 +63,8 @@ flowchart LR
 | 匹配池 | POST | `/job-pool/items` | 求职 Web | 手动岗位入池 |
 | 匹配池 | POST | `/job-pool/items/batch-analyze`、`/job-pool/items/{id}/analyze` | 求职 Web | 批量或单岗位匹配任务 |
 | 匹配池 | GET | `/job-pool/items`、`/job-pool/items/{id}` | 求职 Web | 岗位列表或详情 |
+| 匹配池管理 | GET | `/admin/job-pool/items`、`/admin/job-pool/items/{id}` | `admin.job_pool.read` | 跨账号抓取岗位摘要或详情 |
+| 匹配池管理 | GET／DELETE | `/admin/job-pool/items/{id}/deletion-impact`、`/admin/job-pool/items/{id}` | `admin.job_pool.manage` | 下架影响预览或受控下架 |
 | 匹配池 | POST | `/job-pool/items/{id}/go-to-apply` | 求职 Web | 303 跳转 |
 | 匹配池 | POST | `/analyses` | 招聘 Web | 单人分析任务 |
 | 匹配池 | GET | `/analyses`、`/analyses/{id}` | Web | 本账号报告列表或详情 |

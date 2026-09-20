@@ -28,6 +28,7 @@ const STATUS_LABELS: Record<string, string> = {
   archived: "已归档",
   downloadable: "可下载",
   expired: "已过期",
+  deleted: "已下架",
   exporting: "正在导出",
   awaiting_requirements: "待补齐条件",
   onsite: "现场",
@@ -56,7 +57,7 @@ export function statusLabel(value?: string): string {
 
 export function statusClass(value?: string): string {
   if (["succeeded", "available", "completed", "downloadable", "active", "reviewed"].includes(value || "")) return "success";
-  if (["failed", "feedback_failed", "summary_failed", "opening_failed", "suspended", "cancelled"].includes(value || "")) return "attention";
+  if (["failed", "feedback_failed", "summary_failed", "opening_failed", "suspended", "cancelled", "deleted"].includes(value || "")) return "attention";
   return "opportunity";
 }
 
