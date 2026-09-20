@@ -17,13 +17,13 @@ from server.app.model_provider import (
 )
 
 
-class _FakeResponses:
+class _FakeChatCompletions:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
     def create(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
-        schema_name = kwargs["text"]["format"]["name"]
+        schema_name = kwargs["response_format"]["json_schema"]["name"]
         values: dict[str, Any] = {
             "document_resume_v2": {
                 "schema_version": "document-content-v1",
@@ -92,18 +92,21 @@ class _FakeResponses:
                 },
             },
         }
-        return SimpleNamespace(output_text=json.dumps(values[schema_name], ensure_ascii=False), usage=SimpleNamespace(input_tokens=12, output_tokens=8))
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(values[schema_name], ensure_ascii=False)))],
+            usage=SimpleNamespace(prompt_tokens=12, completion_tokens=8),
+        )
 
 
-def _provider() -> tuple[OpenAIModelProvider, _FakeResponses]:
+def _provider() -> tuple[OpenAIModelProvider, _FakeChatCompletions]:
     provider = object.__new__(OpenAIModelProvider)
-    responses = _FakeResponses()
-    provider.client = SimpleNamespace(responses=responses)
-    return provider, responses
+    chat = _FakeChatCompletions()
+    provider.client = SimpleNamespace(chat=SimpleNamespace(completions=chat))
+    return provider, chat
 
 
 def test_openai_provider_runs_every_core_skill_through_structured_model() -> None:
-    provider, responses = _provider()
+    provider, chat = _provider()
     resume = provider.extract_resume("工作经历\n负责 React 项目交付").value
     job = provider.extract_job("前端工程师\n示例科技\n杭州\n20K-30K/月\n熟悉 React\n负责 React 项目交付").value
     report = provider.analyze(resume, job, None, "seeker_pool").value
@@ -122,7 +125,7 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
     assert questions["method"] == "STAR"
     assert feedback["method"] == "STAR"
     assert summary["content"]["star_assessment"]["result"]["status"] == "missing"
-    assert [call["text"]["format"]["name"] for call in responses.calls] == [
+    assert [call["response_format"]["json_schema"]["name"] for call in chat.calls] == [
         "document_resume_v2",
         "document_job_v2",
         "analysis_result_v2",
@@ -131,6 +134,8 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
         "interview_feedback_v2",
         "interview_summary_v2",
     ]
+    assert chat.calls[0]["messages"][0]["role"] == "system"
+    assert chat.calls[0]["messages"][1]["role"] == "user"
 
 
 def test_openai_rewrite_rejects_new_unverified_numbers() -> None:

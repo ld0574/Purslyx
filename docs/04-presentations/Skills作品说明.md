@@ -64,7 +64,7 @@ PURSLYX_MODEL_OUTPUT_USD_PER_MILLION=1.60
 sudo scripts/release.sh deploy
 ```
 
-当前适配器使用 OpenAI Responses API 的严格 JSON Schema；使用其他 OpenAI-compatible 服务时，必须确认其支持 `/responses` 和结构化输出。
+当前适配器使用 OpenAI-compatible Chat Completions API 的严格 JSON Schema；使用其他服务时，`OPENAI_BASE_URL` 应填写 API 根地址（通常以 `/v1` 结尾），并确认其支持 `/chat/completions` 和结构化输出。
 
 ## 起点、复用与本次新增
 

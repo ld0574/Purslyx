@@ -1,7 +1,7 @@
 """模型适配层。
 
 本地默认实现是确定性的，保证没有 API Key 时也能完整跑通功能和测试。配置为 openai 时，
-使用官方 Responses API；业务代码只依赖这里的结构化方法，方便以后切换兼容接口。
+使用 OpenAI-compatible Chat Completions API；业务代码只依赖这里的结构化方法，方便切换模型和网关。
 """
 
 from __future__ import annotations
@@ -410,7 +410,7 @@ def _same_salary_amounts(left: Any, right: Any) -> bool:
 
 
 class OpenAIModelProvider(ModelProvider):
-    """OpenAI Responses API 的全链路结构化适配器。"""
+    """OpenAI-compatible Chat Completions API 的全链路结构化适配器。"""
 
     name = "openai"
 
@@ -429,28 +429,42 @@ class OpenAIModelProvider(ModelProvider):
     def _json(self, instruction: str, value: Any, schema_name: str, schema: dict[str, Any]) -> ModelResult:
         request: dict[str, Any] = {
             "model": settings.model_name,
-            "store": False,
-            "input": [
-                {"role": "system", "content": [{"type": "input_text", "text": instruction}]},
-                {"role": "user", "content": [{"type": "input_text", "text": _json_text(value)}]},
+            "messages": [
+                {"role": "system", "content": instruction},
+                {"role": "user", "content": _json_text(value)},
             ],
-            "text": {"format": {"type": "json_schema", "name": schema_name, "strict": True, "schema": schema}},
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": schema_name,
+                    "strict": True,
+                    "schema": schema,
+                },
+            },
         }
         effort = getattr(settings, "model_reasoning_effort", "none").strip().lower()
         if effort and effort != "none":
-            request["reasoning"] = {"effort": effort}
+            request["reasoning_effort"] = effort
         try:
-            response = self.client.responses.create(**request)
+            response = self.client.chat.completions.create(**request)
         except Exception as exc:
             raise DomainError("MODEL_PROVIDER_REQUEST_FAILED", "大模型调用失败，请检查模型配置后重试", 503, "retry") from exc
         try:
-            parsed = json.loads(getattr(response, "output_text", ""))
-        except (TypeError, json.JSONDecodeError) as exc:
+            choices = getattr(response, "choices", [])
+            message = getattr(choices[0], "message", None)
+            parsed = json.loads(getattr(message, "content", "") or "")
+        except (AttributeError, IndexError, TypeError, json.JSONDecodeError) as exc:
             raise DomainError("MODEL_OUTPUT_INVALID", "模型没有返回可读取的结构化结果", 503, "retry") from exc
         if not isinstance(parsed, dict):
             raise DomainError("MODEL_OUTPUT_INVALID", "模型返回的结构不是对象", 503, "retry")
         usage = getattr(response, "usage", None)
-        return ModelResult(parsed, self.name, settings.model_name, _usage_value(usage, "input_tokens"), _usage_value(usage, "output_tokens"))
+        input_tokens = _usage_value(usage, "prompt_tokens")
+        if input_tokens is None:
+            input_tokens = _usage_value(usage, "input_tokens")
+        output_tokens = _usage_value(usage, "completion_tokens")
+        if output_tokens is None:
+            output_tokens = _usage_value(usage, "output_tokens")
+        return ModelResult(parsed, self.name, settings.model_name, input_tokens, output_tokens)
 
     @staticmethod
     def _source_quote(value: Any, source_text: str) -> str | None:

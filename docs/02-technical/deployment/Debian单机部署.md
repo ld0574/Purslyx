@@ -235,7 +235,7 @@ PURSLYX_MODEL_CACHED_INPUT_USD_PER_MILLION=0.10
 PURSLYX_MODEL_OUTPUT_USD_PER_MILLION=1.60
 ```
 
-首次初始化管理员时临时设置 `PURSLYX_ADMIN_EMAIL` 和 `PURSLYX_ADMIN_PASSWORD`。Redis 密码含 URL 特殊字符时需要先编码；`PGPASSWORD` 保留原始密码。`OPENAI_BASE_URL` 只有使用 OpenAI-compatible 服务时才填写；当前适配器要求该服务支持 Responses API 和严格 JSON Schema 输出。
+首次初始化管理员时临时设置 `PURSLYX_ADMIN_EMAIL` 和 `PURSLYX_ADMIN_PASSWORD`。Redis 密码含 URL 特殊字符时需要先编码；`PGPASSWORD` 保留原始密码。`OPENAI_BASE_URL` 只有使用 OpenAI-compatible 服务时才填写；当前适配器调用 Chat Completions API 的 `/chat/completions`，并要求该服务支持严格 JSON Schema 输出。
 
 ## 7. 首次构建和部署
 

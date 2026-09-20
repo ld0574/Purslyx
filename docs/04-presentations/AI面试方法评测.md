@@ -30,7 +30,7 @@ Purslyx 不把“生成几道问题”当成面试能力。要验证的是：问
 
 ## 当前可重复测试
 
-离线契约测试不依赖真实 API Key，使用假的 Responses API 响应验证调用链和约束：
+离线契约测试不依赖真实 API Key，使用假的 Chat Completions API 响应验证调用链和约束：
 
 ```bash
 .venv/bin/python -m pytest -q tests/unit/test_model_provider.py tests/unit/test_interview_provider.py
