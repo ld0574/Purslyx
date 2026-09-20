@@ -57,7 +57,7 @@ class _FakeChatCompletions:
                 "job_category": "engineering",
                 "model_score": 84,
                 "model_score_rationale": "后端交付证据较强，但 LLM 应用开发经历待补充。",
-                "requirements": [{"requirement_id": "req-1", "dimension_key": "technical", "status": "supported", "evidence_segment_keys": ["experience-1"], "explanation": "有 React 项目交付证据。"}],
+                "requirements": [{"requirement_id": "req-1", "dimension_key": "technical", "status": "supported", "match_score": 92, "evidence_segment_keys": ["experience-1"], "explanation": "有 React 项目交付证据。"}],
                 "insights": {"summary": "有直接项目证据。", "strengths": ["React"], "risks": ["结果数字待补充"], "recommended_actions": ["补充结果"]},
             },
             "rewrite_result_v2": {
@@ -121,7 +121,7 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
         "full",
     ).value
 
-    assert report["prompt_version"] == "analysis-openai-v3"
+    assert report["prompt_version"] == "analysis-openai-v4"
     assert report["ai_insights"]["strengths"] == ["React"]
     assert report["ai_insights"]["model_score"] == 84.0
     assert rewrite["method"] == "evidence-constrained-rewrite"

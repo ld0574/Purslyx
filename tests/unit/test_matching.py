@@ -110,6 +110,34 @@ def test_model_unknown_can_fall_back_to_partial_verified_evidence() -> None:
     assert requirement["evidence"]
 
 
+def test_model_match_score_preserves_strong_transferable_evidence() -> None:
+    result = build_match_result(
+        {"sections": [{"segments": [{"segment_key": "work-1", "text": "主导后端架构、数据平台和高并发系统交付"}]}]},
+        {
+            "job_fields": {
+                "title": "AI 应用架构师",
+                "category": "engineering",
+                "requirements": ["负责复杂 Agent 系统架构与工程化落地"],
+            }
+        },
+        ai_findings={
+            "requirements": [{
+                "requirement_id": "req-1",
+                "dimension_key": "technical",
+                "status": "partially_supported",
+                "match_score": 82,
+                "evidence_segment_keys": ["work-1"],
+                "explanation": "通用架构和交付能力高度可迁移，但缺少 Agent 直接案例。",
+            }],
+            "insights": {},
+        },
+    )
+
+    requirement = next(item for dimension in result["dimensions"] for item in dimension["requirements"])
+    assert requirement["match_score"] == 82.0
+    assert result["ability_score"] == 82.0
+
+
 def test_salary_months_are_part_of_comparable_salary_basis() -> None:
     preference = {
         "status": "specified",

@@ -3559,7 +3559,7 @@ def _persist_analysis_details(
         db.flush()
         for position, requirement in enumerate(dimension.get("requirements", []), start=1):
             finding = str(requirement.get("status", "needs_confirmation"))
-            coefficient = {"supported": 1.0, "partially_supported": 0.5, "gap": 0.0, "needs_confirmation": 0.0}.get(finding, 0.0)
+            coefficient = float(requirement.get("match_coefficient", {"supported": 1.0, "partially_supported": 0.5, "gap": 0.0, "needs_confirmation": 0.0}.get(finding, 0.0)))
             req_row = AnalysisRequirementResult(account_id=account.id, analysis_id=analysis.id, requirement_id=str(requirement.get("requirement_id")), dimension_key=str(dimension.get("key")), position_no=position, requirement_text=str(requirement.get("job_quote", "")), finding_type=finding, match_coefficient=coefficient, coverage_flag=finding != "needs_confirmation", explanation=str(requirement.get("explanation", "")))
             db.add(req_row)
             db.flush()
@@ -3694,7 +3694,7 @@ def _start_analysis(
         analysis.ability_score = report.get("ability_score")
         analysis.evidence_coverage = report.get("evidence_coverage")
         analysis.result = report
-        analysis.scoring_rule_version = report.get("scoring_rule_version", "ability-v0.2")
+        analysis.scoring_rule_version = report.get("scoring_rule_version", "ability-v0.3")
         analysis.result_schema_version = report.get("result_schema_version", "analysis-result-v1")
         analysis.prompt_version = report.get("prompt_version", "analysis-local-v1")
         analysis.completed_at = now_utc()

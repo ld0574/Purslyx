@@ -181,6 +181,17 @@ def _number(value: Any) -> Decimal | None:
         return None
 
 
+def _match_coefficient(status: str, raw_score: Any = None) -> Decimal:
+    """把模型的逐条 0—100 分转换成服务端可复核的 0—1 系数。"""
+
+    if status in {"gap", "needs_confirmation"}:
+        return Decimal("0")
+    score = _number(raw_score)
+    if score is None:
+        return Decimal("1") if status == "supported" else Decimal("0.5")
+    return max(Decimal("0"), min(Decimal("100"), score)) / Decimal("100")
+
+
 def _field_status(obj: dict[str, Any] | None) -> str:
     if not obj:
         return "unknown"
@@ -497,6 +508,10 @@ def build_match_result(
             }[status]
         else:
             status, evidence, explanation = validated_model
+        coefficient = _match_coefficient(
+            status,
+            model_finding.get("match_score") if model_finding else None,
+        )
         dimension_rows[dimension].append(
             {
                 "requirement_id": requirement["requirement_id"],
@@ -505,12 +520,15 @@ def build_match_result(
                 "status": status,
                 "evidence": evidence,
                 "explanation": explanation,
+                "match_coefficient": float(coefficient),
+                "match_score": float(coefficient * Decimal("100")) if status != "needs_confirmation" else None,
             }
         )
 
     total_score = Decimal("0")
     total_coverage = Decimal("0")
     applicable_weight = Decimal("0")
+    coverage_weight = Decimal("0")
     dimension_output = []
     for key, label, base_weight in dimensions:
         rows = dimension_rows[key]
@@ -520,19 +538,28 @@ def build_match_result(
             )
             continue
         weight = Decimal(str(base_weight))
+        coverage_weight += weight
+        covered_rows = [row for row in rows if row["status"] != "needs_confirmation"]
+        if not covered_rows:
+            dimension_output.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "base_weight": float(weight),
+                    "effective_weight": 0,
+                    "score": None,
+                    "evidence_status": "needs_confirmation",
+                    "summary": "暂无可复核依据，证据覆盖率 0.0%",
+                    "requirements": rows,
+                }
+            )
+            continue
         applicable_weight += weight
         score_sum = Decimal("0")
-        coverage_sum = Decimal("0")
-        for row in rows:
-            if row["status"] == "supported":
-                score_sum += Decimal("1")
-                coverage_sum += Decimal("1")
-            elif row["status"] == "partially_supported":
-                score_sum += Decimal("0.5")
-                coverage_sum += Decimal("1")
-            elif row["status"] == "gap":
-                coverage_sum += Decimal("1")
-        row_score = (score_sum / Decimal(len(rows)) * Decimal("100")).quantize(Decimal("0.1"))
+        coverage_sum = Decimal(len(covered_rows))
+        for row in covered_rows:
+            score_sum += Decimal(str(row["match_coefficient"]))
+        row_score = (score_sum / Decimal(len(covered_rows)) * Decimal("100")).quantize(Decimal("0.1"))
         row_coverage = (coverage_sum / Decimal(len(rows)) * Decimal("100")).quantize(Decimal("0.1"))
         dimension_output.append(
             {
@@ -546,14 +573,17 @@ def build_match_result(
                 "requirements": rows,
             }
         )
-        total_score += weight * score_sum / Decimal(len(rows))
+        total_score += weight * score_sum / Decimal(len(covered_rows))
         total_coverage += weight * coverage_sum / Decimal(len(rows))
 
-    if applicable_weight == 0 or not requirements:
+    if not requirements:
         ability_score = None
         coverage = None
+    elif applicable_weight == 0:
+        ability_score = None
+        coverage = Decimal("0")
     else:
-        coverage = (total_coverage / applicable_weight).quantize(Decimal("0.0001"))
+        coverage = (total_coverage / coverage_weight).quantize(Decimal("0.0001"))
         # needs_confirmation 不是“不具备能力”。覆盖率为零时没有可复核的评分依据，
         # 不能把未知项的零贡献伪装成 0 分；页面应显示待补充并引导用户补事实。
         ability_score = (
@@ -586,7 +616,7 @@ def build_match_result(
         "verification_items": verification_items,
         "interview_questions": interview_questions,
         "overall_advice": advice,
-        "scoring_rule_version": "ability-v0.2",
+        "scoring_rule_version": "ability-v0.3",
         "result_schema_version": "analysis-result-v1",
         "prompt_version": prompt_version,
         "ai_insights": {

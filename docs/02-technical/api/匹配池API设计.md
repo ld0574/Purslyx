@@ -171,7 +171,7 @@
 | `prompt_version` | string | 否 | 生成提示词 |
 | `completed_at` | datetime | 是 | 可查看时存在 |
 
-`AnalysisDimension` 包含 `key`、`label`、`base_weight`、`effective_weight`、`score`、`evidence_status`、`summary`、`requirements`。每个要求包含 JD 引用、`supported`／`partially_supported`／`gap`／`needs_confirmation` 状态及简历证据。前端展示服务端计算值，不能自行重算或把未知写成差距。
+`AnalysisDimension` 包含 `key`、`label`、`base_weight`、`effective_weight`、`score`、`evidence_status`、`summary`、`requirements`。每个要求包含 JD 引用、`supported`／`partially_supported`／`gap`／`needs_confirmation` 状态、经证据校验的 `match_score` 和简历证据。前端展示服务端计算值，不能自行重算或把未知写成差距。
 
 `ConditionResult` 包含 `condition`、期望值、JD 值、强度、`matched`／`conflicted`／`unknown`／`not_applicable` 和说明。条件冲突不改变能力分。
 
