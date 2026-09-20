@@ -18,3 +18,9 @@ def test_openresty_forwards_the_normalized_client_ip() -> None:
     text = CONFIG.read_text(encoding="utf-8")
     assert "proxy_set_header X-Real-IP $remote_addr;" in text
     assert "proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;" in text
+
+
+def test_openresty_uses_one_canonical_web_origin() -> None:
+    text = CONFIG.read_text(encoding="utf-8")
+    assert "server_name www.purslyx.com;" in text
+    assert "return 301 https://purslyx.com$request_uri;" in text

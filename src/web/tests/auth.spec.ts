@@ -31,6 +31,29 @@ describe("认证状态", () => {
     expect(localStorage.getItem(SESSION_KEY)).toBeNull();
   });
 
+  it("临时网关错误不会清除已有登录状态", async () => {
+    const account = { id: "account-1", email: "user@example.com", registration_role: "seeker", admin_permissions: [] };
+    localStorage.setItem(SESSION_KEY, JSON.stringify({ token: "token", csrf: "csrf", account }));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: { code: "UPSTREAM_UNAVAILABLE", message: "稍后重试" } }), {
+      status: 503, headers: { "Content-Type": "application/json" },
+    }));
+    const store = useAuthStore();
+    await store.restore();
+    expect(store.account).toEqual(account);
+    expect(JSON.parse(localStorage.getItem(SESSION_KEY) || "{}")).toMatchObject({ token: "token", csrf: "csrf" });
+  });
+
+  it("localStorage 没有令牌时可通过持久 Cookie 恢复账号", async () => {
+    document.cookie = "purslyx_csrf=cookie-csrf";
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: {
+      account: { id: "account-2", email: "cookie@example.com", registration_role: "recruiter", admin_permissions: [] },
+    } }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const store = useAuthStore();
+    await store.restore();
+    expect(store.account?.email).toBe("cookie@example.com");
+    expect(fetch).toHaveBeenCalledWith("/api/v1/me", expect.objectContaining({ credentials: "same-origin" }));
+  });
+
   it("验证码注册完成后直接建立会话", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify({ data: { status: "registered", registration_ready: true } }), { status: 202, headers: { "Content-Type": "application/json" } }))

@@ -181,6 +181,7 @@ Cloudflare DNS 记录开启橙色云朵后，源站 TCP 连接的对端是 Cloud
 
 - SSL/TLS 加密模式：`Full (strict)`；
 - DNS：`purslyx.com` 和需要使用的子域名指向源站并开启代理；
+- 访问入口统一使用 `https://purslyx.com`；`www.purslyx.com` 会自动跳转到主域，避免浏览器按两个 origin 分别保存登录状态；
 - 源站防火墙：只允许 Cloudflare 官方网段访问 80/443，SSH 只允许管理网段；
 - 证书续期：Let’s Encrypt 的 `fullchain.pem` 已包含源站需要的中间证书，不需要再手工拼接 Cloudflare 中间证书。
 

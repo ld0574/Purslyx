@@ -50,7 +50,7 @@ async function logout() {
 
 <template>
   <header class="topbar">
-    <RouterLink class="brand-button" to="/"><img class="brand-mark" src="/favicon.svg" alt="" aria-hidden="true" /><span>Purslyx</span></RouterLink>
+    <RouterLink class="brand-button" to="/"><img class="brand-mark" src="/purslyx-logo.png" alt="Purslyx 品牌标志" /><span>Purslyx</span></RouterLink>
     <span class="eyebrow">{{ role === "seeker" ? "求职工作台" : "招聘工作台" }}</span>
     <span class="topbar-spacer" />
     <details class="account-menu">

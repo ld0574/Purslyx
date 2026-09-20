@@ -80,7 +80,8 @@ def test_vite_and_typescript_are_the_production_frontend_contract() -> None:
 def test_api_client_preserves_auth_csrf_and_idempotency_boundaries() -> None:
     client = read("src/services/api.ts")
     assert 'headers.Authorization = `Bearer ${session.token}`' in client
-    assert 'headers["X-CSRF-Token"] = session.csrf' in client
+    assert 'headers["X-CSRF-Token"] = csrf' in client
+    assert 'readCookie("purslyx_csrf")' in client
     assert 'headers["Idempotency-Key"] = options.idempotencyKey' in client
     assert 'credentials: "same-origin"' in client
     assert "redirect: options.redirect" in client
@@ -97,6 +98,10 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert 'src="/purslyx-logo.png"' in home
     assert 'alt="Purslyx 品牌标志"' in home
     assert (WEB_ROOT / "public" / "purslyx-logo.png").is_file()
+    assert 'src="/purslyx-logo.png"' in shell
+    assert 'src="/purslyx-logo.png"' in read("src/views/AuthView.vue")
+    assert 'src="/favicon.svg"' not in shell
+    assert 'src="/favicon.svg"' not in read("src/views/AuthView.vue")
     assert 'class="side-brand"' not in shell
     for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
         assert f'id="{selector}"' in materials

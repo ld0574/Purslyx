@@ -38,7 +38,12 @@ router.beforeEach(async (to) => {
   const auth = useAuthStore();
   await auth.restore();
   document.title = `${String(to.meta.title || "Purslyx")} · Purslyx`;
-  if (to.meta.public) return true;
+  if (to.meta.public) {
+    if (auth.account && ["login", "register"].includes(String(to.name))) {
+      return `/app/${auth.role}/dashboard`;
+    }
+    return true;
+  }
   if (!auth.account) return { name: "login", query: { redirect: to.fullPath } };
   const expectedRole = (to.meta.role as string | undefined) || (to.meta.roleRoute ? String(to.params.role || "") : "");
   if (expectedRole && expectedRole !== auth.role) return `/app/${auth.role}/dashboard`;

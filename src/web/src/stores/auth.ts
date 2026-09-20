@@ -1,6 +1,6 @@
 import { defineStore } from "pinia";
 
-import { api, SESSION_KEY } from "@/services/api";
+import { api, ApiError, SESSION_KEY } from "@/services/api";
 import type { Account, JsonMap, RegistrationRole, SessionState } from "@/types";
 
 export const useAuthStore = defineStore("auth", {
@@ -11,7 +11,11 @@ export const useAuthStore = defineStore("auth", {
   },
   actions: {
     persist() {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ token: this.token, csrf: this.csrf, account: this.account }));
+      try {
+        localStorage.setItem(SESSION_KEY, JSON.stringify({ token: this.token, csrf: this.csrf, account: this.account }));
+      } catch {
+        // 登录 Cookie 仍由浏览器保存；存储受限时下次启动可通过 /me 恢复账号。
+      }
     },
     async restore() {
       if (this.restored) return;
@@ -24,13 +28,13 @@ export const useAuthStore = defineStore("auth", {
       } catch {
         this.clear();
       }
-      if (!this.token) return;
       try {
         const result = await api<{ account: Account }>("/api/v1/me");
         this.account = result.account;
         this.persist();
-      } catch {
-        this.clear();
+      } catch (value) {
+        // 只有服务明确确认会话无效时才清理缓存；临时网络、网关或服务错误不能把用户踢出登录。
+        if (value instanceof ApiError && [401, 403].includes(value.status)) this.clear();
       }
     },
     async login(email: string, password: string) {
@@ -77,7 +81,11 @@ export const useAuthStore = defineStore("auth", {
       this.token = "";
       this.csrf = "";
       this.account = null;
-      localStorage.removeItem(SESSION_KEY);
+      try {
+        localStorage.removeItem(SESSION_KEY);
+      } catch {
+        // 某些隐私模式会禁止 Web Storage；此时只能依赖服务端 Cookie 的生命周期。
+      }
     },
   },
 });

@@ -42,6 +42,18 @@ function readSession(): JsonMap {
   }
 }
 
+function readCookie(name: string): string {
+  if (typeof document === "undefined") return "";
+  const prefix = `${encodeURIComponent(name)}=`;
+  const item = document.cookie.split(";").map((value) => value.trim()).find((value) => value.startsWith(prefix));
+  if (!item) return "";
+  try {
+    return decodeURIComponent(item.slice(prefix.length));
+  } catch {
+    return "";
+  }
+}
+
 export async function api<T = JsonMap>(
   path: string,
   options: {
@@ -57,8 +69,9 @@ export async function api<T = JsonMap>(
   const session = readSession();
   const headers: Record<string, string> = { Accept: "application/json", ...(options.headers || {}) };
   if (session.token) headers.Authorization = `Bearer ${session.token}`;
-  if (session.csrf && !["GET", "HEAD", "OPTIONS"].includes(options.method || "GET")) {
-    headers["X-CSRF-Token"] = session.csrf;
+  const csrf = String(session.csrf || readCookie("purslyx_csrf"));
+  if (csrf && !["GET", "HEAD", "OPTIONS"].includes(options.method || "GET")) {
+    headers["X-CSRF-Token"] = csrf;
   }
   if (options.idempotencyKey) headers["Idempotency-Key"] = options.idempotencyKey;
   if (options.body !== undefined) headers["Content-Type"] = "application/json";

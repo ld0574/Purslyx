@@ -20,6 +20,15 @@ describe("API 客户端", () => {
     });
   });
 
+  it("localStorage 没有 CSRF 时回退到持久 Cookie", async () => {
+    document.cookie = "purslyx_csrf=cookie-csrf";
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: { id: "ok" } }), {
+      status: 200, headers: { "Content-Type": "application/json" },
+    }));
+    await api("/api/v1/example", { method: "POST", body: { value: 1 } });
+    expect(fetchMock.mock.calls[0][1]?.headers).toMatchObject({ "X-CSRF-Token": "cookie-csrf" });
+  });
+
   it("把统一错误响应转换为带业务码的异常", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: { code: "USAGE_INSUFFICIENT", message: "次数不足", action: "open_usage" } }), {
       status: 429, headers: { "Content-Type": "application/json" },
