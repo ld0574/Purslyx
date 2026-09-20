@@ -125,6 +125,10 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert "requestBatchMatch" in pool
     assert 'class="batch-selection"' in pool
     assert "详情" in pool
+    assert "onBeforeUnmount" in pool
+    assert "setInterval" in pool
+    assert "scrollIntoView" in pool
+    assert "analysisStatusText" in pool
     assert "下一页" in pool
     assert "missing_conditions" not in pool
     assert 'type: "document_version", job_document_version_id: jobVersion.id' in pool

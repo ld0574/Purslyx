@@ -419,6 +419,16 @@ class TaskWorker:
                     pool.analysis_status = "available"
                     pool.revision += 1
 
+        # API 进程只会把任务提交为 queued；Worker 领取后同步业务状态，
+        # 让匹配池能区分“排队中”和“模型正在执行”，也便于定位 Worker 未启动。
+        analysis.status = "running"
+        if analysis.job_pool_item_id:
+            pool = db.get(JobPoolItem, analysis.job_pool_item_id)
+            if pool is not None and pool.deleted_at is None:
+                pool.analysis_status = "running"
+                pool.revision += 1
+        db.commit()
+
         _run_model(
             db,
             task,

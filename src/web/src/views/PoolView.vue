@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
@@ -39,6 +39,9 @@ const resumeDialog = ref<HTMLDialogElement | null>(null);
 const resumeDialogOpen = ref(false);
 const resumeDialogSelection = ref("");
 const matchingPoolIds = ref<string[]>([]);
+const detailLoading = ref(false);
+let pollingTimer: number | undefined;
+let pollingInFlight = false;
 const form = reactive({
   job_title: "",
   company_name: "",
@@ -54,6 +57,7 @@ const selectedCount = computed(() => selectedIds.value.length);
 const estimatedAnalysisCount = computed(() => selectedCount.value);
 const allPageSelected = computed(() => items.value.length > 0 && items.value.every((item) => selectedIds.value.includes(item.id)));
 const currentPageNumber = computed(() => cursorHistory.value.length + 1);
+const hasActiveMatches = computed(() => items.value.some(analysisInProgress) || Boolean(selected.value && analysisInProgress(selected.value)));
 const hasFilters = computed(() => Boolean(
   searchText.value.trim()
   || jobTitleFilter.value.trim()
@@ -77,13 +81,37 @@ function analysisReady(item: JsonMap): boolean {
   return !analysisInProgress(item) && (item.analysis_summary?.available > 0 || ["available", "succeeded"].includes(String(item.latest_analysis?.status || "")));
 }
 
+function analysisStatus(item: JsonMap): string {
+  const taskStatus = String(item.latest_analysis?.task?.status || "");
+  if (["queued", "running", "retry_wait", "failed", "succeeded"].includes(taskStatus)) return taskStatus;
+  return String(item.analysis_status || item.latest_analysis?.status || "");
+}
+
 function analysisInProgress(item: JsonMap): boolean {
-  return item.analysis_summary?.active > 0 || ["queued", "running", "retry_wait"].includes(String(item.analysis_status || item.latest_analysis?.status || ""));
+  return item.analysis_summary?.active > 0 || ["queued", "running", "retry_wait"].includes(analysisStatus(item));
+}
+
+function analysisStatusText(item: JsonMap): string {
+  const status = analysisStatus(item);
+  if (status === "running") return "匹配执行中";
+  if (status === "queued") return "排队中";
+  if (status === "retry_wait") return "等待重试";
+  if (status === "failed") return "匹配失败，可重试";
+  if (analysisReady(item)) return "已有结果";
+  return statusLabel(status);
+}
+
+function analysisFailure(item: JsonMap): string {
+  return String(item.latest_analysis?.task?.failure?.message || item.latest_analysis?.task?.failure?.code || "匹配任务失败，请重试");
 }
 
 function analysisSummary(item: JsonMap): string {
   const summary = item.analysis_summary || {};
   if (summary.total > 1) return `已生成 ${summary.available || 0}/${summary.total} 份报告`;
+  if (analysisStatus(item) === "queued") return "等待 Worker 领取任务";
+  if (analysisStatus(item) === "running") return "模型正在分析岗位与简历";
+  if (analysisStatus(item) === "retry_wait") return "任务将自动重试";
+  if (analysisStatus(item) === "failed") return analysisFailure(item);
   return item.match_score == null ? "尚无评分" : `${item.match_score} 分`;
 }
 
@@ -166,6 +194,24 @@ async function refreshAll() {
     message(value);
   } finally {
     loading.value = false;
+  }
+}
+
+async function refreshSelectedItem(itemId: string) {
+  const detail = await api<JsonMap>(`/api/v1/job-pool/items/${encodeURIComponent(itemId)}`);
+  if (selected.value?.id === itemId) selected.value = detail;
+}
+
+async function pollActiveMatches() {
+  if (pollingInFlight || loading.value || busy.value || !hasActiveMatches.value) return;
+  pollingInFlight = true;
+  try {
+    await loadPool();
+    if (selected.value) await refreshSelectedItem(selected.value.id);
+  } catch (value) {
+    message(value);
+  } finally {
+    pollingInFlight = false;
   }
 }
 
@@ -272,11 +318,16 @@ async function savePool() {
 }
 
 async function openItem(item: JsonMap) {
+  detailLoading.value = true;
   error.value = "";
   try {
     selected.value = await api<JsonMap>(`/api/v1/job-pool/items/${encodeURIComponent(item.id)}`);
+    await nextTick();
+    document.querySelector<HTMLElement>(".pool-detail")?.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (value) {
     message(value);
+  } finally {
+    detailLoading.value = false;
   }
 }
 
@@ -416,7 +467,13 @@ async function deletePoolItem(item: JsonMap) {
   }
 }
 
-onMounted(refreshAll);
+onMounted(() => {
+  void refreshAll();
+  pollingTimer = window.setInterval(() => { void pollActiveMatches(); }, 3000);
+});
+onBeforeUnmount(() => {
+  if (pollingTimer) window.clearInterval(pollingTimer);
+});
 </script>
 
 <template>
@@ -464,9 +521,9 @@ onMounted(refreshAll);
             <div class="pool-salary-cell"><strong>{{ conditionValue(item, "salary") }}</strong><small>岗位薪资</small></div>
             <div class="pool-date-cell"><strong>{{ formatDateTime(item.captured_at || item.created_at) }}</strong><small>{{ item.source_type === "browser_capture" ? "插件抓取" : "手动入池" }}</small></div>
             <div class="pool-score-cell"><strong>{{ scoreText(item.match_score) }}</strong><small>{{ item.match_score == null ? "尚未完成匹配" : "最高有效分" }}</small></div>
-            <div class="pool-status-cell"><span class="tag" :class="statusClass(item.analysis_status)">{{ analysisInProgress(item) ? "匹配执行中" : analysisReady(item) ? "已有结果" : statusLabel(item.analysis_status) }}</span><small>{{ analysisSummary(item) }}</small></div>
+            <div class="pool-status-cell"><span class="tag" :class="statusClass(analysisStatus(item))">{{ analysisStatusText(item) }}</span><small>{{ analysisSummary(item) }}</small></div>
             <div class="pool-source-cell"><span class="tag neutral">{{ platformLabel(item) }}</span></div>
-            <div class="item-actions pool-row-actions"><button class="button soft small" type="button" @click="openItem(item)">详情</button><RouterLink v-if="analysisReady(item) && item.latest_analysis?.id" class="button outline small" :to="{ path: '/app/seeker/report', query: { analysis_id: item.latest_analysis.id } }">报告</RouterLink><button class="button link-button small" :disabled="busy" type="button" @click="deletePoolItem(item)">删除</button></div>
+            <div class="item-actions pool-row-actions"><button class="button soft small" :disabled="detailLoading" type="button" @click="openItem(item)">详情</button><RouterLink v-if="analysisReady(item) && item.latest_analysis?.id" class="button outline small" :to="{ path: '/app/seeker/report', query: { analysis_id: item.latest_analysis.id } }">报告</RouterLink><button class="button link-button small" :disabled="busy" type="button" @click="deletePoolItem(item)">删除</button></div>
           </article>
         </div>
 
@@ -481,7 +538,8 @@ onMounted(refreshAll);
         <div class="job-condition-summary"><div><strong>地点</strong><span>{{ selectedCondition("location") }}</span></div><div><strong>经验</strong><span>{{ selectedCondition("experience") }}</span></div><div><strong>学历</strong><span>{{ selectedCondition("education") }}</span></div><div><strong>薪资</strong><span>{{ selectedCondition("salary") }}</span></div></div>
         <div class="version-strip"><span class="version-chip">岗位版本 · {{ selected.job_document_version?.id }}</span><span class="version-chip">最近使用简历 · {{ selected.resume_version_id || "待选择" }}</span><span class="version-chip">有效岗位期望 · {{ preferences.length }} 条，合并为 1 次请求</span></div>
         <details class="raw-report"><summary>查看岗位结构化高级信息</summary><pre>{{ JSON.stringify(selected.job_content || {}, null, 2) }}</pre></details>
-        <section v-if="analysisInProgress(selected)" class="callout opportunity" style="margin-top:18px">匹配任务正在执行；本岗位只会发起一次模型请求，全部岗位期望会合并输入。</section>
+        <section v-if="analysisStatus(selected) === 'failed'" class="callout attention" style="margin-top:18px">{{ analysisFailure(selected) }}</section>
+        <section v-else-if="analysisInProgress(selected)" class="callout opportunity" style="margin-top:18px">{{ analysisStatusText(selected) }}：{{ analysisSummary(selected) }}；本岗位只会发起一次模型请求，全部岗位期望会合并输入。</section>
         <section v-else-if="!analysisReady(selected)" class="match-panel" style="margin-top:18px"><div class="card-head"><div><h3>待匹配</h3><p>点击下方“匹配”后选择简历；系统会把全部 {{ preferences.length }} 条有效岗位期望合并为一次请求。</p></div><span class="tag opportunity">尚无结果</span></div></section>
         <div class="item-actions" style="margin-top:14px"><RouterLink v-if="analysisReady(selected) && selected.latest_analysis?.id" class="button primary" :to="{ path: '/app/seeker/report', query: { analysis_id: selected.latest_analysis.id } }">打开最近报告</RouterLink><button v-if="selected.apply_action?.available" class="button soft" type="button" @click="goApply">去投递</button><span v-else-if="selected.source_url" class="tag neutral">原岗位链接当前不可用</span><button v-if="!analysisInProgress(selected)" class="button primary" type="button" :disabled="busy" @click="requestBatchMatch([selected.id])">{{ analysisReady(selected) ? "重新匹配" : "匹配" }}</button><button class="button link-button" type="button" :disabled="busy" @click="deletePoolItem(selected)">删除岗位</button></div>
       </div>

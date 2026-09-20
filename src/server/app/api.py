@@ -3314,6 +3314,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         ).all()
     )
     analysis = analyses[0] if analyses else None
+    analysis_task = db.get(Task, analysis.task_id) if analysis and analysis.task_id else None
     match_score = max(
         (row.ability_score for row in analyses if row.status in {"available", "succeeded"} and row.ability_score is not None),
         default=None,
@@ -3352,6 +3353,18 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
                 "ability_score": analysis.ability_score,
                 "preference_version_id": preference_version.public_id if preference_version else None,
                 "preference_version_ids": _analysis_preference_version_ids(db, analysis) if analysis else [],
+                "task": (
+                    {
+                        "id": analysis_task.public_id,
+                        "status": analysis_task.status,
+                        "current_step": analysis_task.current_step,
+                        "failure": analysis_task.failure,
+                        "retry_count": analysis_task.retry_count,
+                        "updated_at": analysis_task.updated_at.isoformat(),
+                    }
+                    if analysis_task
+                    else None
+                ),
             }
             if analysis
             else None
