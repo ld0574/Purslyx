@@ -124,6 +124,8 @@ from .security import (
 )
 from .services import (
     create_task,
+    decode_score_page_cursor,
+    encode_score_page_cursor,
     fail_task,
     grant_feature,
     grant_trial_if_needed,
@@ -3243,6 +3245,62 @@ def _pool_analysis_summary(rows: list[Analysis]) -> dict[str, int]:
     }
 
 
+def _pool_match_score_expression() -> Any:
+    """返回岗位当前有效分析的最高匹配分，未分析岗位为 NULL。"""
+
+    return (
+        select(func.max(Analysis.ability_score))
+        .where(
+            Analysis.job_pool_item_id == JobPoolItem.id,
+            Analysis.deleted_at.is_(None),
+            Analysis.status.in_(("available", "succeeded")),
+        )
+        .correlate(JobPoolItem)
+        .scalar_subquery()
+    )
+
+
+def _page_pool_rows_by_score(
+    db: Session,
+    statement: Any,
+    *,
+    cursor: str | None,
+    limit: int,
+) -> tuple[list[JobPoolItem], dict[str, Any]]:
+    """按最高匹配分 DESC、岗位主键 DESC 稳定分页；无分岗位排在最后。"""
+
+    if not 1 <= limit <= 100:
+        raise DomainError("PAGINATION_LIMIT_INVALID", "limit 必须在 1 到 100 之间", 422)
+    score_expression = _pool_match_score_expression()
+    if cursor:
+        score, row_id = decode_score_page_cursor(cursor)
+        if score is None:
+            statement = statement.where(score_expression.is_(None), JobPoolItem.id < row_id)
+        else:
+            statement = statement.where(
+                or_(
+                    score_expression < score,
+                    and_(score_expression == score, JobPoolItem.id < row_id),
+                    score_expression.is_(None),
+                )
+            )
+    statement = statement.order_by(score_expression.desc().nullslast(), JobPoolItem.id.desc()).limit(limit + 1)
+    rows = list(db.scalars(statement).all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    next_cursor = None
+    if has_more and rows:
+        last_score = db.scalar(
+            select(func.max(Analysis.ability_score)).where(
+                Analysis.job_pool_item_id == rows[-1].id,
+                Analysis.deleted_at.is_(None),
+                Analysis.status.in_(("available", "succeeded")),
+            )
+        )
+        next_cursor = encode_score_page_cursor(float(last_score) if last_score is not None else None, rows[-1].id)
+    return rows, {"next_cursor": next_cursor, "has_more": has_more, "limit": limit}
+
+
 def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[str, Any]:
     job_version = db.get(DocumentVersion, item.job_document_version_id) if item.job_document_version_id else None
     resume_version = db.get(DocumentVersion, item.resume_version_id) if item.resume_version_id else None
@@ -3255,6 +3313,10 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         ).all()
     )
     analysis = analyses[0] if analyses else None
+    match_score = max(
+        (row.ability_score for row in analyses if row.status in {"available", "succeeded"} and row.ability_score is not None),
+        default=None,
+    )
     preference_version = db.get(PreferenceVersion, analysis.preference_version_id) if analysis and analysis.preference_version_id else None
     browser_draft = db.get(BrowserJobDraft, item.source_browser_draft_id) if item.source_browser_draft_id else None
     fields = item.job_fields or {}
@@ -3275,6 +3337,8 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         "job_conditions": {
             "location": location_value,
             "work_mode": fields.get("work_mode"),
+            "experience": fields.get("experience_text") or fields.get("experience"),
+            "education": fields.get("education_text") or fields.get("education"),
             "salary": salary_value,
         },
         "job_document_version": {"id": job_version.public_id, "version_no": job_version.version_no} if job_version else None,
@@ -3291,6 +3355,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
             else None
         ),
         "analysis_summary": _pool_analysis_summary(analyses),
+        "match_score": match_score,
         "apply_action": _apply_action(item) if item.source_url else {"available": False},
         "revision": item.revision,
         "captured_at": browser_draft.captured_at.isoformat() if browser_draft else item.created_at.isoformat(),
@@ -3721,8 +3786,15 @@ def list_pool_items(
     analysis_status: str | None = Query(default=None, max_length=32),
     platform: str | None = Query(default=None, max_length=32),
     search: str | None = Query(default=None, max_length=120),
+    job_title: str | None = Query(default=None, max_length=200),
+    company_name: str | None = Query(default=None, max_length=200),
+    salary_min: float | None = Query(default=None, ge=0),
+    salary_max: float | None = Query(default=None, ge=0),
+    match_score_min: float | None = Query(default=None, ge=0, le=100),
+    match_score_max: float | None = Query(default=None, ge=0, le=100),
     created_from: datetime | None = Query(default=None),
     created_to: datetime | None = Query(default=None),
+    sort_by: Literal["created_at", "match_score"] = Query(default="created_at", alias="sort"),
     cursor: str | None = Query(default=None, max_length=512),
     limit: int = Query(default=20, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -3741,16 +3813,39 @@ def list_pool_items(
             or_(
                 JobPoolItem.job_title.ilike(search_pattern),
                 JobPoolItem.company_name.ilike(search_pattern),
-                JobPoolItem.source_url.ilike(search_pattern),
             )
         )
+    if job_title and job_title.strip():
+        statement = statement.where(JobPoolItem.job_title.ilike(f"%{job_title.strip()}%"))
+    if company_name and company_name.strip():
+        statement = statement.where(JobPoolItem.company_name.ilike(f"%{company_name.strip()}%"))
+    if salary_min is not None or salary_max is not None:
+        if salary_min is not None and salary_max is not None and salary_min > salary_max:
+            raise DomainError("POOL_SALARY_RANGE_INVALID", "薪资范围无效", 422)
+        salary_floor = JobPoolItem.job_fields["salary"]["min"].as_float()
+        salary_ceiling = JobPoolItem.job_fields["salary"]["max"].as_float()
+        if salary_min is not None:
+            statement = statement.where(salary_ceiling >= salary_min)
+        if salary_max is not None:
+            statement = statement.where(salary_floor <= salary_max)
+    if match_score_min is not None or match_score_max is not None:
+        if match_score_min is not None and match_score_max is not None and match_score_min > match_score_max:
+            raise DomainError("POOL_SCORE_RANGE_INVALID", "匹配分数范围无效", 422)
+        score_expression = _pool_match_score_expression()
+        if match_score_min is not None:
+            statement = statement.where(score_expression >= match_score_min)
+        if match_score_max is not None:
+            statement = statement.where(score_expression <= match_score_max)
     if created_from:
         statement = statement.where(JobPoolItem.created_at >= created_from)
     if created_to:
         statement = statement.where(JobPoolItem.created_at < created_to)
     if created_from and created_to and created_from >= created_to:
         raise DomainError("POOL_RANGE_INVALID", "岗位时间范围无效", 422)
-    rows, page = page_rows(db, statement, JobPoolItem, cursor=cursor, limit=limit, timestamp_field="created_at")
+    if sort_by == "match_score":
+        rows, page = _page_pool_rows_by_score(db, statement, cursor=cursor, limit=limit)
+    else:
+        rows, page = page_rows(db, statement, JobPoolItem, cursor=cursor, limit=limit, timestamp_field="created_at")
     return _ok(request, {"items": [_pool_view(db, row) for row in rows], "page": page})
 
 
@@ -4898,6 +4993,8 @@ def _admin_job_pool_view(db: Session, item: JobPoolItem, *, detail: bool = False
         "job_conditions": {
             "location": location_value,
             "work_mode": fields.get("work_mode"),
+            "experience": fields.get("experience_text") or fields.get("experience"),
+            "education": fields.get("education_text") or fields.get("education"),
             "salary": salary_value,
         },
         "job_document_version": {"id": job_version.public_id, "version_no": job_version.version_no} if job_version else None,

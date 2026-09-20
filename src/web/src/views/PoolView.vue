@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { useRoute } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
@@ -21,11 +21,24 @@ const selected = ref<JsonMap | null>(null);
 const selectedIds = ref<string[]>([]);
 const selectedResumeVersionId = ref("");
 const searchText = ref("");
+const jobTitleFilter = ref("");
+const companyFilter = ref("");
+const salaryMinFilter = ref("");
+const salaryMaxFilter = ref("");
+const createdFromFilter = ref("");
+const createdToFilter = ref("");
+const scoreMinFilter = ref("");
+const scoreMaxFilter = ref("");
 const statusFilter = ref("");
 const platformFilter = ref("");
+const sortFilter = ref("created_at");
 const currentCursor = ref("");
 const cursorHistory = ref<string[]>([]);
 const page = reactive({ has_more: false, next_cursor: "", limit: 20 });
+const resumeDialog = ref<HTMLDialogElement | null>(null);
+const resumeDialogOpen = ref(false);
+const resumeDialogSelection = ref("");
+const matchingPoolIds = ref<string[]>([]);
 const form = reactive({
   job_title: "",
   company_name: "",
@@ -41,6 +54,20 @@ const selectedCount = computed(() => selectedIds.value.length);
 const estimatedAnalysisCount = computed(() => selectedCount.value * preferences.value.length);
 const allPageSelected = computed(() => items.value.length > 0 && items.value.every((item) => selectedIds.value.includes(item.id)));
 const currentPageNumber = computed(() => cursorHistory.value.length + 1);
+const hasFilters = computed(() => Boolean(
+  searchText.value.trim()
+  || jobTitleFilter.value.trim()
+  || companyFilter.value.trim()
+  || salaryMinFilter.value
+  || salaryMaxFilter.value
+  || createdFromFilter.value
+  || createdToFilter.value
+  || scoreMinFilter.value
+  || scoreMaxFilter.value
+  || statusFilter.value
+  || platformFilter.value
+  || sortFilter.value !== "created_at",
+));
 
 function message(value: unknown) {
   error.value = value instanceof Error ? value.message : "操作失败";
@@ -57,7 +84,17 @@ function analysisInProgress(item: JsonMap): boolean {
 function analysisSummary(item: JsonMap): string {
   const summary = item.analysis_summary || {};
   if (summary.total > 1) return `期望匹配 ${summary.available || 0}/${summary.total} 条`;
-  return item.latest_analysis?.ability_score == null ? "尚无评分" : `${item.latest_analysis.ability_score} 分`;
+  return item.match_score == null ? "尚无评分" : `${item.match_score} 分`;
+}
+
+function scoreText(value: unknown): string {
+  return value == null || value === "" ? "未匹配" : `${value} 分`;
+}
+
+function platformLabel(item: JsonMap): string {
+  if (item.platform === "boss") return "BOSS";
+  if (item.platform === "liepin") return "猎聘";
+  return "手动录入";
 }
 
 function conditionValue(item: JsonMap, key: string): string {
@@ -83,8 +120,14 @@ async function loadReferences() {
   documents.value = documentResult.items || [];
   preferences.value = preferenceResult.items || [];
   if (!resumes.value.some((item) => item.latest_version?.id === selectedResumeVersionId.value)) {
-    selectedResumeVersionId.value = resumes.value[0]?.latest_version?.id || "";
+    selectedResumeVersionId.value = resumes.value.length === 1 ? resumes.value[0]?.latest_version?.id || "" : "";
   }
+}
+
+function toIso(value: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
 }
 
 async function loadPool(reset = false) {
@@ -94,8 +137,17 @@ async function loadPool(reset = false) {
   }
   const query = new URLSearchParams({ limit: String(page.limit) });
   if (searchText.value.trim()) query.set("search", searchText.value.trim());
+  if (jobTitleFilter.value.trim()) query.set("job_title", jobTitleFilter.value.trim());
+  if (companyFilter.value.trim()) query.set("company_name", companyFilter.value.trim());
+  if (salaryMinFilter.value) query.set("salary_min", salaryMinFilter.value);
+  if (salaryMaxFilter.value) query.set("salary_max", salaryMaxFilter.value);
+  if (scoreMinFilter.value) query.set("match_score_min", scoreMinFilter.value);
+  if (scoreMaxFilter.value) query.set("match_score_max", scoreMaxFilter.value);
+  if (createdFromFilter.value && toIso(createdFromFilter.value)) query.set("created_from", toIso(createdFromFilter.value));
+  if (createdToFilter.value && toIso(createdToFilter.value)) query.set("created_to", toIso(createdToFilter.value));
   if (statusFilter.value) query.set("analysis_status", statusFilter.value);
   if (platformFilter.value) query.set("platform", platformFilter.value);
+  if (sortFilter.value !== "created_at") query.set("sort", sortFilter.value);
   if (currentCursor.value) query.set("cursor", currentCursor.value);
   const result = await api<JsonMap>(`/api/v1/job-pool/items?${query.toString()}`);
   items.value = result.items || [];
@@ -119,6 +171,7 @@ async function refreshAll() {
 
 async function applyFilters() {
   selectedIds.value = [];
+  selected.value = null;
   try {
     await loadPool(true);
   } catch (value) {
@@ -153,6 +206,22 @@ function toggleAll() {
   } else {
     selectedIds.value = Array.from(new Set([...selectedIds.value, ...items.value.map((item) => item.id)]));
   }
+}
+
+function clearFilters() {
+  searchText.value = "";
+  jobTitleFilter.value = "";
+  companyFilter.value = "";
+  salaryMinFilter.value = "";
+  salaryMaxFilter.value = "";
+  createdFromFilter.value = "";
+  createdToFilter.value = "";
+  scoreMinFilter.value = "";
+  scoreMaxFilter.value = "";
+  statusFilter.value = "";
+  platformFilter.value = "";
+  sortFilter.value = "created_at";
+  void applyFilters();
 }
 
 function manualJobText(): string {
@@ -211,13 +280,13 @@ async function openItem(item: JsonMap) {
   }
 }
 
-async function startBatchMatch(ids: string[] = selectedIds.value) {
+async function submitBatchMatch(ids: string[], resumeVersionId: string) {
   const poolIds = Array.from(new Set(ids));
   if (!poolIds.length) {
     error.value = "请先勾选至少一个岗位";
     return;
   }
-  if (!selectedResumeVersionId.value) {
+  if (!resumeVersionId) {
     error.value = "请先选择本次匹配使用的简历";
     return;
   }
@@ -234,7 +303,7 @@ async function startBatchMatch(ids: string[] = selectedIds.value) {
       idempotencyKey: idempotencyKey("pool-batch-analysis"),
       body: {
         pool_item_ids: poolIds,
-        resume_document_version_id: selectedResumeVersionId.value,
+        resume_document_version_id: resumeVersionId,
         confirm_usage: true,
       },
     });
@@ -252,6 +321,53 @@ async function startBatchMatch(ids: string[] = selectedIds.value) {
   } finally {
     busy.value = false;
   }
+}
+
+async function requestBatchMatch(ids: string[] = selectedIds.value) {
+  const poolIds = Array.from(new Set(ids));
+  if (!poolIds.length) {
+    error.value = "请先勾选至少一个岗位";
+    return;
+  }
+  if (!resumes.value.length) {
+    error.value = "请先上传简历后才能匹配";
+    return;
+  }
+  if (!preferences.value.length) {
+    error.value = "还没有有效岗位期望，请先到“简历”页面创建至少一条";
+    return;
+  }
+  if (resumes.value.length === 1) {
+    selectedResumeVersionId.value = resumes.value[0].latest_version.id;
+    await submitBatchMatch(poolIds, selectedResumeVersionId.value);
+    return;
+  }
+  matchingPoolIds.value = poolIds;
+  resumeDialogSelection.value = resumes.value.some((item) => item.latest_version?.id === selectedResumeVersionId.value)
+    ? selectedResumeVersionId.value
+    : "";
+  resumeDialogOpen.value = true;
+  await nextTick();
+  if (resumeDialog.value && !resumeDialog.value.open) resumeDialog.value.showModal();
+}
+
+function closeResumeDialog() {
+  if (resumeDialog.value?.open) resumeDialog.value.close();
+  resumeDialogOpen.value = false;
+  resumeDialogSelection.value = "";
+  matchingPoolIds.value = [];
+}
+
+async function confirmResumeMatch() {
+  const poolIds = [...matchingPoolIds.value];
+  const resumeVersionId = resumeDialogSelection.value;
+  if (!resumeVersionId) {
+    error.value = "请选择一份简历后再匹配";
+    return;
+  }
+  selectedResumeVersionId.value = resumeVersionId;
+  closeResumeDialog();
+  await submitBatchMatch(poolIds, resumeVersionId);
 }
 
 async function goApply() {
@@ -309,34 +425,44 @@ onMounted(refreshAll);
     <AsyncState :loading="loading" :error="error" :success="success" />
 
     <template v-if="!loading">
-      <section class="card pool-toolbar">
-        <div class="pool-toolbar-main">
-          <div class="pool-search field-group"><label for="pool-search">搜索岗位、公司或链接</label><input id="pool-search" v-model="searchText" class="field" placeholder="输入关键词后按回车或点击搜索" @keyup.enter="applyFilters" /></div>
-          <div class="field-group"><label for="pool-status">匹配状态</label><select id="pool-status" v-model="statusFilter" class="select" @change="applyFilters"><option value="">全部状态</option><option value="awaiting_requirements">待匹配</option><option value="queued">排队中</option><option value="running">执行中</option><option value="available">已有结果</option><option value="failed">失败可重试</option></select></div>
-          <div class="field-group"><label for="pool-platform">来源平台</label><select id="pool-platform" v-model="platformFilter" class="select" @change="applyFilters"><option value="">全部来源</option><option value="boss">BOSS</option><option value="liepin">猎聘</option><option value="manual">手动录入</option></select></div>
-          <div class="pool-toolbar-actions"><button class="button primary" type="button" @click="applyFilters">搜索</button><button v-if="searchText || statusFilter || platformFilter" class="button link-button" type="button" @click="searchText = ''; statusFilter = ''; platformFilter = ''; applyFilters()">清空筛选</button></div>
-        </div>
-      </section>
-
       <section class="card pool-workbench">
-        <div class="card-head pool-list-head"><div><h3>岗位列表</h3><p>按入池时间倒序；勾选岗位后，只需选择一份简历即可开始批量匹配。</p></div><div class="item-actions"><span class="tag neutral">本页 {{ items.length }} 条</span><details class="manual-job-details"><summary class="button outline small">手动新增岗位</summary><form id="pool-form" class="manual-job-form" @submit.prevent="savePool"><div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="form.job_title" class="field" required placeholder="例如：高级前端工程师" /></div><div class="field-group"><label>公司</label><input v-model="form.company_name" class="field" placeholder="未披露可留空" /></div></div><div class="form-row"><div class="field-group"><label>工作地点</label><input v-model="form.location_text" class="field" placeholder="例如：杭州、上海" /></div><div class="field-group"><label>办公方式</label><select v-model="form.work_mode" class="select"><option value="">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div><div class="field-group"><label>薪资原文</label><input v-model="form.salary_text" class="field" placeholder="例如：20–30K/月·14薪；未知可留空" /></div><div class="field-group"><label>岗位 JD</label><textarea v-model="form.job_text" class="textarea" required placeholder="粘贴完整职责和任职要求" /></div><div class="item-actions"><button class="button primary" :disabled="busy" type="submit">保存岗位</button><span class="micro">保存后不会自动消耗匹配次数。</span></div></form></details></div></div>
+        <form class="pool-filter-panel" @submit.prevent="applyFilters">
+          <div class="pool-filter-grid">
+            <div class="field-group pool-filter-keyword"><label for="pool-search">快速搜索岗位名称或公司名称</label><input id="pool-search" v-model="searchText" class="field" placeholder="岗位名称或公司名称" /></div>
+            <div class="field-group"><label for="pool-job-title">岗位名称</label><input id="pool-job-title" v-model="jobTitleFilter" class="field" placeholder="可单独筛选" /></div>
+            <div class="field-group"><label for="pool-company">公司名称</label><input id="pool-company" v-model="companyFilter" class="field" placeholder="可单独筛选" /></div>
+            <div class="field-group"><label for="pool-salary-min">薪资最低（元/月）</label><input id="pool-salary-min" v-model="salaryMinFilter" class="field" type="number" min="0" step="1000" placeholder="不限" /></div>
+            <div class="field-group"><label for="pool-salary-max">薪资最高（元/月）</label><input id="pool-salary-max" v-model="salaryMaxFilter" class="field" type="number" min="0" step="1000" placeholder="不限" /></div>
+            <div class="field-group"><label for="pool-created-from">入池时间起</label><input id="pool-created-from" v-model="createdFromFilter" class="field" type="datetime-local" /></div>
+            <div class="field-group"><label for="pool-created-to">入池时间止</label><input id="pool-created-to" v-model="createdToFilter" class="field" type="datetime-local" /></div>
+            <div class="field-group"><label for="pool-score-min">匹配分数最低</label><input id="pool-score-min" v-model="scoreMinFilter" class="field" type="number" min="0" max="100" step="0.1" placeholder="不限" /></div>
+            <div class="field-group"><label for="pool-score-max">匹配分数最高</label><input id="pool-score-max" v-model="scoreMaxFilter" class="field" type="number" min="0" max="100" step="0.1" placeholder="不限" /></div>
+            <div class="field-group"><label for="pool-status">匹配状态</label><select id="pool-status" v-model="statusFilter" class="select"><option value="">全部状态</option><option value="awaiting_requirements">待匹配</option><option value="queued">排队中</option><option value="running">执行中</option><option value="available">已有结果</option><option value="failed">失败可重试</option></select></div>
+            <div class="field-group"><label for="pool-platform">来源平台</label><select id="pool-platform" v-model="platformFilter" class="select"><option value="">全部来源</option><option value="boss">BOSS</option><option value="liepin">猎聘</option><option value="manual">手动录入</option></select></div>
+            <div class="field-group"><label for="pool-sort">排序</label><select id="pool-sort" v-model="sortFilter" class="select"><option value="created_at">入池时间（新到旧）</option><option value="match_score">匹配分数（高到低）</option></select></div>
+          </div>
+          <div class="pool-toolbar-actions"><button class="button primary" type="submit">搜索</button><button v-if="hasFilters" class="button link-button" type="button" @click="clearFilters">清空筛选</button><span class="micro">搜索不包含原岗位链接；默认按入池时间倒序。</span></div>
+        </form>
+
+        <div class="card-head pool-list-head"><div><h3>岗位列表</h3><p>勾选岗位后点击“匹配”；只有多份简历时才会弹窗让你选择，岗位期望默认全部参与。</p></div><div class="item-actions"><span class="tag neutral">本页 {{ items.length }} 条</span><details class="manual-job-details"><summary class="button outline small">手动新增岗位</summary><form id="pool-form" class="manual-job-form" @submit.prevent="savePool"><div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="form.job_title" class="field" required placeholder="例如：高级前端工程师" /></div><div class="field-group"><label>公司</label><input v-model="form.company_name" class="field" placeholder="未披露可留空" /></div></div><div class="form-row"><div class="field-group"><label>工作地点</label><input v-model="form.location_text" class="field" placeholder="例如：杭州、上海" /></div><div class="field-group"><label>办公方式</label><select v-model="form.work_mode" class="select"><option value="">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div><div class="field-group"><label>薪资原文</label><input v-model="form.salary_text" class="field" placeholder="例如：20–30K/月·14薪；未知可留空" /></div><div class="field-group"><label>岗位 JD</label><textarea v-model="form.job_text" class="textarea" required placeholder="粘贴完整职责和任职要求" /></div><div class="item-actions"><button class="button primary" :disabled="busy" type="submit">保存岗位</button><span class="micro">保存后不会自动消耗匹配次数。</span></div></form></details></div></div>
 
         <div class="batch-toolbar">
           <label class="select-all-control"><input type="checkbox" :checked="allPageSelected" :indeterminate="selectedCount > 0 && !allPageSelected" @change="toggleAll" /><span>全选本页</span></label>
           <span class="batch-selected-count">已选 {{ selectedCount }} 个岗位</span>
-          <div class="batch-resume field-group"><label for="batch-resume">本次使用的简历</label><select id="batch-resume" v-model="selectedResumeVersionId" class="select"><option value="" disabled>请选择已确认简历</option><option v-for="item in resumes" :key="item.latest_version.id" :value="item.latest_version.id">{{ item.title }} · v{{ item.latest_version.version_no }}</option></select></div>
-          <div class="batch-submit"><button class="button primary" :disabled="busy || !selectedCount || !selectedResumeVersionId || !preferences.length" type="button" @click="startBatchMatch()">开始匹配<span v-if="selectedCount">（{{ selectedCount }} 个岗位 × {{ preferences.length }} 条期望，共 {{ estimatedAnalysisCount }} 次）</span></button><small v-if="!preferences.length" class="batch-hint">请先创建岗位期望</small><small v-else class="batch-hint">岗位期望默认全部使用，不需要逐条选择</small></div>
+          <div class="batch-submit"><button class="button primary" :disabled="busy || !selectedCount" type="button" @click="requestBatchMatch()">匹配<span v-if="selectedCount">（{{ selectedCount }} 个岗位 × {{ preferences.length }} 条期望，共 {{ estimatedAnalysisCount }} 次）</span></button><small v-if="!resumes.length" class="batch-hint">还没有简历，点击匹配后会提示先上传简历。</small><RouterLink v-if="!resumes.length" class="button outline small" to="/app/seeker/resume">去上传简历</RouterLink><small v-else-if="!preferences.length" class="batch-hint">请先创建岗位期望。</small><small v-else class="batch-hint">岗位期望默认全部使用，不需要逐条选择。</small></div>
         </div>
 
-        <div v-if="!items.length" class="empty pool-empty"><div><strong>{{ searchText || statusFilter || platformFilter ? "没有符合筛选条件的岗位" : "匹配池还是空的" }}</strong><p>{{ searchText || statusFilter || platformFilter ? "换个关键词或清空筛选后重试。" : "可以用浏览器插件抓取岗位，或点击右上角手动新增。" }}</p></div></div>
+        <div v-if="!items.length" class="empty pool-empty"><div><strong>{{ hasFilters ? "没有符合筛选条件的岗位" : "匹配池还是空的" }}</strong><p>{{ hasFilters ? "换个筛选条件或清空筛选后重试。" : "可以用浏览器插件抓取岗位，或点击右上角手动新增。" }}</p></div></div>
         <div v-else class="pool-table" role="table" aria-label="匹配池岗位列表">
-          <div class="pool-table-head" role="row"><span>岗位</span><span>岗位条件</span><span>入池时间</span><span>匹配状态</span><span>操作</span></div>
+          <div class="pool-table-head" role="row"><span>岗位 / 公司及条件</span><span>薪资</span><span>入池时间</span><span>匹配分数</span><span>匹配状态</span><span>来源平台</span><span>操作</span></div>
           <article v-for="item in items" :key="item.id" class="pool-table-row" :class="{ selected: selectedIds.includes(item.id) }" role="row">
-            <div class="pool-job-cell"><input v-model="selectedIds" type="checkbox" :value="item.id" :aria-label="`选择岗位 ${item.job_title}`" /><div class="pool-job-title"><strong>{{ item.job_title }}</strong><span>{{ item.company_name || "未标注公司" }} · <span class="tag neutral inline-tag">{{ item.platform === "boss" ? "BOSS" : item.platform === "liepin" ? "猎聘" : "手动" }}</span></span><span v-if="item.missing_conditions?.length" class="pool-missing">待补充：{{ item.missing_conditions.join("、") }}</span></div></div>
-            <div class="pool-condition-cell"><span>地点：{{ conditionValue(item, "location") }}</span><span>方式：{{ statusLabel(conditionValue(item, "work_mode")) }}</span><span>薪资：{{ conditionValue(item, "salary") }}</span></div>
+            <div class="pool-job-cell"><input v-model="selectedIds" type="checkbox" :value="item.id" :aria-label="`选择岗位 ${item.job_title}`" /><div class="pool-job-title"><strong>{{ item.job_title }}</strong><span class="pool-job-subline">{{ item.company_name || "未标注公司" }} · {{ conditionValue(item, "location") }} · {{ conditionValue(item, "experience") }} · {{ conditionValue(item, "education") }}</span></div></div>
+            <div class="pool-salary-cell"><strong>{{ conditionValue(item, "salary") }}</strong><small>岗位薪资</small></div>
             <div class="pool-date-cell"><strong>{{ formatDateTime(item.captured_at || item.created_at) }}</strong><small>{{ item.source_type === "browser_capture" ? "插件抓取" : "手动入池" }}</small></div>
+            <div class="pool-score-cell"><strong>{{ scoreText(item.match_score) }}</strong><small>{{ item.match_score == null ? "尚未完成匹配" : "最高有效分" }}</small></div>
             <div class="pool-status-cell"><span class="tag" :class="statusClass(item.analysis_status)">{{ analysisInProgress(item) ? "匹配执行中" : analysisReady(item) ? "已有结果" : statusLabel(item.analysis_status) }}</span><small>{{ analysisSummary(item) }}</small></div>
-            <div class="item-actions pool-row-actions"><button class="button soft small" type="button" @click="openItem(item)">{{ analysisReady(item) ? "查看" : analysisInProgress(item) ? "进度" : "匹配" }}</button><RouterLink v-if="analysisReady(item) && item.latest_analysis?.id" class="button outline small" :to="{ path: '/app/seeker/report', query: { analysis_id: item.latest_analysis.id } }">报告</RouterLink><button class="button link-button small" :disabled="busy" type="button" @click="deletePoolItem(item)">删除</button></div>
+            <div class="pool-source-cell"><span class="tag neutral">{{ platformLabel(item) }}</span></div>
+            <div class="item-actions pool-row-actions"><button class="button soft small" type="button" @click="openItem(item)">详情</button><RouterLink v-if="analysisReady(item) && item.latest_analysis?.id" class="button outline small" :to="{ path: '/app/seeker/report', query: { analysis_id: item.latest_analysis.id } }">报告</RouterLink><button class="button link-button small" :disabled="busy" type="button" @click="deletePoolItem(item)">删除</button></div>
           </article>
         </div>
 
@@ -347,15 +473,22 @@ onMounted(refreshAll);
     <section v-if="selected" class="card pool-detail" style="margin-top:18px">
       <div class="card-head"><div><div class="eyebrow">JOB DETAIL</div><h3>{{ selected.job_title }}</h3><p>{{ selected.company_name || "未标注公司" }} · 入池 {{ formatDateTime(selected.captured_at || selected.created_at) }} · 版本 {{ selected.revision }}</p></div><button class="button link-button" type="button" @click="selected = null">关闭</button></div>
       <div class="card-body">
-        <div v-if="selected.missing_conditions?.length" class="callout opportunity"><strong>待补充岗位条件：</strong>{{ selected.missing_conditions.join("、") }}<span class="micro">这些信息不会被系统猜测，补充后报告的条件判断会更准确。</span></div>
         <div v-if="selected.blocking_reasons?.length" class="callout opportunity">{{ selected.blocking_reasons.join("；") }}</div>
-        <div class="job-condition-summary"><div><strong>地点</strong><span>{{ selectedCondition("location") }}</span></div><div><strong>办公方式</strong><span>{{ statusLabel(selectedCondition("work_mode")) }}</span></div><div><strong>薪资</strong><span>{{ selectedCondition("salary") }}</span></div></div>
+        <div class="job-condition-summary"><div><strong>地点</strong><span>{{ selectedCondition("location") }}</span></div><div><strong>经验</strong><span>{{ selectedCondition("experience") }}</span></div><div><strong>学历</strong><span>{{ selectedCondition("education") }}</span></div><div><strong>薪资</strong><span>{{ selectedCondition("salary") }}</span></div></div>
         <div class="version-strip"><span class="version-chip">岗位版本 · {{ selected.job_document_version?.id }}</span><span class="version-chip">最近使用简历 · {{ selected.resume_version_id || "待选择" }}</span><span class="version-chip">有效岗位期望 · {{ preferences.length }} 条</span></div>
         <details class="raw-report"><summary>查看岗位结构化高级信息</summary><pre>{{ JSON.stringify(selected.job_content || {}, null, 2) }}</pre></details>
         <section v-if="analysisInProgress(selected)" class="callout opportunity" style="margin-top:18px">匹配任务正在执行；批量任务会按岗位期望分别生成报告。</section>
-        <section v-else-if="!analysisReady(selected)" class="match-panel" style="margin-top:18px"><div class="card-head"><div><h3>开始匹配</h3><p>只选择一份简历；系统会自动使用全部 {{ preferences.length }} 条有效岗位期望，每条期望消耗 1 次分析。</p></div><span class="tag opportunity">待匹配</span></div><div class="form-row"><div class="field-group"><label>简历版本</label><select v-model="selectedResumeVersionId" class="select" required><option value="" disabled>请选择已确认简历</option><option v-for="item in resumes" :key="item.latest_version.id" :value="item.latest_version.id">{{ item.title }} · v{{ item.latest_version.version_no }}</option></select></div><div class="field-group"><label>本次预计消耗</label><div class="field-static">{{ preferences.length }} 次分析（{{ preferences.length }} 条有效岗位期望）</div></div></div></section>
-        <div class="item-actions" style="margin-top:14px"><RouterLink v-if="analysisReady(selected) && selected.latest_analysis?.id" class="button primary" :to="{ path: '/app/seeker/report', query: { analysis_id: selected.latest_analysis.id } }">打开最近报告</RouterLink><button v-if="selected.apply_action?.available" class="button soft" type="button" @click="goApply">去投递</button><span v-else-if="selected.source_url" class="tag neutral">原岗位链接当前不可用</span><button v-if="!analysisInProgress(selected)" class="button primary" type="button" :disabled="busy || !selectedResumeVersionId || !preferences.length" @click="startBatchMatch([selected.id])">{{ analysisReady(selected) ? "使用新简历重新匹配" : `开始匹配（${preferences.length} 条期望）` }}</button><button class="button link-button" type="button" :disabled="busy" @click="deletePoolItem(selected)">删除岗位</button></div>
+        <section v-else-if="!analysisReady(selected)" class="match-panel" style="margin-top:18px"><div class="card-head"><div><h3>待匹配</h3><p>点击下方“匹配”后选择简历；系统会自动使用全部 {{ preferences.length }} 条有效岗位期望。</p></div><span class="tag opportunity">尚无结果</span></div></section>
+        <div class="item-actions" style="margin-top:14px"><RouterLink v-if="analysisReady(selected) && selected.latest_analysis?.id" class="button primary" :to="{ path: '/app/seeker/report', query: { analysis_id: selected.latest_analysis.id } }">打开最近报告</RouterLink><button v-if="selected.apply_action?.available" class="button soft" type="button" @click="goApply">去投递</button><span v-else-if="selected.source_url" class="tag neutral">原岗位链接当前不可用</span><button v-if="!analysisInProgress(selected)" class="button primary" type="button" :disabled="busy" @click="requestBatchMatch([selected.id])">{{ analysisReady(selected) ? "重新匹配" : "匹配" }}</button><button class="button link-button" type="button" :disabled="busy" @click="deletePoolItem(selected)">删除岗位</button></div>
       </div>
     </section>
+
+    <dialog v-if="resumeDialogOpen" ref="resumeDialog" class="pool-resume-dialog" @cancel.prevent="closeResumeDialog" @close="resumeDialogOpen = false">
+      <form class="pool-resume-dialog-form" @submit.prevent="confirmResumeMatch">
+        <div class="card-head"><div><div class="eyebrow">SELECT RESUME</div><h3>选择匹配简历</h3><p>本次将匹配 {{ matchingPoolIds.length }} 个岗位，并默认使用全部 {{ preferences.length }} 条有效岗位期望。</p></div><button class="button link-button small" type="button" @click="closeResumeDialog">关闭</button></div>
+        <div class="resume-choice-list"><label v-for="item in resumes" :key="item.latest_version.id" class="resume-choice" :class="{ selected: resumeDialogSelection === item.latest_version.id }"><input v-model="resumeDialogSelection" type="radio" name="pool-resume-choice" :value="item.latest_version.id" /><span><strong>{{ item.title }}</strong><small>简历版本 v{{ item.latest_version.version_no }}</small></span></label></div>
+        <div class="item-actions pool-dialog-actions"><button class="button soft" type="button" @click="closeResumeDialog">取消</button><button class="button primary" type="submit" :disabled="busy || !resumeDialogSelection">确认匹配</button></div>
+      </form>
+    </dialog>
   </AppShell>
 </template>

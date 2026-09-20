@@ -109,10 +109,18 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
         assert f'id="{selector}"' in materials
     assert 'id="pool-form"' in pool
     assert "系统会自动使用全部有效岗位期望" in pool
-    assert "批量匹配" in pool
+    assert "选择匹配简历" in pool
     assert 'id="pool-search"' in pool
+    assert 'class="pool-filter-panel"' in pool
+    assert 'id="pool-salary-min"' in pool
+    assert 'id="pool-created-from"' in pool
+    assert 'id="pool-score-min"' in pool
+    assert 'value="match_score"' in pool
+    assert "<dialog" in pool
+    assert "requestBatchMatch" in pool
+    assert "详情" in pool
     assert "下一页" in pool
-    assert "missing_conditions" in pool
+    assert "missing_conditions" not in pool
     assert 'type: "document_version", job_document_version_id: jobVersion.id' in pool
     assert "/api/v1/job-pool/items/batch-analyze" in pool
     assert "preference_version_id" not in pool

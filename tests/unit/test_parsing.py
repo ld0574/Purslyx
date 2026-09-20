@@ -132,12 +132,14 @@ def test_resume_parser_preserves_only_supplied_segments() -> None:
 
 def test_job_parser_keeps_missing_fields_unknown() -> None:
     result = parse_job_text(
-        "高级后端开发工程师\n公司：示例科技\n地点：杭州／上海\n薪资：20K-30K/月\n现场办公\n1、熟悉 Python\n负责 API 开发"
+        "高级后端开发工程师\n公司：示例科技\n地点：杭州／上海\n薪资：20K-30K/月\n3-5年，本科\n现场办公\n1、熟悉 Python\n负责 API 开发"
     )["job_fields"]
     assert result["title"] == "高级后端开发工程师"
     assert result["company_name"] == "示例科技"
     assert result["locations"] == ["杭州", "上海"]
     assert result["work_mode"] == "onsite"
+    assert result["experience_text"] == "3-5年，本科"
+    assert result["education_text"] == "3-5年，本科"
     assert result["salary"]["min"] == "20000.0"
     assert result["salary"]["max"] == "30000.0"
     assert result["salary"]["currency"] is None

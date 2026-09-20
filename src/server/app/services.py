@@ -106,6 +106,38 @@ def decode_page_cursor(value: str) -> tuple[datetime, int]:
     return timestamp.astimezone(timezone.utc), row_id
 
 
+def encode_score_page_cursor(value: float | None, row_id: int) -> str:
+    """生成按匹配分倒序分页的游标；无分岗位统一排在有分岗位之后。"""
+
+    payload = {"v": 1, "score": float(value) if value is not None else None, "id": int(row_id)}
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def decode_score_page_cursor(value: str) -> tuple[float | None, int]:
+    """严格解析匹配分游标，拒绝 NaN、无穷大和伪造排序字段。"""
+
+    if not value or len(value) > 512:
+        raise DomainError("PAGINATION_CURSOR_INVALID", "分页游标无效，请重新加载列表", 422, "refresh")
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+        if not isinstance(payload, dict):
+            raise ValueError("cursor payload must be an object")
+        raw_score = payload.get("score")
+        score = None if raw_score is None else float(raw_score)
+        raw_row_id = payload["id"]
+        if isinstance(raw_row_id, bool) or not isinstance(raw_row_id, int) or raw_row_id < 1:
+            raise ValueError("cursor id must be a positive integer")
+        if score is not None and (score != score or score in {float("inf"), float("-inf")}):
+            raise ValueError("cursor score must be finite")
+    except (ValueError, TypeError, KeyError, json.JSONDecodeError, UnicodeDecodeError, binascii.Error) as exc:
+        raise DomainError("PAGINATION_CURSOR_INVALID", "分页游标无效，请重新加载列表", 422, "refresh") from exc
+    if payload.get("v") != 1:
+        raise DomainError("PAGINATION_CURSOR_INVALID", "分页游标无效，请重新加载列表", 422, "refresh")
+    return score, raw_row_id
+
+
 def page_rows(
     db: Session,
     statement: Any,

@@ -161,6 +161,8 @@ def parse_job_text(text: str) -> dict[str, Any]:
     company = None
     location_text = None
     salary_text = None
+    experience_text = None
+    education_text = None
     requirements: list[str] = []
     responsibilities: list[str] = []
     work_mode = None
@@ -169,6 +171,10 @@ def parse_job_text(text: str) -> dict[str, Any]:
             company = re.sub(r"^(公司|企业)\s*[:：]?\s*", "", line)
         if re.search(r"薪资|薪酬|K|k/月|月薪", line) and salary_text is None:
             salary_text = line
+        if experience_text is None and re.search(r"不限经验|无经验|应届|在校生|\d+\s*[-~至到]\s*\d+\s*年|\d+\+?\s*年", line, re.IGNORECASE):
+            experience_text = line
+        if education_text is None and re.search(r"学历不限|不限学历|博士|硕士|本科|大专|中专|高中", line):
+            education_text = line
         if re.search(r"地点|工作地|办公地|城市", line) and location_text is None:
             location_text = re.sub(r"^(地点|工作地|办公地|城市)\s*[:：]?\s*", "", line)
         if work_mode is None:
@@ -193,6 +199,8 @@ def parse_job_text(text: str) -> dict[str, Any]:
         "location_text": location_text,
         "work_mode": work_mode,
         "salary_text": salary_text,
+        "experience_text": experience_text,
+        "education_text": education_text,
         "locations": (
             [item.strip() for item in re.split(r"[/／、,，|]", location_text) if item.strip()]
             if location_text

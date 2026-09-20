@@ -67,11 +67,12 @@
   "company_name": "示例科技",
   "analysis_status": "awaiting_requirements",
   "missing_conditions": ["办公方式", "薪资"],
-  "job_conditions": {"location": "杭州", "work_mode": null, "salary": "20-30K"},
+  "job_conditions": {"location": "杭州", "work_mode": null, "experience": "3-5年", "education": "本科", "salary": "20-30K"},
   "analysis_summary": {"total": 0, "available": 0, "active": 0, "failed": 0},
   "job_document_version": {"id": "...", "version_no": 1},
   "preference_id": null,
   "latest_analysis": null,
+  "match_score": null,
   "apply_action": {
     "available": true,
     "click_token": "<短期签名令牌>",
@@ -103,7 +104,16 @@
 
 ### GET `/api/v1/job-pool/items`
 
-查询 `search`、`analysis_status`、`platform`、`created_from`、`created_to`、`cursor`、`limit`。`search` 会匹配岗位名称、公司和来源链接；默认按入池时间倒序返回紧凑摘要，响应包含 `captured_at`、岗位条件和具体 `missing_conditions`。
+查询支持：
+
+- `search`：同时匹配岗位名称和公司名称，不匹配原岗位链接；也可以使用 `job_title`、`company_name` 分别筛选。
+- `salary_min`、`salary_max`：按已解析的月薪区间做重叠筛选；未解析出明确区间的岗位不会被猜测成可比较薪资。
+- `match_score_min`、`match_score_max`：按岗位当前有效分析中的最高匹配分筛选。
+- `analysis_status`、`platform`、`created_from`、`created_to`：匹配状态、来源平台和入池时间范围。
+- `sort`：`created_at`（默认，入池时间倒序）或 `match_score`（匹配分数倒序，未评分岗位排在最后）。
+- `cursor`、`limit`：稳定游标分页。
+
+默认按入池时间倒序返回紧凑摘要，响应包含 `captured_at`、岗位条件和 `match_score`。用户端不展示 `missing_conditions`；该字段仍保留在管理端投影中，用于后台补采和清理。
 
 ### GET `/api/v1/job-pool/items/{id}`
 

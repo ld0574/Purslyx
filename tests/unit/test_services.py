@@ -26,7 +26,9 @@ from server.app.services import (
     check_feature_allowed,
     create_task,
     decode_page_cursor,
+    decode_score_page_cursor,
     encode_page_cursor,
+    encode_score_page_cursor,
     grant_feature,
     payload_hash,
     release_feature,
@@ -78,6 +80,10 @@ def test_payload_hash_and_cursor_are_stable() -> None:
     timestamp = datetime(2026, 9, 15, 8, 30, tzinfo=timezone.utc)
     cursor = encode_page_cursor(timestamp, 42)
     assert decode_page_cursor(cursor) == (timestamp, 42)
+    score_cursor = encode_score_page_cursor(88.5, 42)
+    assert decode_score_page_cursor(score_cursor) == (88.5, 42)
+    empty_score_cursor = encode_score_page_cursor(None, 43)
+    assert decode_score_page_cursor(empty_score_cursor) == (None, 43)
 
 
 @pytest.mark.parametrize("cursor", ["", "not-base64", "e30", "a" * 513])
