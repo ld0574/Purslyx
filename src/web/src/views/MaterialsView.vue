@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
@@ -31,6 +31,10 @@ const selectedCandidateId = ref("");
 const selectedPreferenceVersionId = ref("");
 const editingPreference = ref<JsonMap | null>(null);
 const activeTask = ref<JsonMap | null>(null);
+const resumeDialogOpen = ref(false);
+const preferenceDialogOpen = ref(false);
+const resumeDialog = ref<HTMLDialogElement | null>(null);
+const preferenceDialog = ref<HTMLDialogElement | null>(null);
 
 const documentForm = reactive({ document_type: "resume", title: "", text: "" });
 const preferenceForm = reactive({
@@ -73,6 +77,45 @@ const strengthOptions = [
 
 function message(value: unknown) {
   error.value = value instanceof Error ? value.message : "操作失败";
+}
+
+async function showDialog(dialog: { value: HTMLDialogElement | null }) {
+  await nextTick();
+  if (dialog.value && !dialog.value.open) {
+    if (typeof dialog.value.showModal === "function") dialog.value.showModal();
+    else dialog.value.setAttribute("open", "");
+  }
+}
+
+function closeResumeDialog() {
+  if (resumeDialog.value?.open) {
+    if (typeof resumeDialog.value.close === "function") resumeDialog.value.close();
+    else resumeDialog.value.removeAttribute("open");
+  }
+  resumeDialogOpen.value = false;
+}
+
+function closePreferenceDialog() {
+  if (preferenceDialog.value?.open) {
+    if (typeof preferenceDialog.value.close === "function") preferenceDialog.value.close();
+    else preferenceDialog.value.removeAttribute("open");
+  }
+  preferenceDialogOpen.value = false;
+}
+
+async function openResumeDialog() {
+  if (!pending.value) {
+    Object.assign(documentForm, { document_type: "resume", title: "", text: "" });
+    uploadFile.value = null;
+  }
+  resumeDialogOpen.value = true;
+  await showDialog(resumeDialog);
+}
+
+async function openPreferenceDialog() {
+  resetPreferenceForm();
+  preferenceDialogOpen.value = true;
+  await showDialog(preferenceDialog);
 }
 
 function clone<T>(value: T): T {
@@ -201,6 +244,7 @@ async function confirmDraft() {
     pending.value = null;
     pendingContent.value = {};
     uploadFile.value = null;
+    if (seeker.value) closeResumeDialog();
     documentForm.text = "";
     await load();
   } catch (value) {
@@ -293,6 +337,7 @@ async function savePreference() {
       : await api<JsonMap>("/api/v1/preferences", { method: "POST", idempotencyKey: idempotencyKey("preference"), body });
     success.value = result.version?.version_no > 1 ? `岗位期望 v${result.version.version_no} 已保存` : "岗位期望已保存";
     resetPreferenceForm();
+    if (seeker.value) closePreferenceDialog();
     await load();
   } catch (value) {
     message(value);
@@ -325,6 +370,10 @@ function editPreference(item: JsonMap) {
   preferenceForm.salary_strength = salary.strength || "prefer";
   preferenceForm.is_default = Boolean(item.is_default);
   preferenceForm.candidate_source_confirmed = !seeker.value;
+  if (seeker.value) {
+    preferenceDialogOpen.value = true;
+    void showDialog(preferenceDialog);
+  }
 }
 
 function valueStatus(value: JsonMap | undefined): string {
@@ -432,7 +481,30 @@ onMounted(load);
     <AsyncState :loading="loading" :error="error" :success="success" />
     <div v-if="activeTask" class="callout opportunity task-inline-state"><span class="spinner" />{{ taskLabel(activeTask.task_type) }}：{{ statusLabel(activeTask.status) }} · {{ activeTask.current_step || "等待执行" }}</div>
 
-    <div v-if="!loading" class="grid-2">
+    <template v-if="!loading && seeker">
+      <div class="materials-list-layout">
+        <section class="card materials-list-card">
+          <div class="card-head"><div><h3>我的简历</h3><p>每份简历独立保存，匹配时选择具体版本。</p></div><button class="button primary small" type="button" @click="openResumeDialog">新增简历</button></div>
+          <div class="card-body materials-list">
+            <div v-if="!resumes.length" class="empty materials-empty"><div><strong>还没有简历</strong><p>先新增一份简历，之后才能进行岗位匹配。</p><button class="button soft small" type="button" @click="openResumeDialog">上传第一份简历</button></div></div>
+            <article v-for="item in resumes" :key="item.id" class="material-list-item">
+              <div class="material-list-main"><strong>{{ item.title }}</strong><small>简历 · v{{ item.latest_version.version_no }} · 已确认</small></div>
+              <div class="item-actions"><a v-if="item.source_type && item.source_type !== 'text'" class="button soft small" :href="`/api/v1/documents/${item.id}/file`" target="_blank">下载原文件</a><button class="button link-button small" :disabled="busy" type="button" @click="deleteDocument(item)">删除</button></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="card materials-list-card">
+          <div class="card-head"><div><h3>岗位期望</h3><p>每条期望独立保存，匹配时默认全部参与。</p></div><button class="button primary small" type="button" @click="openPreferenceDialog">新增岗位期望</button></div>
+          <div class="card-body materials-list preference-list">
+            <div v-if="!preferences.length" class="empty materials-empty"><div><strong>还没有岗位期望</strong><p>可以为不同方向分别保存多条期望。</p><button class="button soft small" type="button" @click="openPreferenceDialog">新增第一条期望</button></div></div>
+            <article v-for="item in preferences" :key="item.id" class="material-list-item preference-row"><div class="material-list-main"><strong>{{ item.display_name }}</strong><small>{{ preferenceSummary(item) }}</small><small>v{{ item.version?.version_no }} · {{ item.is_default ? "默认" : "备用" }}</small></div><div class="item-actions"><button class="button soft small" type="button" data-action="edit-preference" @click="editPreference(item)">编辑</button><button class="button link-button small" type="button" :disabled="busy" @click="archivePreference(item)">归档</button></div></article>
+          </div>
+        </section>
+      </div>
+    </template>
+
+    <div v-if="!loading && !seeker" class="grid-2">
       <section class="card">
         <div class="card-head"><div><h3>{{ seeker ? "导入简历" : "导入候选人资料或 JD" }}</h3><p>支持文本、PDF、DOC、DOCX；解析后逐项人工确认。</p></div></div>
         <div class="card-body"><form id="formal-document-form" class="form-card" @submit.prevent="createDocument"><div v-if="!seeker" class="field-group"><label>资料类型</label><select v-model="documentForm.document_type" class="select" name="document_type"><option value="resume">候选人简历</option><option value="job_description">岗位 JD</option></select></div><div class="field-group"><label>标题</label><input v-model="documentForm.title" class="field" name="title" placeholder="例如：2026 秋招简历" required /></div><div class="field-group"><label>粘贴文本</label><textarea v-model="documentForm.text" class="textarea" name="text" placeholder="粘贴完整简历或岗位 JD；也可以只选择下方文件。" /></div><div class="field-group"><label>或上传文件</label><input class="field" type="file" accept=".pdf,.doc,.docx,.txt" @change="onFile" /></div><button class="button primary" :disabled="busy" type="submit">解析并检查</button></form></div>
@@ -440,7 +512,7 @@ onMounted(load);
       <section class="card"><div class="card-head"><div><h3>已确认资料</h3><p>{{ documents.length }} 份，删除前会列出关联影响。</p></div></div><div class="card-body data-list"><div v-if="!documents.length" class="empty"><div><strong>还没有资料</strong><p>从左侧导入第一份内容。</p></div></div><article v-for="item in documents" :key="item.id" class="data-row document-item"><div><strong>{{ item.title }}</strong><small>{{ item.document_type }} · {{ item.status }} · {{ item.latest_version ? `v${item.latest_version.version_no}` : "待确认" }}</small></div><div class="item-actions"><span class="tag" :class="item.latest_version ? 'success' : 'opportunity'">{{ item.latest_version ? "已确认" : "草稿" }}</span><a v-if="item.source_type && item.source_type !== 'text'" class="button soft small" :href="`/api/v1/documents/${item.id}/file`" target="_blank">下载原文件</a><button class="button link-button small" :disabled="busy" type="button" @click="deleteDocument(item)">删除</button></div></article></div></section>
     </div>
 
-    <section v-if="pending" class="card draft-review" style="margin-top:18px">
+    <section v-if="pending && !seeker" class="card draft-review" style="margin-top:18px">
       <div class="card-head"><div><h3>检查解析草稿</h3><p>按字段修正后再确认；原始文件不会被这些修改覆盖。</p></div><span class="tag opportunity">待确认</span></div>
       <form id="document-draft-review" class="card-body form-card" @submit.prevent="confirmDraft">
         <template v-if="draftJobFields">
@@ -459,7 +531,7 @@ onMounted(load);
       </form>
     </section>
 
-    <section class="card" style="margin-top:18px">
+    <section v-if="!seeker" class="card" style="margin-top:18px">
       <div class="card-head"><div><h3>{{ seeker ? "岗位期望" : "候选人明确期望" }}</h3><p>每个字段分别记录具体值、未知或不限，并保存自己的条件强度。</p></div></div>
       <div class="card-body grid-2 preference-layout">
         <form id="preference-form" class="form-card" @submit.prevent="savePreference">
@@ -476,6 +548,44 @@ onMounted(load);
         <div class="data-list preference-list"><div v-if="!preferences.length" class="empty"><div><strong>还没有期望</strong><p>未知和不限不会混为一谈；不同岗位方向分别保存。</p></div></div><article v-for="item in preferences" :key="item.id" class="data-row preference-row"><div><strong>{{ item.display_name }}</strong><small>{{ preferenceSummary(item) }}</small><small>v{{ item.version?.version_no }} · {{ item.is_default ? "默认" : "备用" }} · {{ item.context === "candidate" ? "候选人明确提供" : "本人确认" }}</small></div><div class="item-actions"><button class="button soft small" type="button" data-action="edit-preference" @click="editPreference(item)">编辑</button><button class="button link-button small" type="button" @click="archivePreference(item)">归档</button></div></article></div>
       </div>
     </section>
+
+    <dialog v-if="seeker && resumeDialogOpen" ref="resumeDialog" class="materials-dialog materials-dialog-wide" @cancel.prevent="closeResumeDialog" @close="resumeDialogOpen = false">
+      <template v-if="pending">
+        <div class="materials-dialog-head"><div><div class="eyebrow">CONFIRM RESUME</div><h3>检查简历</h3><p>按字段修正后确认；这一步完成后简历才会出现在列表中。</p></div><button class="button link-button small" type="button" @click="closeResumeDialog">关闭</button></div>
+        <form id="document-draft-review" class="materials-dialog-form form-card" @submit.prevent="confirmDraft">
+          <template v-if="draftJobFields">
+            <div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="draftJobFields.title" class="field" /></div><div class="field-group"><label>公司</label><input v-model="draftJobFields.company_name" class="field" /></div></div>
+            <div class="form-row"><div class="field-group"><label>工作城市（可多个）</label><input class="field" :value="(draftJobFields.locations || []).join('、')" placeholder="杭州、上海" @input="updateDraftLocations" /></div><div class="field-group"><label>办公方式</label><select v-model="draftJobFields.work_mode" class="select"><option :value="null">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div>
+            <div class="field-group"><label>薪资原文</label><input v-model="draftJobFields.salary_text" class="field" placeholder="保留 JD 原始描述；未披露可留空" /></div>
+            <div class="condition-editor"><div class="condition-editor-head"><div><strong>可比较薪资字段</strong><small>只填写 JD 明确披露的口径，不自动补 12 薪、税率或汇率。</small></div><select v-model="draftJobFields.salary.status" class="select compact"><option value="specified">明确区间</option><option value="unknown">未披露／不可读</option><option value="negotiable">面议</option></select></div><div v-if="draftJobFields.salary.status === 'specified'" class="salary-grid"><div class="field-group"><label>下限</label><input v-model="draftJobFields.salary.min" class="field" type="number" min="0" /></div><div class="field-group"><label>上限</label><input v-model="draftJobFields.salary.max" class="field" type="number" min="0" /></div><div class="field-group"><label>币种</label><select v-model="draftJobFields.salary.currency" class="select"><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option><option>JPY</option></select></div><div class="field-group"><label>周期</label><select v-model="draftJobFields.salary.period" class="select"><option value="monthly">月薪</option><option value="yearly">年薪</option></select></div><div class="field-group"><label>税制</label><select v-model="draftJobFields.salary.tax_basis" class="select"><option :value="null">未披露</option><option value="pre_tax">税前</option><option value="post_tax">税后</option></select></div><div class="field-group"><label>发薪月数</label><input v-model.number="draftJobFields.salary.salary_months" class="field" type="number" min="1" step="0.5" placeholder="未知留空" /></div></div></div>
+            <div class="form-row"><div class="field-group"><label>岗位职责（每行一项）</label><textarea class="textarea" :value="(draftJobFields.responsibilities || []).join('\n')" @input="updateDraftList('responsibilities', $event)" /></div><div class="field-group"><label>任职要求（每行一项）</label><textarea class="textarea" :value="(draftJobFields.requirements || []).join('\n')" @input="updateDraftList('requirements', $event)" /></div></div>
+          </template>
+          <template v-else>
+            <section v-for="section in draftSections" :key="section.section_key" class="draft-section-editor"><div class="condition-editor-head"><input v-model="section.title" class="field section-title-input" aria-label="简历模块名称" /><button class="button soft small" type="button" @click="addDraftSegment(section)">添加段落</button></div><div v-for="(segment, index) in section.segments" :key="segment.segment_key" class="segment-editor"><textarea v-model="segment.text" class="textarea" aria-label="简历段落正文" /><button class="button link-button small" type="button" @click="removeDraftSegment(section, index)">删除段落</button></div></section>
+            <button class="button soft" type="button" @click="addDraftSection">添加简历模块</button>
+          </template>
+          <details class="raw-report"><summary>查看结构化草稿（高级信息）</summary><pre>{{ JSON.stringify(pendingContent, null, 2) }}</pre></details>
+          <div class="item-actions materials-dialog-actions"><button class="button primary" :disabled="busy" type="submit">确认这个版本</button><button class="button soft" type="button" @click="closeResumeDialog">稍后处理</button></div>
+        </form>
+      </template>
+      <template v-else>
+        <div class="materials-dialog-head"><div><div class="eyebrow">NEW RESUME</div><h3>新增简历</h3><p>支持粘贴文本或上传 PDF、DOC、DOCX；解析后会进入确认步骤。</p></div><button class="button link-button small" type="button" @click="closeResumeDialog">关闭</button></div>
+        <form id="formal-document-form" class="materials-dialog-form form-card" @submit.prevent="createDocument"><div class="field-group"><label>简历名称</label><input v-model="documentForm.title" class="field" name="title" placeholder="例如：2026 秋招简历" required /></div><div class="field-group"><label>粘贴简历文本</label><textarea v-model="documentForm.text" class="textarea" name="text" placeholder="粘贴完整简历；也可以只选择下方文件。" /></div><div class="field-group"><label>上传文件</label><input class="field" type="file" accept=".pdf,.doc,.docx,.txt" @change="onFile" /></div><button class="button primary" :disabled="busy" type="submit">解析并检查</button></form>
+      </template>
+    </dialog>
+
+    <dialog v-if="seeker && preferenceDialogOpen" ref="preferenceDialog" class="materials-dialog" @cancel.prevent="closePreferenceDialog" @close="preferenceDialogOpen = false">
+      <div class="materials-dialog-head"><div><div class="eyebrow">JOB PREFERENCE</div><h3>{{ editingPreference ? "编辑岗位期望" : "新增岗位期望" }}</h3><p>每条期望独立保存，匹配时默认全部参与。</p></div><button class="button link-button small" type="button" @click="closePreferenceDialog">关闭</button></div>
+      <form id="preference-form" class="materials-dialog-form form-card" @submit.prevent="savePreference">
+        <div class="field-group"><label>期望名称</label><input v-model="preferenceForm.display_name" class="field" name="display_name" placeholder="例如：前端方向 · 华东" required /></div>
+        <section class="condition-editor"><div class="condition-editor-head"><div><strong>岗位方向</strong><small>一个或多个可接受岗位方向。</small></div><select v-model="preferenceForm.job_title_status" class="select compact"><option v-for="option in conditionStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div><div v-if="preferenceForm.job_title_status === 'specified'" class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="preferenceForm.job_title" class="field" name="job_title" placeholder="例如：前端工程师" /></div><div class="field-group"><label>条件强度</label><select v-model="preferenceForm.job_title_strength" class="select"><option v-for="option in strengthOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div></div></section>
+        <section class="condition-editor"><div class="condition-editor-head"><div><strong>工作地点</strong><small>多个城市用逗号或顿号分隔。</small></div><select v-model="preferenceForm.location_status" class="select compact"><option v-for="option in conditionStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div><div v-if="preferenceForm.location_status === 'specified'" class="form-row"><div class="field-group"><label>可接受城市</label><input v-model="preferenceForm.location" class="field" placeholder="杭州、上海" /></div><div class="field-group"><label>条件强度</label><select v-model="preferenceForm.location_strength" class="select"><option v-for="option in strengthOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div></div></section>
+        <section class="condition-editor"><div class="condition-editor-head"><div><strong>办公方式</strong><small>远程不等于接受任意异地现场。</small></div><select v-model="preferenceForm.work_mode_status" class="select compact"><option v-for="option in conditionStatusOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div><div v-if="preferenceForm.work_mode_status === 'specified'" class="form-row"><div class="field-group"><label>可接受方式</label><select v-model="preferenceForm.work_mode" class="select"><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div><div class="field-group"><label>条件强度</label><select v-model="preferenceForm.work_mode_strength" class="select"><option v-for="option in strengthOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div></div></section>
+        <section class="condition-editor"><div class="condition-editor-head"><div><strong>薪资范围</strong><small>默认填写口径为人民币、税前月薪；发薪月数未知时留空。</small></div><select v-model="preferenceForm.salary_status" class="select compact"><option value="specified">填写明确区间</option><option value="negotiable">明确面议</option><option value="unknown">暂不填写（未知）</option><option value="unrestricted">明确不限</option></select></div><div v-if="preferenceForm.salary_status === 'specified'" class="salary-grid"><div class="field-group"><label>下限</label><input v-model.number="preferenceForm.min_salary" class="field" type="number" min="0" /></div><div class="field-group"><label>上限</label><input v-model.number="preferenceForm.max_salary" class="field" type="number" min="0" /></div><div class="field-group"><label>币种</label><select v-model="preferenceForm.currency" class="select"><option>CNY</option><option>USD</option><option>EUR</option><option>HKD</option><option>JPY</option></select></div><div class="field-group"><label>周期</label><select v-model="preferenceForm.period" class="select"><option value="monthly">月薪</option><option value="yearly">年薪</option></select></div><div class="field-group"><label>税制</label><select v-model="preferenceForm.tax_basis" class="select"><option value="pre_tax">税前</option><option value="post_tax">税后</option></select></div><div class="field-group"><label>发薪月数</label><input v-model.number="preferenceForm.salary_months" class="field" type="number" min="1" step="0.5" placeholder="未知留空" /></div></div><div class="field-group"><label>薪资条件强度</label><select v-model="preferenceForm.salary_strength" class="select"><option v-for="option in strengthOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select></div></section>
+        <label class="micro"><input v-model="preferenceForm.is_default" type="checkbox" /> 设为默认期望</label>
+        <div class="item-actions materials-dialog-actions"><button class="button primary" :disabled="busy" type="submit">{{ editingPreference ? "保存新版本" : "保存独立期望" }}</button><button class="button soft" type="button" @click="closePreferenceDialog">取消</button></div>
+      </form>
+    </dialog>
 
     <section v-if="!seeker" class="card" style="margin-top:18px">
       <div class="card-head"><div><h3>单人深入分析</h3><p>先选候选人，再只显示该候选人明确提供的岗位期望；缺少时按未知处理。</p></div></div>

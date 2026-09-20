@@ -48,6 +48,10 @@ describe("岗位期望编辑器", () => {
     });
     await flushPromises();
 
+    const addPreferenceButton = wrapper.findAll("button").find((button) => button.text() === "新增岗位期望");
+    expect(addPreferenceButton).toBeDefined();
+    await addPreferenceButton!.trigger("click");
+    await flushPromises();
     const form = wrapper.find("#preference-form");
     await form.find('input[placeholder="例如：前端方向 · 华东"]').setValue("前端方向 · 华东");
     const sections = form.findAll(".condition-editor");
@@ -108,6 +112,10 @@ describe("岗位期望编辑器", () => {
     const auth = useAuthStore();
     auth.account = { id: "account-1", email: "user@example.test", registration_role: "seeker", admin_permissions: [] };
     const wrapper = mount(MaterialsView, { global: { plugins: [pinia], stubs: { AppShell: { template: "<main><slot /></main>" }, PageHeader: { template: "<header><slot /></header>" }, AsyncState: true } } });
+    await flushPromises();
+    const addResumeButton = wrapper.findAll("button").find((button) => button.text() === "新增简历");
+    expect(addResumeButton).toBeDefined();
+    await addResumeButton!.trigger("click");
     await flushPromises();
     expect((wrapper.find('input[name="title"]').element as HTMLInputElement).value).toBe("");
     expect((wrapper.find('textarea[name="text"]').element as HTMLTextAreaElement).value).toBe("");

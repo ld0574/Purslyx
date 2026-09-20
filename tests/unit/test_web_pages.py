@@ -107,6 +107,10 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert 'class="side-brand"' not in shell
     for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
         assert f'id="{selector}"' in materials
+    assert 'class="materials-list-layout"' in materials
+    assert 'class="materials-dialog' in materials
+    assert "新增简历" in materials
+    assert "新增岗位期望" in materials
     assert 'id="pool-form"' in pool
     assert "系统会自动使用全部有效岗位期望" in pool
     assert "选择匹配简历" in pool
