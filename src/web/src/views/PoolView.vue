@@ -427,28 +427,32 @@ onMounted(refreshAll);
     <template v-if="!loading">
       <section class="card pool-workbench">
         <form class="pool-filter-panel" @submit.prevent="applyFilters">
-          <div class="pool-filter-grid">
+          <div class="pool-filter-grid pool-filter-grid-primary">
             <div class="field-group pool-filter-keyword"><label for="pool-search">快速搜索岗位名称或公司名称</label><input id="pool-search" v-model="searchText" class="field" placeholder="岗位名称或公司名称" /></div>
-            <div class="field-group"><label for="pool-job-title">岗位名称</label><input id="pool-job-title" v-model="jobTitleFilter" class="field" placeholder="可单独筛选" /></div>
-            <div class="field-group"><label for="pool-company">公司名称</label><input id="pool-company" v-model="companyFilter" class="field" placeholder="可单独筛选" /></div>
-            <div class="field-group"><label for="pool-salary-min">薪资最低（元/月）</label><input id="pool-salary-min" v-model="salaryMinFilter" class="field" type="number" min="0" step="1000" placeholder="不限" /></div>
-            <div class="field-group"><label for="pool-salary-max">薪资最高（元/月）</label><input id="pool-salary-max" v-model="salaryMaxFilter" class="field" type="number" min="0" step="1000" placeholder="不限" /></div>
-            <div class="field-group"><label for="pool-created-from">入池时间起</label><input id="pool-created-from" v-model="createdFromFilter" class="field" type="datetime-local" /></div>
-            <div class="field-group"><label for="pool-created-to">入池时间止</label><input id="pool-created-to" v-model="createdToFilter" class="field" type="datetime-local" /></div>
-            <div class="field-group"><label for="pool-score-min">匹配分数最低</label><input id="pool-score-min" v-model="scoreMinFilter" class="field" type="number" min="0" max="100" step="0.1" placeholder="不限" /></div>
-            <div class="field-group"><label for="pool-score-max">匹配分数最高</label><input id="pool-score-max" v-model="scoreMaxFilter" class="field" type="number" min="0" max="100" step="0.1" placeholder="不限" /></div>
             <div class="field-group"><label for="pool-status">匹配状态</label><select id="pool-status" v-model="statusFilter" class="select"><option value="">全部状态</option><option value="awaiting_requirements">待匹配</option><option value="queued">排队中</option><option value="running">执行中</option><option value="available">已有结果</option><option value="failed">失败可重试</option></select></div>
             <div class="field-group"><label for="pool-platform">来源平台</label><select id="pool-platform" v-model="platformFilter" class="select"><option value="">全部来源</option><option value="boss">BOSS</option><option value="liepin">猎聘</option><option value="manual">手动录入</option></select></div>
             <div class="field-group"><label for="pool-sort">排序</label><select id="pool-sort" v-model="sortFilter" class="select"><option value="created_at">入池时间（新到旧）</option><option value="match_score">匹配分数（高到低）</option></select></div>
           </div>
+          <details class="pool-advanced-filters">
+            <summary class="button outline small">更多筛选：薪资、入池时间、匹配分数</summary>
+            <div class="pool-filter-grid pool-filter-grid-advanced">
+              <div class="field-group"><label for="pool-job-title">岗位名称</label><input id="pool-job-title" v-model="jobTitleFilter" class="field" placeholder="可单独筛选" /></div>
+              <div class="field-group"><label for="pool-company">公司名称</label><input id="pool-company" v-model="companyFilter" class="field" placeholder="可单独筛选" /></div>
+              <div class="field-group"><label for="pool-salary-min">薪资最低（元/月）</label><input id="pool-salary-min" v-model="salaryMinFilter" class="field" type="number" min="0" step="1000" placeholder="不限" /></div>
+              <div class="field-group"><label for="pool-salary-max">薪资最高（元/月）</label><input id="pool-salary-max" v-model="salaryMaxFilter" class="field" type="number" min="0" step="1000" placeholder="不限" /></div>
+              <div class="field-group"><label for="pool-created-from">入池时间起</label><input id="pool-created-from" v-model="createdFromFilter" class="field" type="datetime-local" /></div>
+              <div class="field-group"><label for="pool-created-to">入池时间止</label><input id="pool-created-to" v-model="createdToFilter" class="field" type="datetime-local" /></div>
+              <div class="field-group"><label for="pool-score-min">匹配分数最低</label><input id="pool-score-min" v-model="scoreMinFilter" class="field" type="number" min="0" max="100" step="0.1" placeholder="不限" /></div>
+              <div class="field-group"><label for="pool-score-max">匹配分数最高</label><input id="pool-score-max" v-model="scoreMaxFilter" class="field" type="number" min="0" max="100" step="0.1" placeholder="不限" /></div>
+            </div>
+          </details>
           <div class="pool-toolbar-actions"><button class="button primary" type="submit">搜索</button><button v-if="hasFilters" class="button link-button" type="button" @click="clearFilters">清空筛选</button><span class="micro">搜索不包含原岗位链接；默认按入池时间倒序。</span></div>
         </form>
 
         <div class="card-head pool-list-head"><div><h3>岗位列表</h3><p>勾选岗位后点击“匹配”；只有多份简历时才会弹窗让你选择，岗位期望默认全部参与。</p></div><div class="item-actions"><span class="tag neutral">本页 {{ items.length }} 条</span><details class="manual-job-details"><summary class="button outline small">手动新增岗位</summary><form id="pool-form" class="manual-job-form" @submit.prevent="savePool"><div class="form-row"><div class="field-group"><label>岗位名称</label><input v-model="form.job_title" class="field" required placeholder="例如：高级前端工程师" /></div><div class="field-group"><label>公司</label><input v-model="form.company_name" class="field" placeholder="未披露可留空" /></div></div><div class="form-row"><div class="field-group"><label>工作地点</label><input v-model="form.location_text" class="field" placeholder="例如：杭州、上海" /></div><div class="field-group"><label>办公方式</label><select v-model="form.work_mode" class="select"><option value="">未披露</option><option value="onsite">现场</option><option value="hybrid">混合</option><option value="remote">远程</option></select></div></div><div class="field-group"><label>薪资原文</label><input v-model="form.salary_text" class="field" placeholder="例如：20–30K/月·14薪；未知可留空" /></div><div class="field-group"><label>岗位 JD</label><textarea v-model="form.job_text" class="textarea" required placeholder="粘贴完整职责和任职要求" /></div><div class="item-actions"><button class="button primary" :disabled="busy" type="submit">保存岗位</button><span class="micro">保存后不会自动消耗匹配次数。</span></div></form></details></div></div>
 
         <div class="batch-toolbar">
-          <label class="select-all-control"><input type="checkbox" :checked="allPageSelected" :indeterminate="selectedCount > 0 && !allPageSelected" @change="toggleAll" /><span>全选本页</span></label>
-          <span class="batch-selected-count">已选 {{ selectedCount }} 个岗位</span>
+          <div class="batch-selection"><label class="select-all-control"><input type="checkbox" :checked="allPageSelected" :indeterminate="selectedCount > 0 && !allPageSelected" @change="toggleAll" /><span>全选本页</span></label><span class="batch-selected-count">已选 {{ selectedCount }} 个岗位</span></div>
           <div class="batch-submit"><button class="button primary" :disabled="busy || !selectedCount" type="button" @click="requestBatchMatch()">匹配<span v-if="selectedCount">（{{ selectedCount }} 个岗位 × {{ preferences.length }} 条期望，共 {{ estimatedAnalysisCount }} 次）</span></button><small v-if="!resumes.length" class="batch-hint">还没有简历，点击匹配后会提示先上传简历。</small><RouterLink v-if="!resumes.length" class="button outline small" to="/app/seeker/resume">去上传简历</RouterLink><small v-else-if="!preferences.length" class="batch-hint">请先创建岗位期望。</small><small v-else class="batch-hint">岗位期望默认全部使用，不需要逐条选择。</small></div>
         </div>
 

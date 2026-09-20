@@ -112,12 +112,14 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert "选择匹配简历" in pool
     assert 'id="pool-search"' in pool
     assert 'class="pool-filter-panel"' in pool
+    assert 'class="pool-advanced-filters"' in pool
     assert 'id="pool-salary-min"' in pool
     assert 'id="pool-created-from"' in pool
     assert 'id="pool-score-min"' in pool
     assert 'value="match_score"' in pool
     assert "<dialog" in pool
     assert "requestBatchMatch" in pool
+    assert 'class="batch-selection"' in pool
     assert "详情" in pool
     assert "下一页" in pool
     assert "missing_conditions" not in pool
