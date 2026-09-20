@@ -1,3 +1,7 @@
+<script setup lang="ts">
+import SiteFooter from "@/components/SiteFooter.vue";
+</script>
+
 <template>
   <div data-page="guide">
     <header class="topbar">
@@ -87,5 +91,6 @@
 
       <section class="product-cta"><div><div class="eyebrow">READY WHEN YOU ARE</div><h2>先完成一次真实匹配。</h2><p>不用一次学会全部功能，照着本页流程走一遍就够了。</p></div><div class="hero-actions"><RouterLink class="button primary" to="/app/register">创建账号</RouterLink><RouterLink class="button outline" to="/app/login">登录工作台</RouterLink></div></section>
     </main>
+    <SiteFooter />
   </div>
 </template>

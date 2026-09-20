@@ -13,6 +13,10 @@ const SOURCE = readFileSync(
 const TOKEN_KEY = "purslyx.browser-token.v1";
 const DRAFT_KEY = "purslyx.pending-job-drafts.v1";
 
+test("用户脚本元信息包含项目作者", () => {
+  assert.match(SOURCE, /\/\/ @author\s+Purslyx Team/);
+});
+
 function createRuntime({
   url,
   texts = {},

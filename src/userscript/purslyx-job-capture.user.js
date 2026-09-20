@@ -1,6 +1,7 @@
 // ==UserScript==
 // @name         Purslyx 岗位自动获取
 // @namespace    https://purslyx.com/
+// @author       Purslyx Team
 // @version      0.5.0
 // @description  在支持的 BOSS 直聘／猎聘详情页自动抓取岗位并直接写入 Purslyx 匹配池。
 // @downloadURL  https://purslyx.com/purslyx-job-capture.user.js

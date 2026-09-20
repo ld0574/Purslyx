@@ -3,6 +3,7 @@ import { computed } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { useAuthStore } from "@/stores/auth";
+import SiteFooter from "@/components/SiteFooter.vue";
 
 interface NavItem {
   label: string;
@@ -81,4 +82,5 @@ async function logout() {
     </aside>
     <main class="workspace-content"><slot /></main>
   </div>
+  <SiteFooter />
 </template>

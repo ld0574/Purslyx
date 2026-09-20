@@ -5,6 +5,7 @@ import { useRoute } from "vue-router";
 import { api } from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
 import type { JsonMap } from "@/types";
+import SiteFooter from "@/components/SiteFooter.vue";
 
 const route = useRoute();
 const auth = useAuthStore();
@@ -67,5 +68,6 @@ onMounted(() => {
       <section class="product-section"><div class="section-heading"><div><div class="eyebrow">FOR BOTH SIDES</div><h2>不同角色，各有清晰路径</h2></div><p>求职、招聘与授权管理围绕同一套证据和条件规则协作，同时保持数据与身份边界。</p></div><div class="capability-grid"><article class="capability-card"><span class="capability-index">01</span><h3>求职工作台</h3><p>资料与多条期望、匹配池、证据报告、事实改写、岗位版 PDF 和完整面试。</p><RouterLink to="/app/register">以求职者身份开始 →</RouterLink></article><article class="capability-card"><span class="capability-index">02</span><h3>招聘工作台</h3><p>JD、候选人资料、候选人明确期望、单人分析、待核实问题与成本统计。</p><RouterLink to="/app/register">以招聘方身份开始 →</RouterLink></article><article class="capability-card"><span class="capability-index">03</span><h3>授权管理</h3><p>用户、角色权限、次数、站点概况、反馈和三类脱敏日志，所有写操作留审计。</p><RouterLink to="/app/login">管理员登录 →</RouterLink></article></div></section>
       <section id="browser-script" class="product-section"><div class="section-heading"><div><div class="eyebrow">BROWSER ASSISTANT</div><h2>在岗位页面一键同步</h2></div><p>用篡改猴在 BOSS 直聘或猎聘详情页识别当前岗位，直接写入匹配池；需要分析时再选择简历和岗位期望。</p></div><div class="install-layout"><article class="install-card install-card-primary"><span class="capability-index">01</span><h3>安装岗位采集脚本</h3><p>先安装 Tampermonkey，再点击下面的按钮。浏览器会打开安装确认页，确认后即可使用。</p><div class="hero-actions"><a class="button primary" href="/purslyx-job-capture.user.js">一键安装浏览器脚本</a><a class="button outline" href="https://www.tampermonkey.net/" target="_blank" rel="noreferrer">安装 Tampermonkey</a></div><p class="micro">脚本只读取当前打开的岗位详情并写入待匹配岗位，不会自动投递、代聊或提交简历。</p></article><ol class="install-steps"><li><strong>登录 Purslyx</strong><span>保持官网登录状态，脚本通过一次性授权同步。</span></li><li><strong>打开支持的岗位页</strong><span>支持 BOSS 直聘和猎聘的岗位详情页。</span></li><li><strong>点击匹配</strong><span>岗位进入匹配池后，选择简历和岗位期望，再确认一次分析消耗。</span></li></ol></div></section>
     </main>
+    <SiteFooter />
   </div>
 </template>

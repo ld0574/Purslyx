@@ -49,6 +49,12 @@
       .topbar-spacer { flex: 1; }
       .eyebrow { color: var(--brand); font-size: 11px; font-weight: 800; letter-spacing: 0.13em; text-transform: uppercase; }
       .topbar .eyebrow { color: var(--muted); letter-spacing: 0.08em; }
+      .site-footer { border-top: 1px solid var(--line); background: rgba(255, 255, 255, 0.72); }
+      .site-footer-inner { display: flex; justify-content: center; align-items: center; flex-wrap: wrap; gap: 8px 18px; max-width: 1180px; min-height: 68px; margin: 0 auto; padding: 16px 28px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+      .site-footer-brand { color: var(--ink); font-weight: 800; }
+      .site-footer-copyright { text-align: center; }
+      .site-footer-link { color: var(--brand); font-weight: 800; text-decoration: none; }
+      .site-footer-link:hover { text-decoration: underline; }
       .tag { display: inline-flex; align-items: center; gap: 6px; width: fit-content; border-radius: 999px; padding: 7px 10px; font-size: 12px; font-weight: 700; white-space: nowrap; }
       .tag.brand { color: var(--brand); background: var(--brand-soft); }
       .tag.opportunity { color: #735500; background: var(--opportunity-soft); }
@@ -425,6 +431,7 @@
         .topbar { padding: 11px 18px; }
         .topbar .eyebrow, .topbar .button.outline { display: none; }
         .public-main, .workspace-main { padding: 38px 18px 68px; }
+        .site-footer-inner { padding-right: 18px; padding-left: 18px; }
         .hero, .auth-layout { grid-template-columns: 1fr; gap: 28px; }
         .hero { padding-top: 4px; }
         .hero-visual { max-width: 600px; }

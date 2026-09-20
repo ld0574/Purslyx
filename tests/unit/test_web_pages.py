@@ -95,6 +95,7 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     home = read("src/views/HomeView.vue")
     guide = read("src/views/GuideView.vue")
     shell = read("src/components/AppShell.vue")
+    footer = read("src/components/SiteFooter.vue")
     materials = read("src/views/MaterialsView.vue")
     pool = read("src/views/PoolView.vue")
     interview = read("src/views/InterviewView.vue")
@@ -113,6 +114,9 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert 'src="/favicon.svg"' not in shell
     assert 'src="/favicon.svg"' not in read("src/views/AuthView.vue")
     assert 'class="side-brand"' not in shell
+    assert "SiteFooter" in shell
+    assert "https://github.com/ld0574/Purslyx" in footer
+    assert "Copyright © 2026 Purslyx Team" in footer
     for selector in ["formal-document-form", "document-draft-review", "preference-form", "recruiter-analysis-form"]:
         assert f'id="{selector}"' in materials
     assert 'class="materials-list-layout"' in materials
