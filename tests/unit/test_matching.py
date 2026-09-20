@@ -1,4 +1,9 @@
-from server.app.matching import build_match_result, compare_conditions, compare_salary
+from server.app.matching import (
+    build_match_result,
+    compare_conditions,
+    compare_salary,
+    merge_preference_contents,
+)
 
 
 def _salary(minimum: int, maximum: int, **overrides: object) -> dict:
@@ -136,6 +141,34 @@ def test_ac19_multiple_locations_hard_conflict_and_unknown() -> None:
     unknown = compare_conditions(preference, {"title": "Web 前端工程师"})
     assert any(item["status"] == "unknown" for item in unknown)
     assert not all(item["status"] == "matched" for item in unknown)
+
+
+def test_multiple_preferences_are_merged_as_alternative_conditions() -> None:
+    preferences = [
+        {
+            "job_title": {"status": "specified", "value": "前端", "strength": "required"},
+            "locations": {"status": "specified", "values": ["杭州"], "strength": "required"},
+            "work_mode": {"status": "unknown", "value": None, "strength": "prefer"},
+            "salary": {"status": "unknown", "strength": "prefer"},
+        },
+        {
+            "job_title": {"status": "specified", "value": "后端", "strength": "required"},
+            "locations": {"status": "specified", "values": ["上海"], "strength": "required"},
+            "work_mode": {"status": "unknown", "value": None, "strength": "prefer"},
+            "salary": {"status": "unknown", "strength": "prefer"},
+        },
+    ]
+    merged = merge_preference_contents(preferences)
+    conditions = compare_conditions(
+        merged,
+        {"title": "后端工程师", "locations": ["上海"]},
+    )
+
+    assert merged["strategy"] == "any"
+    assert len(merged["profiles"]) == 2
+    assert {item["condition"]: item["status"] for item in conditions}["location"] == "matched"
+    assert {item["selected_profile_no"] for item in conditions} == {2}
+    assert not any(item["required_conflict"] for item in conditions)
 
 
 def test_hard_condition_conflict_is_not_hidden_by_high_ability_score() -> None:

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .errors import DomainError, NotFoundError
+from .matching import merge_preference_contents
 from .model_provider import ModelResult, get_model_provider, merge_model_results
 from .models import (
     Account,
@@ -346,21 +347,54 @@ class TaskWorker:
         account = _account(db, task)
         if resume_version is None or job_version is None:
             raise DomainError("ANALYSIS_SOURCE_DELETED", "分析输入版本已不可用", 409)
-        preference = db.get(PreferenceVersion, analysis.preference_version_id) if analysis.preference_version_id else None
-        if preference is not None and preference.deleted_at is not None:
-            raise DomainError("ANALYSIS_SOURCE_DELETED", "岗位期望版本已不可用", 409)
+        task_data = task.input_data if isinstance(task.input_data, dict) else {}
+        preference_version_ids = [str(value) for value in task_data.get("preference_version_ids", []) if value]
+        if preference_version_ids:
+            preference_rows = list(
+                db.scalars(
+                    select(PreferenceVersion).where(
+                        PreferenceVersion.account_id == task.account_id,
+                        PreferenceVersion.public_id.in_(preference_version_ids),
+                    )
+                ).all()
+            )
+            preference_by_id = {row.public_id: row for row in preference_rows}
+            if any(preference_by_id.get(value) is None or preference_by_id[value].deleted_at is not None for value in preference_version_ids):
+                raise DomainError("ANALYSIS_SOURCE_DELETED", "岗位期望版本已不可用", 409)
+            preferences = [preference_by_id[value] for value in preference_version_ids]
+        else:
+            preference = db.get(PreferenceVersion, analysis.preference_version_id) if analysis.preference_version_id else None
+            if preference is not None and preference.deleted_at is not None:
+                raise DomainError("ANALYSIS_SOURCE_DELETED", "岗位期望版本已不可用", 409)
+            preferences = [preference] if preference else []
+        preference_content = (
+            preferences[0].content
+            if len(preferences) == 1
+            else merge_preference_contents([item.content for item in preferences])
+            if preferences
+            else None
+        )
 
         def work() -> ModelResult:
             return get_model_provider().analyze(
                 resume_version.content,
                 job_version.content,
-                preference.content if preference else None,
+                preference_content,
                 analysis.context_type,
             )
 
         def save_result(report: dict[str, Any]) -> None:
             if analysis.deleted_at is not None:
                 raise DomainError("ANALYSIS_SOURCE_DELETED", "分析已删除，结果不会写回", 409)
+            if len(preferences) > 1:
+                report = {
+                    **report,
+                    "preference_bundle": {
+                        "strategy": "any",
+                        "preference_count": len(preferences),
+                        "preference_version_ids": preference_version_ids,
+                    },
+                }
             analysis.status = "available"
             analysis.job_category = report.get("job_category", "general")
             analysis.ability_score = report.get("ability_score")
@@ -376,7 +410,7 @@ class TaskWorker:
                 analysis,
                 report,
                 resume_version.id,
-                preference.content if preference else None,
+                preference_content,
                 job_version.content,
             )
             if analysis.job_pool_item_id:

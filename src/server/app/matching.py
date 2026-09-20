@@ -178,6 +178,35 @@ def _field_status(obj: dict[str, Any] | None) -> str:
     return str(obj.get("status", "unknown"))
 
 
+def merge_preference_contents(preferences: list[dict[str, Any]]) -> dict[str, Any]:
+    """把多条岗位期望封装成一次模型输入；每条期望仍是独立的备选条件组合。"""
+
+    return {
+        "strategy": "any",
+        "profiles": [
+            {"profile_no": index, "conditions": preference}
+            for index, preference in enumerate(preferences, start=1)
+            if isinstance(preference, dict)
+        ],
+    }
+
+
+def _preference_profiles(preference_content: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(preference_content, dict) or not preference_content:
+        return [{}]
+    raw_profiles = preference_content.get("profiles")
+    if not isinstance(raw_profiles, list):
+        return [preference_content]
+    profiles = []
+    for raw_profile in raw_profiles:
+        if not isinstance(raw_profile, dict):
+            continue
+        content = raw_profile.get("conditions", raw_profile)
+        if isinstance(content, dict):
+            profiles.append(content)
+    return profiles or [{}]
+
+
 def compare_salary(preference: dict[str, Any] | None, job_salary: dict[str, Any] | None) -> dict[str, Any]:
     """按文档规则比较薪资，不把未知当成冲突。"""
 
@@ -208,21 +237,20 @@ def compare_salary(preference: dict[str, Any] | None, job_salary: dict[str, Any]
     return {"status": "matched", "explanation": "岗位披露范围与期望有交集，仍需确认实际预算。"}
 
 
-def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, Any]) -> list[dict[str, Any]]:
-    """单独计算岗位方向、地点、办公方式和薪资条件。"""
+def _compare_conditions_single(preference: dict[str, Any], job_fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """计算一条岗位期望的岗位方向、地点、办公方式和薪资条件。"""
 
-    preference = preference or {}
     results: list[dict[str, Any]] = []
     title = preference.get("job_title") or {}
     job_title = job_fields.get("title") or job_fields.get("job_title")
     if title.get("status") == "unrestricted":
-        results.append({"condition": "job_title", "status": "matched", "explanation": "求职期望明确表示不限制岗位方向。"})
+        results.append({"condition": "job_title", "status": "matched", "preference_value": title, "strength": title.get("strength"), "required_conflict": False, "explanation": "求职期望明确表示不限制岗位方向。"})
     elif title.get("status") != "specified" or not job_title:
-        results.append({"condition": "job_title", "status": "unknown", "explanation": "岗位方向信息不足。"})
+        results.append({"condition": "job_title", "status": "unknown", "preference_value": title, "strength": title.get("strength"), "required_conflict": False, "explanation": "岗位方向信息不足。"})
     elif _job_title_matches(str(title.get("value", "")), str(job_title), job_fields):
-        results.append({"condition": "job_title", "status": "matched", "explanation": "岗位名称方向相符。"})
+        results.append({"condition": "job_title", "status": "matched", "preference_value": title, "strength": title.get("strength"), "required_conflict": False, "explanation": "岗位名称方向相符。"})
     else:
-        results.append({"condition": "job_title", "status": "unknown", "explanation": "名称不同，需要结合实际职责确认方向。"})
+        results.append({"condition": "job_title", "status": "unknown", "preference_value": title, "strength": title.get("strength"), "required_conflict": False, "explanation": "名称不同，需要结合实际职责确认方向。"})
 
     locations = preference.get("locations") or {}
     wanted = {str(item).strip() for item in locations.get("values", []) if str(item).strip()}
@@ -231,32 +259,68 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
         raw_actual = re.split(r"[/／、,，|]", raw_actual)
     actual = {str(item).strip() for item in raw_actual if str(item).strip()}
     if locations.get("status") == "unrestricted":
-        results.append({"condition": "location", "status": "matched", "explanation": "求职期望明确表示不限制地点。"})
+        results.append({"condition": "location", "status": "matched", "preference_value": locations, "strength": locations.get("strength"), "required_conflict": False, "explanation": "求职期望明确表示不限制地点。"})
     elif locations.get("status") != "specified" or not actual:
-        results.append({"condition": "location", "status": "unknown", "explanation": "地点未完整披露或未提供期望。"})
+        results.append({"condition": "location", "status": "unknown", "preference_value": locations, "strength": locations.get("strength"), "required_conflict": False, "explanation": "地点未完整披露或未提供期望。"})
     elif wanted & actual:
-        results.append({"condition": "location", "status": "matched", "explanation": "岗位地点包含可接受城市。"})
+        results.append({"condition": "location", "status": "matched", "preference_value": locations, "strength": locations.get("strength"), "required_conflict": False, "explanation": "岗位地点包含可接受城市。"})
     else:
-        results.append({"condition": "location", "status": "conflicted", "explanation": "岗位地点不在已确认的可接受城市内。"})
+        results.append({"condition": "location", "status": "conflicted", "preference_value": locations, "strength": locations.get("strength"), "required_conflict": locations.get("strength") == "required", "explanation": "岗位地点不在已确认的可接受城市内。"})
 
     work_mode = preference.get("work_mode") or {}
     actual_mode = job_fields.get("work_mode")
     if work_mode.get("status") == "unrestricted":
-        results.append({"condition": "work_mode", "status": "matched", "explanation": "求职期望明确表示不限制办公方式。"})
+        results.append({"condition": "work_mode", "status": "matched", "preference_value": work_mode, "strength": work_mode.get("strength"), "required_conflict": False, "explanation": "求职期望明确表示不限制办公方式。"})
     elif work_mode.get("status") != "specified" or not actual_mode:
-        results.append({"condition": "work_mode", "status": "unknown", "explanation": "办公方式未完整披露或未提供期望。"})
+        results.append({"condition": "work_mode", "status": "unknown", "preference_value": work_mode, "strength": work_mode.get("strength"), "required_conflict": False, "explanation": "办公方式未完整披露或未提供期望。"})
     elif work_mode.get("value") == actual_mode:
-        results.append({"condition": "work_mode", "status": "matched", "explanation": "办公方式符合已确认期望。"})
+        results.append({"condition": "work_mode", "status": "matched", "preference_value": work_mode, "strength": work_mode.get("strength"), "required_conflict": False, "explanation": "办公方式符合已确认期望。"})
     else:
-        results.append({"condition": "work_mode", "status": "conflicted", "explanation": "办公方式与已确认期望不同。"})
+        results.append({"condition": "work_mode", "status": "conflicted", "preference_value": work_mode, "strength": work_mode.get("strength"), "required_conflict": work_mode.get("strength") == "required", "explanation": "办公方式与已确认期望不同。"})
 
+    salary = preference.get("salary")
     results.append(
         {
             "condition": "salary",
-            **compare_salary(preference.get("salary"), job_fields.get("salary")),
+            **compare_salary(salary, job_fields.get("salary")),
+            "preference_value": salary,
+            "strength": salary.get("strength") if isinstance(salary, dict) else None,
+            "required_conflict": False,
         }
     )
+    results[-1]["required_conflict"] = results[-1]["status"] == "conflicted" and results[-1]["strength"] == "required"
     return results
+
+
+def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, Any]) -> list[dict[str, Any]]:
+    """在一次计算中比较多套期望，并选择整体最合适的一套。"""
+
+    profiles = _preference_profiles(preference)
+    if len(profiles) == 1:
+        return _compare_conditions_single(profiles[0], job_fields)
+
+    profile_rows = [_compare_conditions_single(profile, job_fields) for profile in profiles]
+    status_weight = {"matched": 3, "unknown": 1, "conflicted": 0}
+
+    def profile_rank(rows: list[dict[str, Any]]) -> tuple[int, int, int, int]:
+        statuses = [str(row.get("status")) for row in rows]
+        return (
+            sum(status_weight.get(status, 0) for status in statuses),
+            statuses.count("matched"),
+            -sum(bool(row.get("required_conflict")) for row in rows),
+            -statuses.count("unknown"),
+        )
+
+    selected_index, selected_rows = max(enumerate(profile_rows), key=lambda item: profile_rank(item[1]))
+    return [
+        {
+            **row,
+            "selected_profile_no": selected_index + 1,
+            "preference_count": len(profiles),
+            "explanation": f"按第 {selected_index + 1} 条岗位期望：{row['explanation']}",
+        }
+        for row in selected_rows
+    ]
 
 
 def _job_title_matches(expected: str, actual: str, job_fields: dict[str, Any]) -> bool:
@@ -479,13 +543,7 @@ def build_match_result(
     conditions = compare_conditions(preference_content, job_fields)
     verification_items = _verification_items(dimension_output, conditions)
     interview_questions = _interview_questions(dimension_output)
-    hard_conflict = any(
-        item["status"] == "conflicted"
-        and (preference_content or {}).get(
-            {"job_title": "job_title", "location": "locations", "work_mode": "work_mode", "salary": "salary"}.get(item["condition"], item["condition"]), {}
-        ).get("strength") == "required"
-        for item in conditions
-    )
+    hard_conflict = any(item.get("required_conflict") for item in conditions)
     unknown = any(item["status"] == "unknown" for item in conditions)
     if hard_conflict:
         advice = {"status": "not_priority", "text": "当前不优先，先确认或调整必须符合的条件。", "next_steps": ["先处理硬性条件冲突，再决定是否继续准备。"]}

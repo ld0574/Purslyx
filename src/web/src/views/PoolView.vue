@@ -51,7 +51,7 @@ const form = reactive({
 const resumes = computed(() => documents.value.filter((item) => item.document_type === "resume" && item.latest_version));
 const selectedFields = computed(() => selected.value?.job_content?.job_fields || selected.value?.job_content || {});
 const selectedCount = computed(() => selectedIds.value.length);
-const estimatedAnalysisCount = computed(() => selectedCount.value * preferences.value.length);
+const estimatedAnalysisCount = computed(() => selectedCount.value);
 const allPageSelected = computed(() => items.value.length > 0 && items.value.every((item) => selectedIds.value.includes(item.id)));
 const currentPageNumber = computed(() => cursorHistory.value.length + 1);
 const hasFilters = computed(() => Boolean(
@@ -83,7 +83,7 @@ function analysisInProgress(item: JsonMap): boolean {
 
 function analysisSummary(item: JsonMap): string {
   const summary = item.analysis_summary || {};
-  if (summary.total > 1) return `期望匹配 ${summary.available || 0}/${summary.total} 条`;
+  if (summary.total > 1) return `已生成 ${summary.available || 0}/${summary.total} 份报告`;
   return item.match_score == null ? "尚无评分" : `${item.match_score} 分`;
 }
 
@@ -308,7 +308,7 @@ async function submitBatchMatch(ids: string[], resumeVersionId: string) {
       },
     });
     const blocked = result.blocked || [];
-    const baseMessage = `已为 ${result.requested_items} 个岗位 × ${result.preference_count} 条有效岗位期望提交 ${result.started_count} 次匹配`;
+    const baseMessage = `已为 ${result.requested_items} 个岗位合并 ${result.preference_count} 条有效岗位期望，提交 ${result.started_count} 次匹配`;
     const blockedMessage = blocked.length ? `；${blocked.length} 次未启动：${blocked.slice(0, 3).map((item: JsonMap) => item.reason).join("；")}` : "";
     if (result.started_count) success.value = `${baseMessage}${blockedMessage}`;
     else error.value = `${baseMessage}${blockedMessage}`;
@@ -453,7 +453,7 @@ onMounted(refreshAll);
 
         <div class="batch-toolbar">
           <div class="batch-selection"><label class="select-all-control"><input type="checkbox" :checked="allPageSelected" :indeterminate="selectedCount > 0 && !allPageSelected" @change="toggleAll" /><span>全选本页</span></label><span class="batch-selected-count">已选 {{ selectedCount }} 个岗位</span></div>
-          <div class="batch-submit"><button class="button primary" :disabled="busy || !selectedCount" type="button" @click="requestBatchMatch()">匹配<span v-if="selectedCount">（{{ selectedCount }} 个岗位 × {{ preferences.length }} 条期望，共 {{ estimatedAnalysisCount }} 次）</span></button><small v-if="!resumes.length" class="batch-hint">还没有简历，点击匹配后会提示先上传简历。</small><RouterLink v-if="!resumes.length" class="button outline small" to="/app/seeker/resume">去上传简历</RouterLink><small v-else-if="!preferences.length" class="batch-hint">请先创建岗位期望。</small><small v-else class="batch-hint">岗位期望默认全部使用，不需要逐条选择。</small></div>
+          <div class="batch-submit"><button class="button primary" :disabled="busy || !selectedCount" type="button" @click="requestBatchMatch()">匹配<span v-if="selectedCount">（{{ selectedCount }} 个岗位，共 {{ estimatedAnalysisCount }} 次<span v-if="preferences.length">；{{ preferences.length }} 条期望合并请求</span>）</span></button><small v-if="!resumes.length" class="batch-hint">还没有简历，点击匹配后会提示先上传简历。</small><RouterLink v-if="!resumes.length" class="button outline small" to="/app/seeker/resume">去上传简历</RouterLink><small v-else-if="!preferences.length" class="batch-hint">请先创建岗位期望。</small><small v-else class="batch-hint">每个岗位只发起一次匹配请求，全部岗位期望会合并输入。</small></div>
         </div>
 
         <div v-if="!items.length" class="empty pool-empty"><div><strong>{{ hasFilters ? "没有符合筛选条件的岗位" : "匹配池还是空的" }}</strong><p>{{ hasFilters ? "换个筛选条件或清空筛选后重试。" : "可以用浏览器插件抓取岗位，或点击右上角手动新增。" }}</p></div></div>
@@ -479,17 +479,17 @@ onMounted(refreshAll);
       <div class="card-body">
         <div v-if="selected.blocking_reasons?.length" class="callout opportunity">{{ selected.blocking_reasons.join("；") }}</div>
         <div class="job-condition-summary"><div><strong>地点</strong><span>{{ selectedCondition("location") }}</span></div><div><strong>经验</strong><span>{{ selectedCondition("experience") }}</span></div><div><strong>学历</strong><span>{{ selectedCondition("education") }}</span></div><div><strong>薪资</strong><span>{{ selectedCondition("salary") }}</span></div></div>
-        <div class="version-strip"><span class="version-chip">岗位版本 · {{ selected.job_document_version?.id }}</span><span class="version-chip">最近使用简历 · {{ selected.resume_version_id || "待选择" }}</span><span class="version-chip">有效岗位期望 · {{ preferences.length }} 条</span></div>
+        <div class="version-strip"><span class="version-chip">岗位版本 · {{ selected.job_document_version?.id }}</span><span class="version-chip">最近使用简历 · {{ selected.resume_version_id || "待选择" }}</span><span class="version-chip">有效岗位期望 · {{ preferences.length }} 条，合并为 1 次请求</span></div>
         <details class="raw-report"><summary>查看岗位结构化高级信息</summary><pre>{{ JSON.stringify(selected.job_content || {}, null, 2) }}</pre></details>
-        <section v-if="analysisInProgress(selected)" class="callout opportunity" style="margin-top:18px">匹配任务正在执行；批量任务会按岗位期望分别生成报告。</section>
-        <section v-else-if="!analysisReady(selected)" class="match-panel" style="margin-top:18px"><div class="card-head"><div><h3>待匹配</h3><p>点击下方“匹配”后选择简历；系统会自动使用全部 {{ preferences.length }} 条有效岗位期望。</p></div><span class="tag opportunity">尚无结果</span></div></section>
+        <section v-if="analysisInProgress(selected)" class="callout opportunity" style="margin-top:18px">匹配任务正在执行；本岗位只会发起一次模型请求，全部岗位期望会合并输入。</section>
+        <section v-else-if="!analysisReady(selected)" class="match-panel" style="margin-top:18px"><div class="card-head"><div><h3>待匹配</h3><p>点击下方“匹配”后选择简历；系统会把全部 {{ preferences.length }} 条有效岗位期望合并为一次请求。</p></div><span class="tag opportunity">尚无结果</span></div></section>
         <div class="item-actions" style="margin-top:14px"><RouterLink v-if="analysisReady(selected) && selected.latest_analysis?.id" class="button primary" :to="{ path: '/app/seeker/report', query: { analysis_id: selected.latest_analysis.id } }">打开最近报告</RouterLink><button v-if="selected.apply_action?.available" class="button soft" type="button" @click="goApply">去投递</button><span v-else-if="selected.source_url" class="tag neutral">原岗位链接当前不可用</span><button v-if="!analysisInProgress(selected)" class="button primary" type="button" :disabled="busy" @click="requestBatchMatch([selected.id])">{{ analysisReady(selected) ? "重新匹配" : "匹配" }}</button><button class="button link-button" type="button" :disabled="busy" @click="deletePoolItem(selected)">删除岗位</button></div>
       </div>
     </section>
 
     <dialog v-if="resumeDialogOpen" ref="resumeDialog" class="pool-resume-dialog" @cancel.prevent="closeResumeDialog" @close="resumeDialogOpen = false">
       <form class="pool-resume-dialog-form" @submit.prevent="confirmResumeMatch">
-        <div class="card-head"><div><div class="eyebrow">SELECT RESUME</div><h3>选择匹配简历</h3><p>本次将匹配 {{ matchingPoolIds.length }} 个岗位，并默认使用全部 {{ preferences.length }} 条有效岗位期望。</p></div><button class="button link-button small" type="button" @click="closeResumeDialog">关闭</button></div>
+        <div class="card-head"><div><div class="eyebrow">SELECT RESUME</div><h3>选择匹配简历</h3><p>本次将匹配 {{ matchingPoolIds.length }} 个岗位；每个岗位只请求一次，并合并全部 {{ preferences.length }} 条有效岗位期望。</p></div><button class="button link-button small" type="button" @click="closeResumeDialog">关闭</button></div>
         <div class="resume-choice-list"><label v-for="item in resumes" :key="item.latest_version.id" class="resume-choice" :class="{ selected: resumeDialogSelection === item.latest_version.id }"><input v-model="resumeDialogSelection" type="radio" name="pool-resume-choice" :value="item.latest_version.id" /><span><strong>{{ item.title }}</strong><small>简历版本 v{{ item.latest_version.version_no }}</small></span></label></div>
         <div class="item-actions pool-dialog-actions"><button class="button soft" type="button" @click="closeResumeDialog">取消</button><button class="button primary" type="submit" :disabled="busy || !resumeDialogSelection">确认匹配</button></div>
       </form>

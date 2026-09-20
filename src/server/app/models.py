@@ -487,7 +487,8 @@ class Analysis(TimestampMixin, Base):
     resume_version_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     job_version_id: Mapped[int] = mapped_column(Integer, index=True, nullable=False)
     preference_id: Mapped[int | None] = mapped_column(Integer, index=True)
-    # 分析必须冻结具体的岗位期望版本，不能只指向会继续变化的父记录。
+    # 单条分析保留一个具体版本；批量求职匹配的多条期望通过任务 input_refs
+    # 一并冻结，避免为了合并一次模型请求而新增一张中间关联表。
     preference_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
     job_category: Mapped[str] = mapped_column(String(32), default="general", nullable=False)
     ability_score: Mapped[float | None] = mapped_column(Float)

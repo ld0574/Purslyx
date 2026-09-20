@@ -35,6 +35,7 @@ from .config import settings
 from .db import get_db
 from .email_delivery import deliver_account_action_email
 from .errors import DomainError, NotFoundError
+from .matching import merge_preference_contents
 from .model_provider import get_model_provider, merge_model_results
 from .models import (
     Account,
@@ -3350,6 +3351,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
                 "status": analysis.status,
                 "ability_score": analysis.ability_score,
                 "preference_version_id": preference_version.public_id if preference_version else None,
+                "preference_version_ids": _analysis_preference_version_ids(db, analysis) if analysis else [],
             }
             if analysis
             else None
@@ -3372,6 +3374,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
                 "ability_score": row.ability_score,
                 "resume_version_id": db.get(DocumentVersion, row.resume_version_id).public_id if db.get(DocumentVersion, row.resume_version_id) else None,
                 "preference_version_id": db.get(PreferenceVersion, row.preference_version_id).public_id if row.preference_version_id and db.get(PreferenceVersion, row.preference_version_id) else None,
+                "preference_version_ids": _analysis_preference_version_ids(db, row),
                 "completed_at": row.completed_at.isoformat() if row.completed_at else None,
             }
             for row in analyses
@@ -3379,11 +3382,32 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
     return data
 
 
+def _analysis_preference_version_ids(db: Session, item: Analysis) -> list[str]:
+    task = db.get(Task, item.task_id) if item.task_id else None
+    task_data = task.input_data if task and isinstance(task.input_data, dict) else {}
+    ids = [str(value) for value in task_data.get("preference_version_ids", []) if value]
+    if ids:
+        return ids
+    if item.preference_version_id:
+        version = db.get(PreferenceVersion, item.preference_version_id)
+        if version is not None:
+            return [version.public_id]
+    return []
+
+
 def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[str, Any]:
     resume_version = db.get(DocumentVersion, item.resume_version_id)
     job_version = db.get(DocumentVersion, item.job_version_id)
     preference_version = db.get(PreferenceVersion, item.preference_version_id) if item.preference_version_id else None
     preference = db.get(Preference, item.preference_id) if item.preference_id else None
+    task = db.get(Task, item.task_id) if item.task_id else None
+    task_data = task.input_data if task and isinstance(task.input_data, dict) else {}
+    preference_version_ids = _analysis_preference_version_ids(db, item)
+    preference_input_versions = [
+        value
+        for value in task_data.get("input_versions", [])
+        if isinstance(value, dict) and value.get("resource_type") == "preference_version"
+    ]
     latest_preference_version = (
         db.scalar(
             select(PreferenceVersion)
@@ -3411,11 +3435,48 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
             "latest_version_no": latest_preference_version.version_no if latest_preference_version else None,
             "reanalysis_required": freshness_status == "outdated",
         }
+    elif len(preference_version_ids) > 1:
+        combined_states: list[str] = []
+        latest_version_ids: list[str] = []
+        for version_id in preference_version_ids:
+            used_version = db.scalar(
+                select(PreferenceVersion).where(
+                    PreferenceVersion.public_id == version_id,
+                    PreferenceVersion.deleted_at.is_(None),
+                )
+            )
+            used_preference = db.get(Preference, used_version.preference_id) if used_version else None
+            latest_version = (
+                _latest_preference_version(db, used_preference.id)
+                if used_preference is not None and used_preference.deleted_at is None
+                else None
+            )
+            if used_version is None or latest_version is None:
+                combined_states.append("source_archived")
+            elif latest_version.id != used_version.id:
+                combined_states.append("outdated")
+            else:
+                combined_states.append("current")
+            if latest_version is not None:
+                latest_version_ids.append(latest_version.public_id)
+        combined_status = (
+            "source_archived"
+            if "source_archived" in combined_states
+            else "outdated"
+            if "outdated" in combined_states
+            else "current"
+        )
+        preference_freshness = {
+            "status": combined_status,
+            "used_version_ids": preference_version_ids,
+            "latest_version_ids": latest_version_ids,
+            "reanalysis_required": combined_status != "current",
+        }
     data = {
         "id": item.public_id,
         "context_type": item.context_type,
         "status": item.status,
-        "task": task_view(db.get(Task, item.task_id)) if item.task_id and db.get(Task, item.task_id) else None,
+        "task": task_view(task) if task else None,
         "input_versions": [
             value
             for value in [
@@ -3431,13 +3492,24 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
                         "id": preference_version.public_id,
                         "version_no": preference_version.version_no,
                     }
-                    if preference_version
+                    if preference_version and not preference_input_versions
                     else None
                 ),
+                *[
+                    {
+                        "type": "preference",
+                        "id": value.get("resource_id"),
+                        "version_no": value.get("version_no"),
+                    }
+                    for value in preference_input_versions
+                ],
             ]
             if value is not None
         ],
         "preference_id": preference.public_id if preference else None,
+        "preference_version_ids": preference_version_ids,
+        "preference_count": len(preference_version_ids),
+        "preferences_merged": len(preference_version_ids) > 1,
         "input_freshness": {"preference": preference_freshness},
         "job_category": item.job_category,
         "ability_score": item.ability_score,
@@ -3489,7 +3561,12 @@ def _persist_analysis_details(
     }
     for condition in report.get("conditions", []):
         code = str(condition.get("condition", "unknown"))
-        preference_value = preference_fields.get(code)
+        preference_value = condition.get("preference_value")
+        if preference_value is None:
+            preference_value = preference_fields.get(code)
+        strength = condition.get("strength")
+        if strength is None and isinstance(preference_value, dict):
+            strength = preference_value.get("strength")
         db.add(
             AnalysisConditionResult(
                 account_id=account.id,
@@ -3498,20 +3575,46 @@ def _persist_analysis_details(
                 result_status=str(condition.get("status", "unknown")),
                 preference_value=preference_value,
                 job_value=job_values.get(code),
-                strength=(preference_value or {}).get("strength") if isinstance(preference_value, dict) else None,
+                strength=strength,
                 explanation=str(condition.get("explanation", "")),
             )
         )
 
 
-def _start_analysis(db: Session, account: Account, *, context_type: str, resume_version: DocumentVersion, job_version: DocumentVersion, preference: PreferenceVersion | None, pool: JobPoolItem | None, key: str) -> tuple[Analysis, Task, bool]:
+def _start_analysis(
+    db: Session,
+    account: Account,
+    *,
+    context_type: str,
+    resume_version: DocumentVersion,
+    job_version: DocumentVersion,
+    preference: PreferenceVersion | None,
+    pool: JobPoolItem | None,
+    key: str,
+    preferences: list[PreferenceVersion] | None = None,
+) -> tuple[Analysis, Task, bool]:
     resume_document = db.get(Document, resume_version.document_id)
     job_document = db.get(Document, job_version.document_id)
     if resume_document is None or resume_document.account_id != account.id or resume_document.deleted_at is not None or resume_document.document_type != "resume":
         raise DomainError("ANALYSIS_INPUT_INVALID", "简历版本类型不正确", 422)
     if job_document is None or job_document.account_id != account.id or job_document.deleted_at is not None or not _document_type_is_job(job_document.document_type):
         raise DomainError("ANALYSIS_INPUT_INVALID", "岗位版本类型不正确", 422)
-    input_data = {"context_type": context_type, "resume_version_id": resume_version.public_id, "job_version_id": job_version.public_id, "preference_version_id": preference.public_id if preference else None}
+    preference_versions = list(preferences) if preferences is not None else ([preference] if preference else [])
+    preference_ids = [item.public_id for item in preference_versions]
+    merged_preference = (
+        preference_versions[0].content
+        if len(preference_versions) == 1
+        else merge_preference_contents([item.content for item in preference_versions])
+        if preference_versions
+        else None
+    )
+    input_data = {
+        "context_type": context_type,
+        "resume_version_id": resume_version.public_id,
+        "job_version_id": job_version.public_id,
+        "preference_version_id": preference_ids[0] if len(preference_ids) == 1 else None,
+        "preference_version_ids": preference_ids,
+    }
     task, reservation, existed = create_task(
         db,
         account,
@@ -3522,11 +3625,10 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
         input_refs=[
             ("resume_version", resume_version.public_id, resume_version.version_no, payload_hash(resume_version.content)),
             ("job_version", job_version.public_id, job_version.version_no, payload_hash(job_version.content)),
-            *(
-                [("preference_version", preference.public_id, preference.version_no, payload_hash(preference.content))]
-                if preference
-                else []
-            ),
+            *[
+                ("preference_version", item.public_id, item.version_no, payload_hash(item.content))
+                for item in preference_versions
+            ],
         ],
     )
     if existed:
@@ -3541,23 +3643,32 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
         job_pool_item_id=pool.id if pool else None,
         resume_version_id=resume_version.id,
         job_version_id=job_version.id,
-        preference_id=preference.preference_id if preference else None,
-        preference_version_id=preference.id if preference else None,
+        preference_id=preference_versions[0].preference_id if len(preference_versions) == 1 else None,
+        preference_version_id=preference_versions[0].id if len(preference_versions) == 1 else None,
         task_id=task.id,
     )
     db.add(analysis)
     db.flush()
     if pool:
         pool.resume_version_id = resume_version.id
-        pool.preference_id = preference.preference_id if preference else None
+        pool.preference_id = preference_versions[0].preference_id if len(preference_versions) == 1 else None
         pool.analysis_status = "queued"
     db.commit()
 
     def work() -> Any:
         # 不在 API 层丢弃模型调用元数据，Worker／预算服务需要使用真实 token。
-        return get_model_provider().analyze(resume_version.content, job_version.content, preference.content if preference else None, context_type)
+        return get_model_provider().analyze(resume_version.content, job_version.content, merged_preference, context_type)
 
     def save_result(report: dict[str, Any]) -> None:
+        if len(preference_versions) > 1:
+            report = {
+                **report,
+                "preference_bundle": {
+                    "strategy": "any",
+                    "preference_count": len(preference_versions),
+                    "preference_version_ids": preference_ids,
+                },
+            }
         analysis.status = "available"
         analysis.job_category = report.get("job_category", "general")
         analysis.ability_score = report.get("ability_score")
@@ -3567,7 +3678,7 @@ def _start_analysis(db: Session, account: Account, *, context_type: str, resume_
         analysis.result_schema_version = report.get("result_schema_version", "analysis-result-v1")
         analysis.prompt_version = report.get("prompt_version", "analysis-local-v1")
         analysis.completed_at = now_utc()
-        _persist_analysis_details(db, account, analysis, report, resume_version.id, preference.content if preference else None, job_version.content)
+        _persist_analysis_details(db, account, analysis, report, resume_version.id, merged_preference, job_version.content)
         if pool:
             pool.analysis_status = "available"
             pool.revision += 1
@@ -3641,7 +3752,7 @@ def _batch_analyze_pool_items(
     request_key: str,
 ) -> dict[str, Any]:
     if not confirm_usage:
-        raise DomainError("USAGE_CONFIRMATION_REQUIRED", "开始匹配前需要确认按岗位期望数量消耗分析次数", 422)
+        raise DomainError("USAGE_CONFIRMATION_REQUIRED", "开始匹配前需要确认按岗位数量消耗分析次数", 422)
     if len(pool_item_ids) != len(set(pool_item_ids)):
         raise DomainError("POOL_BATCH_INVALID", "批量岗位不能重复", 422)
 
@@ -3661,48 +3772,48 @@ def _batch_analyze_pool_items(
         if job_version is None:
             blocked.append({"pool_item_id": pool.public_id, "reason": "岗位版本不存在", "code": "POOL_SOURCE_INVALID"})
             continue
-        for preference in preferences:
-            task_key = f"{request_key}:{pool.public_id}:{preference.public_id}"
-            try:
-                analysis, task, existed = _start_analysis(
-                    db,
-                    account,
-                    context_type="seeker_pool",
-                    resume_version=resume_version,
-                    job_version=job_version,
-                    preference=preference,
-                    pool=pool,
-                    key=task_key,
-                )
-            except DomainError as exc:
-                # create_task 会先 flush 任务，再预留次数；次数不足时必须回滚这个
-                # 尚未关联分析的占位任务，否则后续同一批次成功提交时会留下孤儿任务。
-                db.rollback()
-                if exc.code not in {"USAGE_INSUFFICIENT", "TASK_QUEUE_LIMIT_REACHED", "BUDGET_LIMIT_REACHED", "BUDGET_CONCURRENCY_LIMIT"}:
-                    raise
-                blocked.append(
-                    {
-                        "pool_item_id": pool.public_id,
-                        "preference_id": preference.public_id,
-                        "reason": exc.message,
-                        "code": exc.code,
-                    }
-                )
-                continue
-            tasks.append(
+        task_key = f"{request_key}:{pool.public_id}"
+        try:
+            analysis, task, existed = _start_analysis(
+                db,
+                account,
+                context_type="seeker_pool",
+                resume_version=resume_version,
+                job_version=job_version,
+                preference=None,
+                preferences=preferences,
+                pool=pool,
+                key=task_key,
+            )
+        except DomainError as exc:
+            # create_task 会先 flush 任务，再预留次数；次数不足时必须回滚这个
+            # 尚未关联分析的占位任务，否则后续同一批次成功提交时会留下孤儿任务。
+            db.rollback()
+            if exc.code not in {"USAGE_INSUFFICIENT", "TASK_QUEUE_LIMIT_REACHED", "BUDGET_LIMIT_REACHED", "BUDGET_CONCURRENCY_LIMIT"}:
+                raise
+            blocked.append(
                 {
                     "pool_item_id": pool.public_id,
-                    "preference_id": preference.public_id,
-                    "analysis_id": analysis.public_id,
-                    "reused": existed,
-                    "task": task_view(task),
+                    "reason": exc.message,
+                    "code": exc.code,
                 }
             )
+            continue
+        tasks.append(
+            {
+                "pool_item_id": pool.public_id,
+                "preference_count": len(preferences),
+                "analysis_id": analysis.public_id,
+                "reused": existed,
+                "task": task_view(task),
+            }
+        )
 
     return {
         "requested_items": len(pools),
         "preference_count": len(preferences),
-        "analysis_count": len(pools) * len(preferences),
+        "analysis_count": len(pools),
+        "request_count": len(pools),
         "started_count": len(tasks),
         "new_count": sum(not item["reused"] for item in tasks),
         "tasks": tasks,
