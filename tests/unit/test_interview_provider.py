@@ -9,6 +9,19 @@ def test_followup_feedback_does_not_create_recursive_followup() -> None:
     assert result["needs_followup"] is False
 
 
+def test_local_feedback_explains_star_gaps_and_reanswer_path() -> None:
+    result = ModelProvider().feedback(
+        {"question_text": "请说明你的项目经历", "question_type": "main"},
+        "我用了 TiDB 和 Apifox。",
+    ).value
+    assert result["schema_version"] == "interview-feedback-v3"
+    assert result["content"]["summary"]
+    assert set(result["content"]["star_assessment"]) == {"situation", "task", "action", "result"}
+    assert result["content"]["missing_details"]
+    assert "【" in result["content"]["answer_template"]
+    assert result["needs_followup"] is True
+
+
 def test_summary_counts_only_main_questions() -> None:
     questions = [
         {"id": "main-1", "main_no": 1, "question_type": "main"},

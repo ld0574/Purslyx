@@ -70,8 +70,21 @@ class _FakeChatCompletions:
                     {"question_text": "请说明项目结果如何核验。", "method": "STAR", "basis": {"requirement_ids": ["req-1"], "evidence_segment_keys": ["experience-1"], "reason": "验证结果证据。"}},
                 ],
             },
-            "interview_feedback_v2": {
-                "content": {"strengths": ["回答有具体项目"], "gaps": ["缺少结果"], "suggestions": ["补充可核验指标"]},
+            "interview_feedback_v3": {
+                "content": {
+                    "summary": "回答有具体项目，但结果证据不足。",
+                    "strengths": ["回答有具体项目"],
+                    "gaps": ["缺少结果"],
+                    "suggestions": ["补充可核验指标"],
+                    "star_assessment": {
+                        "situation": {"status": "partial", "feedback": "背景还可以更清楚。"},
+                        "task": {"status": "partial", "feedback": "目标还可以更明确。"},
+                        "action": {"status": "strong", "feedback": "行动有具体项目依据。"},
+                        "result": {"status": "missing", "feedback": "还没有结果。"},
+                    },
+                    "missing_details": ["结果指标"],
+                    "answer_template": "我负责【任务】，通过【行动】取得【结果】。",
+                },
                 "needs_followup": True,
                 "followup_question": "请补充这个项目的结果和核验方式。",
             },
@@ -127,6 +140,9 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
     assert rewrite["method"] == "evidence-constrained-rewrite"
     assert questions["method"] == "STAR"
     assert feedback["method"] == "STAR"
+    assert feedback["content"]["summary"] == "回答有具体项目，但结果证据不足。"
+    assert feedback["content"]["star_assessment"]["result"]["status"] == "missing"
+    assert feedback["content"]["answer_template"] == "我负责【任务】，通过【行动】取得【结果】。"
     assert summary["content"]["star_assessment"]["result"]["status"] == "missing"
     assert [call["response_format"]["json_schema"]["name"] for call in chat.calls] == [
         "document_resume_v2",
@@ -134,7 +150,7 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
         "analysis_result_v2",
         "rewrite_result_v2",
         "interview_opening_v2",
-        "interview_feedback_v2",
+        "interview_feedback_v3",
         "interview_summary_v2",
     ]
     assert chat.calls[0]["messages"][0]["role"] == "system"

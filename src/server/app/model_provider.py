@@ -144,28 +144,46 @@ class ModelProvider:
         clean = answer.strip()
         # 每个主问题最多允许一条追问；追问本身只反馈，不再递归生成追问。
         is_followup = question.get("question_type") == "followup"
-        if len(clean) < 12 and not is_followup:
+        if len(clean) < 12:
             content = {
-                "strengths": ["已经开始回答问题"],
-                "gaps": ["缺少具体行动、背景和可核验结果"],
-                "suggestions": ["补充你承担的动作、使用的方法以及能够核对的结果"],
+                "summary": "这次回答太短，目前只能确认你开始作答，还不足以判断这段经历的价值。",
+                "strengths": ["已经给出了回答方向，但还没有形成可判断的经历证据。"],
+                "gaps": ["缺少项目背景、你的任务、具体行动和可核验结果。"],
+                "suggestions": ["先按“背景—任务—行动—结果”各补充一句，优先说清你本人做了什么。"],
+                "star_assessment": {
+                    "situation": {"status": "missing", "feedback": "没有交代事情发生的项目背景、规模或约束。"},
+                    "task": {"status": "missing", "feedback": "没有说明当时要完成的目标，以及你负责的范围。"},
+                    "action": {"status": "missing", "feedback": "没有说明你亲自采取了哪些步骤、方法或决策。"},
+                    "result": {"status": "missing", "feedback": "没有结果、指标或其他可以验证的变化。"},
+                },
+                "missing_details": ["项目背景与目标", "你本人负责的任务", "你采取的关键行动", "结果或验证方式"],
+                "answer_template": "当时的背景是【项目/场景】；我的任务是【目标和职责】；我具体做了【关键行动】；最后通过【指标、现象或反馈】验证了结果。",
             }
-            needs_followup = True
+            needs_followup = not is_followup
         else:
             content = {
-                "strengths": ["回答包含了与问题相关的实际表达"],
-                "gaps": ["可以进一步说明个人承担范围和结果"],
-                "suggestions": ["按背景、行动、结果的顺序补充一到两个具体细节"],
+                "summary": "回答有相关表达，但个人行动和结果证据还不够清楚，暂时更像内容线索而不是完整案例。",
+                "strengths": ["回答已经触及问题主题，可以继续沿着这段经历展开。"],
+                "gaps": ["个人承担范围、关键决策和最终结果仍需要具体说明。"],
+                "suggestions": ["不要只列技术或工具名称，补充你如何判断、如何实施，以及结果如何被验证。"],
+                "star_assessment": {
+                    "situation": {"status": "partial", "feedback": "提到了相关主题，但还缺少项目背景、规模或当时的挑战。"},
+                    "task": {"status": "partial", "feedback": "还需要明确你本人承担的目标和边界，而不是只描述项目使用了什么。"},
+                    "action": {"status": "partial", "feedback": "需要把技术名词展开成你的具体设计、决策、实施步骤或协作动作。"},
+                    "result": {"status": "missing", "feedback": "还没有说明准确率、效率、稳定性或业务结果发生了什么变化。"},
+                },
+                "missing_details": ["项目背景和主要挑战", "你本人负责的范围", "一到两个关键行动或决策", "结果指标或验证方式"],
+                "answer_template": "在【项目背景和挑战】下，我负责【个人任务】；我先【行动/决策一】，再【行动/决策二】；最后通过【指标或验证方式】确认【结果】。",
             }
-            needs_followup = False
+            needs_followup = not is_followup and len(clean) < 80
         return ModelResult(
             {
                 "status": "available",
-                "content": content,
+                "content": _normalise_feedback_content(content),
                 "needs_followup": needs_followup,
                 "followup_question": "请再补充你本人采取的具体行动，以及可以核对的结果。" if needs_followup else None,
                 "method": "STAR",
-                "schema_version": "interview-feedback-v1",
+                "schema_version": "interview-feedback-v3",
             },
             self.name,
             settings.model_name,
@@ -300,16 +318,25 @@ _OPENING_SCHEMA = _strict_object({"questions": {"type": "array", "minItems": 3, 
         "reason": {"type": "string"},
     }),
 })}})
+_STAR_ITEM_SCHEMA = _strict_object({"status": {"type": "string", "enum": ["strong", "partial", "missing"]}, "feedback": {"type": "string"}})
 _FEEDBACK_SCHEMA = _strict_object({
     "content": _strict_object({
+        "summary": {"type": "string"},
         "strengths": {"type": "array", "items": {"type": "string"}},
         "gaps": {"type": "array", "items": {"type": "string"}},
         "suggestions": {"type": "array", "items": {"type": "string"}},
+        "star_assessment": _strict_object({
+            "situation": _STAR_ITEM_SCHEMA,
+            "task": _STAR_ITEM_SCHEMA,
+            "action": _STAR_ITEM_SCHEMA,
+            "result": _STAR_ITEM_SCHEMA,
+        }),
+        "missing_details": {"type": "array", "items": {"type": "string"}},
+        "answer_template": {"type": "string"},
     }),
     "needs_followup": {"type": "boolean"},
     "followup_question": {"type": ["string", "null"]},
 })
-_STAR_ITEM_SCHEMA = _strict_object({"status": {"type": "string"}, "feedback": {"type": "string"}})
 _SUMMARY_SCHEMA = _strict_object({
     "completion_type": {"type": "string"},
     "answered_main_count": {"type": "integer"},
@@ -341,6 +368,41 @@ def _string_list(value: Any, limit: int = 8, item_limit: int = 500) -> list[str]
     if not isinstance(value, list):
         return []
     return [str(item).strip()[:item_limit] for item in value if str(item).strip()][:limit]
+
+
+_STAR_KEYS = ("situation", "task", "action", "result")
+
+
+def _normalise_star_assessment(value: Any) -> dict[str, dict[str, str]]:
+    raw = value if isinstance(value, dict) else {}
+    defaults = {
+        "situation": "没有提供项目背景、规模或约束。",
+        "task": "没有明确当时的目标和个人职责。",
+        "action": "没有说明你本人采取的具体行动。",
+        "result": "没有提供结果或可核验的变化。",
+    }
+    result: dict[str, dict[str, str]] = {}
+    for key in _STAR_KEYS:
+        item = raw.get(key) if isinstance(raw.get(key), dict) else {}
+        status = str(item.get("status") or "missing").strip().lower()
+        if status not in {"strong", "partial", "missing"}:
+            status = "missing"
+        feedback = str(item.get("feedback") or defaults[key]).strip()[:500]
+        result[key] = {"status": status, "feedback": feedback}
+    return result
+
+
+def _normalise_feedback_content(value: Any) -> dict[str, Any]:
+    content = value if isinstance(value, dict) else {}
+    return {
+        "summary": str(content.get("summary") or "请对照 STAR 看清这次回答已经说清什么、还缺什么。").strip()[:1200],
+        "strengths": _string_list(content.get("strengths")),
+        "gaps": _string_list(content.get("gaps")),
+        "suggestions": _string_list(content.get("suggestions")),
+        "star_assessment": _normalise_star_assessment(content.get("star_assessment")),
+        "missing_details": _string_list(content.get("missing_details"), limit=6),
+        "answer_template": str(content.get("answer_template") or "当时的背景是【待补充】；我的任务是【待补充】；我具体做了【待补充】；最后通过【指标或现象】验证结果。").strip()[:1600],
+    }
 
 
 def _usage_value(usage: Any, name: str) -> int | None:
@@ -752,27 +814,24 @@ class OpenAIModelProvider(ModelProvider):
 
     def feedback(self, question: dict[str, Any], answer: str) -> ModelResult:
         result = self._json(
-            "你是 Purslyx 的 STAR 面试反馈教练。只评价用户这一次真实回答，不替用户补写经历。指出 Situation、Task、Action、Result 哪些有效、缺失或模糊，并给出马上可执行的建议。主问题最多一次追问；followup_question 只追问最关键缺口；question_type 为 followup 时 needs_followup 必须 false。",
+            "你是 Purslyx 的 STAR 面试反馈教练。只评价用户这一次真实回答，不替用户补写经历，也不能把题目中的要求当成用户已经完成的事实。输出必须具体对应这次回答：summary 用一句话给出结论；strengths 只写回答中真实有效的内容；gaps 和 star_assessment 分别指出 Situation、Task、Action、Result 哪些已经说清、部分说清或缺失；missing_details 只列出下一步必须补的事实；suggestions 给出可执行的改进动作；answer_template 给出可以直接套用的重答骨架，只能使用用户已经说过的事实，其余位置用【待补充】占位，不能编造项目、职责、技术、数字或结果。不要输出“补充细节”“加强表达”这类没有对象的泛话。主问题最多一次追问，followup_question 只追问最关键的一个缺口；question_type 为 followup 时 needs_followup 必须 false 且 followup_question 必须为 null。",
             {"question": question, "answer": answer},
-            "interview_feedback_v2",
+            "interview_feedback_v3",
             _FEEDBACK_SCHEMA,
         )
         content = result.value.get("content") if isinstance(result.value.get("content"), dict) else {}
         is_followup = question.get("question_type") == "followup"
         needs_followup = bool(result.value.get("needs_followup")) and not is_followup
-        followup = str(result.value.get("followup_question") or "").strip()[:800] or None
+        followup = None if is_followup else str(result.value.get("followup_question") or "").strip()[:800] or None
         if needs_followup and not followup:
             followup = "请再补充你本人采取的具体行动，以及可以核对的结果。"
         return ModelResult({
             "status": "available",
-            "content": {
-                "strengths": _string_list(content.get("strengths")),
-                "gaps": _string_list(content.get("gaps")),
-                "suggestions": _string_list(content.get("suggestions")),
-            },
+            "content": _normalise_feedback_content(content),
             "needs_followup": needs_followup,
             "followup_question": followup,
             "method": "STAR",
+            "schema_version": "interview-feedback-v3",
         }, self.name, result.model, result.input_tokens, result.output_tokens)
 
     def summary(self, questions: list[dict[str, Any]], answers: list[dict[str, Any]], completion_type: str) -> ModelResult:
