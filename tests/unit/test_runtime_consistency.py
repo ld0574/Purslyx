@@ -40,6 +40,11 @@ def test_container_logs_are_persisted_per_release_slot() -> None:
     assert "max-size: \"50m\"" in compose
 
 
+def test_container_installs_legacy_word_reader() -> None:
+    dockerfile = (Path(__file__).resolve().parents[2] / "infra" / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert "antiword" in dockerfile
+
+
 def _unique_names(model: type) -> set[str]:
     table = model.__table__
     return {

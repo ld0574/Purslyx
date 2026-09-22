@@ -8,8 +8,9 @@ export class ApiError extends Error {
     public code: string,
     message: string,
     public action?: string,
+    public requestId?: string,
   ) {
-    super(message);
+    super(requestId ? `${message}（请求 ID：${requestId}）` : message);
   }
 }
 
@@ -88,11 +89,13 @@ export async function api<T = JsonMap>(
   try {
     payload = await response.json();
   } catch {
-    if (!response.ok) throw new ApiError(response.status, "INVALID_RESPONSE", "服务返回了无法读取的响应");
+    if (!response.ok) throw new ApiError(response.status, "INVALID_RESPONSE", `服务返回了无法读取的响应（HTTP ${response.status}）`);
   }
   if (!response.ok) {
     const error = payload.error || {};
-    throw new ApiError(response.status, error.code || "REQUEST_FAILED", error.message || "请求失败", error.action);
+    const rawRequestId = String(error.request_id || payload.meta?.request_id || response.headers.get("X-Request-ID") || "");
+    const requestId = /^[A-Za-z0-9._:-]{1,64}$/.test(rawRequestId) ? rawRequestId : undefined;
+    throw new ApiError(response.status, error.code || "REQUEST_FAILED", error.message || "请求失败", error.action, requestId);
   }
   return (payload.data ?? payload) as T;
 }

@@ -394,6 +394,20 @@ sudo rg -n -i 'error|critical|exception|traceback|failed' /data/purslyx/logs/api
 `request_id`、HTTP 状态码和耗时；匹配、解析等异步任务重点查看 `worker.log` 的 `task_id`、
 `task_public_id`、`attempt_id` 和 `error_code`。
 
+简历上传失败时，页面错误提示会显示请求 ID。用这个 ID 在当前槽位的 `api.log`（包括轮转文件）
+检索 `request error` 和 `document create failed`：前者给出 HTTP 状态和业务错误码，后者给出
+`stage`（`storage`、`file_extraction`、`model_extraction` 或 `persistence`）、文件类型和底层异常类型。
+重试解析的独立 Worker 则用任务中心显示的任务 ID 检索 `worker.log`：
+
+```bash
+sudo rg -n '这里替换为请求ID' /data/purslyx/logs/api1/api.log*
+sudo rg -n 'task_public_id=这里替换为任务ID|worker document parse fallback task_id=这里替换为任务ID' /data/purslyx/logs/api1/worker.log*
+```
+
+新增的解析错误日志只记录定位元数据，不记录简历正文、上传原文件名或模型返回内容。`document parse fallback`
+表示模型失败但原文分段草稿已成功交付；纯图片扫描 PDF 没有可提取文字时，仍会返回
+`DOCUMENT_CONTENT_UNREADABLE`。
+
 ### OpenResty 检查失败
 
 ```bash

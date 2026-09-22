@@ -54,6 +54,16 @@ def _meta(request: Request) -> dict[str, str]:
 
 def _error(request: Request, error: DomainError) -> JSONResponse:
     meta = _meta(request)
+    logging.getLogger("purslyx.error").log(
+        logging.ERROR if error.status_code >= 500 else logging.WARNING,
+        "request error request_id=%s method=%s path=%s status=%s error_code=%s cause_type=%s",
+        meta["request_id"],
+        request.method,
+        request.url.path,
+        error.status_code,
+        error.code,
+        type(error.__cause__).__name__ if error.__cause__ else "none",
+    )
     error_body: dict[str, Any] = {
         "code": error.code,
         "message": error.message,
@@ -115,14 +125,19 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Respon
     request_logger = logging.getLogger("purslyx.request")
     try:
         response = await call_next(request)
-    except Exception:
-        request_logger.exception(
-            "request failed request_id=%s method=%s path=%s duration_ms=%.1f",
-            request_id,
-            request.method,
-            request.url.path,
-            (time.perf_counter() - started) * 1000,
-        )
+    except Exception as exc:
+        if request.url.path.startswith("/api/v1/documents"):
+            # 解析器或供应商异常可能在 traceback 中包含上传正文，不能写入持久日志。
+            request_logger.error(
+                "request failed request_id=%s method=%s path=%s duration_ms=%.1f error_type=%s cause_type=%s",
+                request_id, request.method, request.url.path, (time.perf_counter() - started) * 1000,
+                type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
+            )
+        else:
+            request_logger.exception(
+                "request failed request_id=%s method=%s path=%s duration_ms=%.1f",
+                request_id, request.method, request.url.path, (time.perf_counter() - started) * 1000,
+            )
         raise
     duration_ms = (time.perf_counter() - started) * 1000
     response.headers.setdefault("X-Request-ID", request_id)

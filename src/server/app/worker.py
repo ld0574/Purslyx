@@ -217,26 +217,39 @@ class TaskWorker:
                 reservation = _reservation(db, task)
                 self._dispatch(db, task, attempt, reservation)
         except Exception as exc:
-            LOGGER.exception(
-                "worker task failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s error_type=%s error_code=%s",
-                event_id,
-                task_id or "unknown",
-                task_public_id or "unknown",
-                attempt_id or "unknown",
-                task_type or "unknown",
-                type(exc).__name__,
-                getattr(exc, "code", "TASK_EXECUTION_FAILED"),
-            )
+            if task_type == "document_parse":
+                # 第三方解析器／模型异常的 traceback 可能包含简历正文；只记录安全元数据。
+                LOGGER.error(
+                    "worker document parse failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s error_code=%s error_type=%s cause_type=%s",
+                    event_id, task_id or "unknown", task_public_id or "unknown", attempt_id or "unknown",
+                    getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
+                    type(exc.__cause__).__name__ if exc.__cause__ else "none",
+                )
+            else:
+                LOGGER.exception(
+                    "worker task failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s error_type=%s error_code=%s",
+                    event_id,
+                    task_id or "unknown",
+                    task_public_id or "unknown",
+                    attempt_id or "unknown",
+                    task_type or "unknown",
+                    type(exc).__name__,
+                    getattr(exc, "code", "TASK_EXECUTION_FAILED"),
+                )
             if task_id and attempt_id:
                 try:
                     self._record_failure(task_id=task_id, attempt_id=attempt_id, error=exc)
-                except Exception:
-                    LOGGER.exception(
-                        "worker could not persist failure event_id=%s task_id=%s attempt_id=%s",
-                        event_id,
-                        task_id,
-                        attempt_id,
-                    )
+                except Exception as persist_exc:
+                    if task_type == "document_parse":
+                        LOGGER.error(
+                            "worker could not persist document failure event_id=%s task_id=%s attempt_id=%s error_type=%s",
+                            event_id, task_id, attempt_id, type(persist_exc).__name__,
+                        )
+                    else:
+                        LOGGER.exception(
+                            "worker could not persist failure event_id=%s task_id=%s attempt_id=%s",
+                            event_id, task_id, attempt_id,
+                        )
 
     def _record_failure(self, *, task_id: int, attempt_id: int, error: Exception) -> None:
         """兜底写失败状态；模型任务通常已经由 run_local_task 完成这一步。"""
@@ -334,7 +347,13 @@ class TaskWorker:
             if not content_text:
                 raise DomainError("DOCUMENT_CONTENT_UNREADABLE", "原始资料无法读取", 422, "paste_text")
             provider = get_model_provider()
-            return provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
+            result = provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
+            if result.fallback_reason:
+                LOGGER.warning(
+                    "worker document parse fallback task_id=%s document_id=%s source_type=%s code=%s",
+                    task.public_id, document.public_id, document.source_type, result.fallback_reason,
+                )
+            return result
 
         task_result: dict[str, Any] = {
             "resource_type": "document",

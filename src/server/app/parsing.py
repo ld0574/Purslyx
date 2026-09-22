@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import shutil
 import subprocess
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from .errors import DomainError
+
+LOGGER = logging.getLogger("purslyx.parsing")
 
 MAX_FILE_BYTES = 20 * 1024 * 1024
 MAX_TEXT_CHARS = 100_000
@@ -40,19 +43,9 @@ def extract_file_text(path: Path, source_type: str) -> str:
 
     try:
         if source_type == "pdf":
-            from pypdf import PdfReader
-
-            reader = PdfReader(str(path))
-            if len(reader.pages) > MAX_PDF_PAGES:
-                raise DomainError("DOCUMENT_TOO_LARGE", "PDF 不能超过 20 页", 413)
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+            text = _extract_pdf(path)
         elif source_type == "docx":
-            from docx import Document as DocxDocument
-
-            document = DocxDocument(str(path))
-            text = "\n".join(paragraph.text for paragraph in document.paragraphs)
-            for table in document.tables:
-                text += "\n" + "\n".join(" | ".join(cell.text for cell in row.cells) for row in table.rows)
+            text = _extract_docx(path)
         elif source_type == "doc":
             text = _extract_legacy_doc(path)
         else:
@@ -60,6 +53,7 @@ def extract_file_text(path: Path, source_type: str) -> str:
     except DomainError:
         raise
     except Exception as exc:
+        LOGGER.error("document extraction failed source_type=%s cause_type=%s", source_type, type(exc).__name__)
         raise DomainError(
             "DOCUMENT_CONTENT_UNREADABLE",
             "文件无法读取，请转换为文字型 PDF、DOCX 或粘贴文字",
@@ -67,12 +61,81 @@ def extract_file_text(path: Path, source_type: str) -> str:
             "paste_text",
         ) from exc
 
-    text = normalize_text(text)
+    # PDF 字体映射中常用控制字符充当空格；它们不是可见的简历正文。
+    text = normalize_text(re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text))
     if not text or len(text) > MAX_TEXT_CHARS:
         if len(text) > MAX_TEXT_CHARS:
             raise DomainError("DOCUMENT_TOO_LARGE", "提取后的正文不能超过 100,000 个字符", 413)
         raise DomainError("DOCUMENT_CONTENT_UNREADABLE", "文件没有可读取的文字，请粘贴文字", 422, "paste_text")
     return text
+
+
+def _extract_pdf(path: Path) -> str:
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(str(path))
+        if len(reader.pages) > MAX_PDF_PAGES:
+            raise DomainError("DOCUMENT_TOO_LARGE", "PDF 不能超过 20 页", 413)
+        text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    except DomainError:
+        raise
+    except Exception as exc:
+        LOGGER.warning("pdf primary extraction failed cause_type=%s", type(exc).__name__)
+        text = ""
+    if re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", " ", text).strip():
+        return text
+
+    # 部分文字型 PDF 的字体编码无法由 pypdf 提取；再尝试独立的解析器。
+    import pdfplumber
+
+    with pdfplumber.open(path) as document:
+        if len(document.pages) > MAX_PDF_PAGES:
+            raise DomainError("DOCUMENT_TOO_LARGE", "PDF 不能超过 20 页", 413)
+        return "\n".join(page.extract_text() or "" for page in document.pages)
+
+
+def _extract_docx(path: Path) -> str:
+    from docx import Document as DocxDocument
+    from docx.oxml.ns import qn
+
+    document = DocxDocument(str(path))
+
+    def paragraph_text(paragraph: Any) -> str:
+        # python-docx 的 paragraph.text 不包含常见简历模板里的文本框文字。
+        text: list[str] = []
+        for node in paragraph._p.iter():
+            if node.tag == qn("w:t"):
+                text.append(node.text or "")
+            elif node.tag == qn("w:tab"):
+                text.append("\t")
+            elif node.tag in {qn("w:br"), qn("w:cr")}:
+                text.append("\n")
+        return "".join(text)
+
+    def table_lines(table: Any) -> list[str]:
+        return [
+            " | ".join("\n".join(paragraph_text(p) for p in cell.paragraphs) for cell in row.cells)
+            for row in table.rows
+        ]
+
+    headers: list[str] = []
+    footers: list[str] = []
+    seen_parts: set[str] = set()
+    for section in document.sections:
+        for part, output in ((section.header, headers), (section.footer, footers)):
+            part_name = str(part.part.partname)
+            if part_name in seen_parts:
+                continue
+            seen_parts.add(part_name)
+            output.extend(paragraph_text(p) for p in part.paragraphs)
+            for table in part.tables:
+                output.extend(table_lines(table))
+
+    lines = [*headers, *(paragraph_text(p) for p in document.paragraphs)]
+    for table in document.tables:
+        lines.extend(table_lines(table))
+    return "\n".join([*lines, *footers])
 
 
 def _extract_legacy_doc(path: Path) -> str:
@@ -92,7 +155,7 @@ def _extract_legacy_doc(path: Path) -> str:
             return result.stdout
     if antiword:
         result = subprocess.run(
-            [antiword, str(path)], capture_output=True, text=True, timeout=30, check=False
+            [antiword, "-m", "UTF-8.txt", str(path)], capture_output=True, text=True, timeout=30, check=False
         )
         if result.returncode == 0:
             return result.stdout
@@ -130,17 +193,25 @@ def parse_resume_text(text: str) -> dict[str, Any]:
     lines = _lines(text)
     sections: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
+    used_keys: set[str] = set()
     headings = {"教育经历", "工作经历", "项目经历", "实习经历", "技能", "校园经历", "个人简介", "经历"}
     for index, line in enumerate(lines, start=1):
         is_heading = line in headings or (len(line) <= 12 and line.endswith((":", "：")))
         if is_heading:
-            key = _slug(line.rstrip(":："), f"section-{len(sections) + 1}")
+            base_key = _slug(line.rstrip(":："), f"section-{len(sections) + 1}")
+            key = base_key
+            suffix = len(sections) + 1
+            while key in used_keys:
+                key = f"{base_key[:48]}-{suffix}"
+                suffix += 1
+            used_keys.add(key)
             current = {"section_key": key, "section_type": key, "title": line.rstrip(":："), "position": len(sections) + 1, "segments": []}
             sections.append(current)
             continue
         if current is None:
             current = {"section_key": "profile", "section_type": "profile", "title": "个人资料", "position": 1, "segments": []}
             sections.append(current)
+            used_keys.add("profile")
         section_key = current["section_key"]
         current["segments"].append(
             {

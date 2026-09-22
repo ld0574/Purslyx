@@ -36,6 +36,15 @@ describe("API 客户端", () => {
     await expect(api("/api/v1/example")).rejects.toMatchObject({ status: 429, code: "USAGE_INSUFFICIENT", message: "次数不足", action: "open_usage" });
   });
 
+  it("错误提示附带可用于检索日志的请求 ID", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ error: { code: "DOCUMENT_CONTENT_UNREADABLE", message: "文件无法读取", request_id: "req-123" } }), {
+      status: 422, headers: { "Content-Type": "application/json" },
+    }));
+    await expect(api("/api/v1/documents")).rejects.toMatchObject({
+      code: "DOCUMENT_CONTENT_UNREADABLE", requestId: "req-123", message: "文件无法读取（请求 ID：req-123）",
+    });
+  });
+
   it("删除前读取影响快照并用 If-Match 提交确认版本", async () => {
     localStorage.setItem(SESSION_KEY, JSON.stringify({ token: "access-token", csrf: "csrf-token" }));
     vi.spyOn(window, "confirm").mockReturnValue(true);

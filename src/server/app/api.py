@@ -1269,15 +1269,24 @@ async def create_document_form(request: Request, account: WebAccount, db: Sessio
 
     stored_path: Path | None = None
     stored_hash: str | None = None
+    stage = "storage"
     try:
         if file_bytes is not None:
             extension = {"pdf": ".pdf", "doc": ".doc", "docx": ".docx", "text": ".txt"}[source_type]
             stored_hash = sha256_bytes(file_bytes)
             ensure_storage_capacity(db, len(file_bytes))
             stored_path = atomic_write_bytes(settings.file_dir, file_bytes, extension)
+            stage = "file_extraction"
             text_value = extract_file_text(stored_path, source_type)
+        stage = "model_extraction"
         provider = get_model_provider()
         model_result = provider.extract_resume(text_value) if document_type == "resume" else provider.extract_job(text_value)
+        if model_result.fallback_reason:
+            LOGGER.warning(
+                "document parse fallback request_id=%s account_id=%s document_type=%s source_type=%s code=%s",
+                _meta(request)["request_id"], account.id, document_type, source_type, model_result.fallback_reason,
+            )
+        stage = "persistence"
         document = Document(
             account_id=account.id,
             document_type=document_type,
@@ -1326,11 +1335,21 @@ async def create_document_form(request: Request, account: WebAccount, db: Sessio
         db.commit()
         db.refresh(document)
         return _ok(request, _document_summary(db, document), code=201)
-    except Exception:
+    except Exception as exc:
+        LOGGER.log(
+            logging.ERROR if not isinstance(exc, DomainError) or exc.status_code >= 500 else logging.WARNING,
+            "document create failed request_id=%s account_id=%s document_type=%s source_type=%s stage=%s file_bytes=%s error_code=%s error_type=%s cause_type=%s",
+            _meta(request)["request_id"], account.id, document_type, source_type, stage,
+            len(file_bytes) if file_bytes is not None else 0,
+            getattr(exc, "code", "DOCUMENT_CREATE_FAILED"), type(exc).__name__,
+            type(exc.__cause__).__name__ if exc.__cause__ else "none",
+        )
         db.rollback()
         if stored_path and stored_path.exists():
             stored_path.unlink(missing_ok=True)
-        raise
+        if isinstance(exc, DomainError):
+            raise
+        raise DomainError("DOCUMENT_CREATE_FAILED", "资料处理失败，请稍后重试", 500, "retry") from None
 
 
 @router.post("/documents/{document_id}/parse", tags=["documents"])
@@ -1366,7 +1385,13 @@ def parse_document(
             if not content_text:
                 raise DomainError("DOCUMENT_CONTENT_UNREADABLE", "原始资料无法读取", 422, "paste_text")
             provider = get_model_provider()
-            return provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
+            result = provider.extract_resume(content_text) if document.document_type == "resume" else provider.extract_job(content_text)
+            if result.fallback_reason:
+                LOGGER.warning(
+                    "document reparse fallback request_id=%s task_id=%s document_id=%s source_type=%s code=%s",
+                    _meta(request)["request_id"], task.public_id, document.public_id, document.source_type, result.fallback_reason,
+                )
+            return result
 
         def save_result(value: dict[str, Any]) -> None:
             draft = _latest_draft(db, document.id, account.id)
@@ -1393,11 +1418,20 @@ def parse_document(
                 task_result=task_result,
             )
         except Exception as exc:
+            LOGGER.log(
+                logging.ERROR if not isinstance(exc, DomainError) or exc.status_code >= 500 else logging.WARNING,
+                "document reparse failed request_id=%s task_id=%s document_id=%s source_type=%s error_code=%s error_type=%s cause_type=%s",
+                _meta(request)["request_id"], task.public_id, document.public_id, document.source_type,
+                getattr(exc, "code", "DOCUMENT_PARSE_FAILED"), type(exc).__name__,
+                type(exc.__cause__).__name__ if exc.__cause__ else "none",
+            )
             db.refresh(document)
             document.status = "failed"
             document.failure_code = getattr(exc, "code", "DOCUMENT_PARSE_FAILED")
             db.commit()
-            raise
+            if isinstance(exc, DomainError):
+                raise
+            raise DomainError("DOCUMENT_PARSE_FAILED", "资料解析失败，请稍后重试", 500, "retry") from None
     db.refresh(task)
     return _ok(request, {"task": task_view(task), "document": _document_summary(db, document)}, code=202)
 

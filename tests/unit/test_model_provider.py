@@ -157,6 +157,57 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
     assert chat.calls[0]["messages"][1]["role"] == "user"
 
 
+def test_resume_model_omission_falls_back_to_complete_original_text() -> None:
+    provider, _ = _provider()
+    source = "工作经历\n负责 React 项目交付\n负责 Python 项目"
+    result = provider.extract_resume(source)
+    segments = [segment["text"] for section in result.value["sections"] for segment in section["segments"]]
+
+    assert segments == ["负责 React 项目交付", "负责 Python 项目"]
+    assert result.provider == "openai"
+    assert result.input_tokens == 12
+    assert result.output_tokens == 8
+
+
+def test_resume_model_request_failure_falls_back_without_inventing_content(caplog: pytest.LogCaptureFixture) -> None:
+    provider, _ = _provider()
+
+    def failed_request(*_: Any, **__: Any) -> Any:
+        raise DomainError("MODEL_PROVIDER_REQUEST_FAILED", "model unavailable", 503)
+
+    provider._json = failed_request  # type: ignore[method-assign]
+    with caplog.at_level("WARNING"):
+        result = provider.extract_resume("工作经历\n负责原文项目 PRIVATE_RESUME_BODY")
+    assert result.value["sections"][0]["segments"][0]["text"] == "负责原文项目 PRIVATE_RESUME_BODY"
+    assert result.provider == "openai"
+    assert result.input_tokens is None
+    assert result.fallback_reason == "MODEL_PROVIDER_REQUEST_FAILED"
+    assert "fallback stage=request code=MODEL_PROVIDER_REQUEST_FAILED" in caplog.text
+    assert "PRIVATE_RESUME_BODY" not in caplog.text
+
+
+def test_provider_request_error_logs_type_without_resume_body(caplog: pytest.LogCaptureFixture) -> None:
+    provider, chat = _provider()
+
+    def failed_request(**_: Any) -> Any:
+        raise RuntimeError("PRIVATE_RESUME_BODY")
+
+    chat.create = failed_request  # type: ignore[method-assign]
+    with caplog.at_level("WARNING"):
+        result = provider.extract_resume("工作经历\nPRIVATE_RESUME_BODY")
+    assert result.fallback_reason == "MODEL_PROVIDER_REQUEST_FAILED"
+    assert "model request failed operation=document_resume_v2 cause_type=RuntimeError provider_status=unknown" in caplog.text
+    assert "PRIVATE_RESUME_BODY" not in caplog.text
+
+
+def test_oversized_resume_model_input_uses_local_fallback_without_call() -> None:
+    provider, chat = _provider()
+    result = provider.extract_resume("负责" * 41_000)
+    assert result.provider == "local"
+    assert result.value["sections"][0]["segments"][0]["text"] == "负责" * 41_000
+    assert chat.calls == []
+
+
 def test_openai_rewrite_rejects_new_unverified_numbers() -> None:
     provider, _ = _provider()
 

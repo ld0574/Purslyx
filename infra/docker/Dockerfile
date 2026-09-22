@@ -28,7 +28,7 @@ ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED="1"
 
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates \
+    && apt-get install --no-install-recommends -y ca-certificates antiword \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system --gid 10001 purslyx \
     && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/purslyx purslyx
