@@ -3,6 +3,8 @@
 import json
 from pathlib import Path
 
+from server.app.main import app
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WEB_ROOT = PROJECT_ROOT / "src" / "web"
 
@@ -61,6 +63,15 @@ def test_vue_application_has_all_product_routes_and_views() -> None:
     assert "/app/:role(seeker|recruiter)/usage" in router
     assert "/app/:role(seeker|recruiter)/stats" in router
     assert "/guide" in router
+
+
+def test_server_returns_spa_entry_for_every_frontend_entry_path() -> None:
+    server_paths = {route.path for route in app.routes if hasattr(route, "path")}
+
+    assert "/" in server_paths
+    assert "/guide" in server_paths
+    assert "/app/{path:path}" in server_paths
+    assert "/job-pool/items" in server_paths
 
 
 def test_vite_and_typescript_are_the_production_frontend_contract() -> None:

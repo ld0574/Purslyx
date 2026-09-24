@@ -211,6 +211,13 @@ def index() -> FileResponse:
     return _web_index()
 
 
+@app.get("/guide", include_in_schema=False)
+def guide_page() -> FileResponse:
+    """使用说明是 Vue 公共路由，直接访问或刷新时也必须返回 SPA 入口。"""
+
+    return _web_index()
+
+
 @app.get("/favicon.svg", include_in_schema=False)
 def favicon() -> FileResponse:
     """提供 Vite public 目录复制出的站点图标。"""
