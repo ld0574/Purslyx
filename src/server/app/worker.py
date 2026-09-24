@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .errors import DomainError, NotFoundError
+from .interview_rubric import RUBRIC_VERSION, enrich_summary
 from .matching import merge_preference_contents
 from .model_provider import ModelResult, get_model_provider, merge_model_results
 from .models import (
@@ -225,6 +226,13 @@ class TaskWorker:
                     getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
                     type(exc.__cause__).__name__ if exc.__cause__ else "none",
                 )
+            elif task_type in {"interview_feedback", "interview_summary"}:
+                LOGGER.error(
+                    "worker interview evaluation failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s rubric_version=%s error_code=%s error_type=%s cause_type=%s",
+                    event_id, task_id or "unknown", task_public_id or "unknown", attempt_id or "unknown",
+                    task_type, RUBRIC_VERSION, getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
+                    type(exc.__cause__).__name__ if exc.__cause__ else "none",
+                )
             else:
                 LOGGER.exception(
                     "worker task failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s error_type=%s error_code=%s",
@@ -244,6 +252,11 @@ class TaskWorker:
                         LOGGER.error(
                             "worker could not persist document failure event_id=%s task_id=%s attempt_id=%s error_type=%s",
                             event_id, task_id, attempt_id, type(persist_exc).__name__,
+                        )
+                    elif task_type in {"interview_feedback", "interview_summary"}:
+                        LOGGER.error(
+                            "worker could not persist private-content failure event_id=%s task_id=%s attempt_id=%s task_type=%s error_type=%s",
+                            event_id, task_id, attempt_id, task_type, type(persist_exc).__name__,
                         )
                     else:
                         LOGGER.exception(
@@ -771,6 +784,20 @@ class TaskWorker:
     def _save_summary_value(self, db: Session, interview: Interview, completion_type: str, value: dict[str, Any]) -> None:
         """写入已经生成的总结，避免在反馈任务里重复调用且不记账。"""
 
+        db.flush()
+        main_feedback = list(
+            db.scalars(
+                select(InterviewFeedback.content)
+                .join(InterviewQuestion, InterviewQuestion.id == InterviewFeedback.question_id)
+                .where(
+                    InterviewFeedback.interview_id == interview.id,
+                    InterviewFeedback.status == "available",
+                    InterviewQuestion.question_type == "main",
+                )
+                .order_by(InterviewQuestion.main_no)
+            ).all()
+        )
+        value = enrich_summary(value, main_feedback, completion_type)
         summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == interview.id))
         if summary is None:
             db.add(InterviewSummary(account_id=interview.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
@@ -806,16 +833,7 @@ class TaskWorker:
             return get_model_provider().summary(values, answer_values, completion_type)
 
         def save_result(value: dict[str, Any]) -> None:
-            summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == interview.id))
-            if summary is None:
-                db.add(InterviewSummary(account_id=task.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
-            else:
-                summary.completion_type = completion_type
-                summary.content = value
-            interview.summary = value
-            interview.status = "completed" if completion_type == "full" else "ended_early"
-            interview.current_question_id = None
-            interview.revision += 1
+            self._save_summary_value(db, interview, completion_type, value)
 
         _run_model(
             db,

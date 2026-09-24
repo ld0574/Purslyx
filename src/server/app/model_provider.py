@@ -15,6 +15,14 @@ from typing import Any
 
 from .config import settings
 from .errors import DomainError
+from .interview_rubric import (
+    DIMENSIONS,
+    FEEDBACK_SCHEMA_VERSION,
+    RUBRIC_VERSION,
+    SUMMARY_SCHEMA_VERSION,
+    local_dimensions,
+    normalise_dimensions,
+)
 from .matching import _requirements, _resume_segments, build_match_result
 from .parsing import normalize_text, parse_job_text, parse_resume_text, parse_salary_text
 
@@ -181,11 +189,16 @@ class ModelProvider:
         return ModelResult(
             {
                 "status": "available",
-                "content": _normalise_feedback_content(content),
+                "content": {
+                    **_normalise_feedback_content(content),
+                    "evaluation_dimensions": local_dimensions(clean),
+                    "rubric_version": RUBRIC_VERSION,
+                    "schema_version": FEEDBACK_SCHEMA_VERSION,
+                },
                 "needs_followup": needs_followup,
                 "followup_question": "请再补充你本人采取的具体行动，以及可以核对的结果。" if needs_followup else None,
                 "method": "STAR",
-                "schema_version": "interview-feedback-v3",
+                "schema_version": FEEDBACK_SCHEMA_VERSION,
             },
             self.name,
             settings.model_name,
@@ -229,7 +242,7 @@ class ModelProvider:
                     },
                 },
                 "method": "STAR",
-                "schema_version": "interview-summary-v1",
+                "schema_version": SUMMARY_SCHEMA_VERSION,
             },
             self.name,
             settings.model_name,
@@ -321,6 +334,11 @@ _OPENING_SCHEMA = _strict_object({"questions": {"type": "array", "minItems": 3, 
     }),
 })}})
 _STAR_ITEM_SCHEMA = _strict_object({"status": {"type": "string", "enum": ["strong", "partial", "missing"]}, "feedback": {"type": "string"}})
+_EVALUATION_ITEM_SCHEMA = _strict_object({
+    "status": {"type": "string", "enum": ["strong", "partial", "missing"]},
+    "feedback": {"type": "string"},
+    "evidence_quote": {"type": ["string", "null"]},
+})
 _FEEDBACK_SCHEMA = _strict_object({
     "content": _strict_object({
         "summary": {"type": "string"},
@@ -333,6 +351,7 @@ _FEEDBACK_SCHEMA = _strict_object({
             "action": _STAR_ITEM_SCHEMA,
             "result": _STAR_ITEM_SCHEMA,
         }),
+        "evaluation_dimensions": _strict_object({key: _EVALUATION_ITEM_SCHEMA for key, _ in DIMENSIONS}),
         "missing_details": {"type": "array", "items": {"type": "string"}},
         "answer_template": {"type": "string"},
     }),
@@ -842,9 +861,9 @@ class OpenAIModelProvider(ModelProvider):
 
     def feedback(self, question: dict[str, Any], answer: str) -> ModelResult:
         result = self._json(
-            "你是 Purslyx 的 STAR 面试反馈教练。只评价用户这一次真实回答，不替用户补写经历，也不能把题目中的要求当成用户已经完成的事实。输出必须具体对应这次回答：summary 用一句话给出结论；strengths 只写回答中真实有效的内容；gaps 和 star_assessment 分别指出 Situation、Task、Action、Result 哪些已经说清、部分说清或缺失；missing_details 只列出下一步必须补的事实；suggestions 给出可执行的改进动作；answer_template 给出可以直接套用的重答骨架，只能使用用户已经说过的事实，其余位置用【待补充】占位，不能编造项目、职责、技术、数字或结果。不要输出“补充细节”“加强表达”这类没有对象的泛话。主问题最多一次追问，followup_question 只追问最关键的一个缺口；question_type 为 followup 时 needs_followup 必须 false 且 followup_question 必须为 null。",
+            "你是 Purslyx 的面试练习教练。只评价用户这一次真实回答，不替用户补写经历，也不能把题目中的要求当成用户已经完成的事实。除 STAR 结构诊断外，evaluation_dimensions 必须分别评价回答切题度 relevance、事实具体度 specificity、个人贡献清晰度 ownership、结果证据力度 outcome_evidence、表达结构与清晰度 communication，status 只能是 strong、partial、missing。非 missing 项的 evidence_quote 必须逐字摘自用户回答，找不到原文就填 null，禁止改写或编造证据。summary 用一句话给出结论；strengths 只写回答中真实有效的内容；missing_details 只列下一步必须补的事实；suggestions 给出可执行动作；answer_template 只能使用用户已经说过的事实，其余位置用【待补充】占位。主问题最多一次追问；question_type 为 followup 时 needs_followup 必须 false 且 followup_question 必须为 null。",
             {"question": question, "answer": answer},
-            "interview_feedback_v3",
+            "interview_feedback_v4",
             _FEEDBACK_SCHEMA,
         )
         content = result.value.get("content") if isinstance(result.value.get("content"), dict) else {}
@@ -855,11 +874,16 @@ class OpenAIModelProvider(ModelProvider):
             followup = "请再补充你本人采取的具体行动，以及可以核对的结果。"
         return ModelResult({
             "status": "available",
-            "content": _normalise_feedback_content(content),
+            "content": {
+                **_normalise_feedback_content(content),
+                "evaluation_dimensions": normalise_dimensions(content.get("evaluation_dimensions"), answer=answer),
+                "rubric_version": RUBRIC_VERSION,
+                "schema_version": FEEDBACK_SCHEMA_VERSION,
+            },
             "needs_followup": needs_followup,
             "followup_question": followup,
             "method": "STAR",
-            "schema_version": "interview-feedback-v3",
+            "schema_version": FEEDBACK_SCHEMA_VERSION,
         }, self.name, result.model, result.input_tokens, result.output_tokens)
 
     def summary(self, questions: list[dict[str, Any]], answers: list[dict[str, Any]], completion_type: str) -> ModelResult:
@@ -896,6 +920,7 @@ class OpenAIModelProvider(ModelProvider):
                 "star_assessment": star_assessment,
             },
             "method": "STAR",
+            "schema_version": SUMMARY_SCHEMA_VERSION,
         }, self.name, result.model, result.input_tokens, result.output_tokens)
 
 def _uuid_like(index: int) -> str:

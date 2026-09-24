@@ -14,9 +14,10 @@ def test_local_feedback_explains_star_gaps_and_reanswer_path() -> None:
         {"question_text": "请说明你的项目经历", "question_type": "main"},
         "我用了 TiDB 和 Apifox。",
     ).value
-    assert result["schema_version"] == "interview-feedback-v3"
+    assert result["schema_version"] == "interview-feedback-v4"
     assert result["content"]["summary"]
     assert set(result["content"]["star_assessment"]) == {"situation", "task", "action", "result"}
+    assert set(result["content"]["evaluation_dimensions"]) == {"relevance", "specificity", "ownership", "outcome_evidence", "communication"}
     assert result["content"]["missing_details"]
     assert "【" in result["content"]["answer_template"]
     assert result["needs_followup"] is True
@@ -33,6 +34,7 @@ def test_summary_counts_only_main_questions() -> None:
         {"question_id": "followup-1", "answer_text": "追问回答"},
     ]
     value = ModelProvider().summary(questions, answers, "early").value
+    assert value["schema_version"] == "interview-summary-v2"
     assert value["answered_main_count"] == 1
     assert value["answered_followup_count"] == 1
     assert value["unanswered_main_numbers"] == [2]

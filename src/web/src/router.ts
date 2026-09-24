@@ -33,7 +33,11 @@ const routes: RouteRecordRaw[] = [
   { path: "/:pathMatch(.*)*", component: () => import("@/views/NotFoundView.vue"), meta: { public: true, title: "页面不存在" } },
 ];
 
-export const router = createRouter({ history: createWebHistory(), routes, scrollBehavior: () => ({ top: 0 }) });
+export const router = createRouter({
+  history: createWebHistory(),
+  routes,
+  scrollBehavior: (to) => to.hash ? { el: to.hash, top: 88, behavior: "smooth" } : { top: 0 },
+});
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore();

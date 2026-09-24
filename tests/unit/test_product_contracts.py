@@ -46,6 +46,7 @@ from server.app.models import (  # noqa: E402
     DocumentVersion,
     Interview,
     InterviewAnswer,
+    InterviewFeedback,
     InterviewQuestion,
     InterviewSummary,
     JobPoolItem,
@@ -79,6 +80,8 @@ class _InterviewSession:
             return _Rows(self.questions)
         if entity is InterviewAnswer:
             return _Rows(self.answers)
+        if entity is InterviewFeedback:
+            return _Rows([])
         raise AssertionError(f"未预期的查询实体：{entity}")
 
     def scalar(self, statement: Any) -> None:
@@ -94,6 +97,9 @@ class _InterviewSession:
 
     def add(self, value: Any) -> None:
         self.added.append(value)
+
+    def flush(self) -> None:
+        return None
 
 
 def test_interview_summary_replay_rejects_a_different_interview() -> None:

@@ -70,7 +70,7 @@ class _FakeChatCompletions:
                     {"question_text": "请说明项目结果如何核验。", "method": "STAR", "basis": {"requirement_ids": ["req-1"], "evidence_segment_keys": ["experience-1"], "reason": "验证结果证据。"}},
                 ],
             },
-            "interview_feedback_v3": {
+            "interview_feedback_v4": {
                 "content": {
                     "summary": "回答有具体项目，但结果证据不足。",
                     "strengths": ["回答有具体项目"],
@@ -84,6 +84,13 @@ class _FakeChatCompletions:
                     },
                     "missing_details": ["结果指标"],
                     "answer_template": "我负责【任务】，通过【行动】取得【结果】。",
+                    "evaluation_dimensions": {
+                        "relevance": {"status": "strong", "feedback": "回答切题。", "evidence_quote": "React 项目交付"},
+                        "specificity": {"status": "partial", "feedback": "细节可增加。", "evidence_quote": "React 项目交付"},
+                        "ownership": {"status": "strong", "feedback": "个人贡献明确。", "evidence_quote": "我负责了"},
+                        "outcome_evidence": {"status": "missing", "feedback": "缺少结果。", "evidence_quote": None},
+                        "communication": {"status": "partial", "feedback": "结构可加强。", "evidence_quote": "我负责了 React 项目交付"},
+                    },
                 },
                 "needs_followup": True,
                 "followup_question": "请补充这个项目的结果和核验方式。",
@@ -150,7 +157,7 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
         "analysis_result_v2",
         "rewrite_result_v2",
         "interview_opening_v2",
-        "interview_feedback_v3",
+        "interview_feedback_v4",
         "interview_summary_v2",
     ]
     assert chat.calls[0]["messages"][0]["role"] == "system"

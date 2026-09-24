@@ -41,7 +41,9 @@
 | `answer` | InterviewAnswer | 是 | 已提交的最终回答 |
 | `feedback` | InterviewFeedback | 是 | 当前轮次反馈 |
 
-`InterviewFeedback` 包含 `status`、`content`、`needs_followup`、`task`、`schema_version` 和 `completed_at`。`InterviewResult` 包含 `completion_type=full|early`、已回答数量、结构化总结、未完成项、Schema 与时间。
+`InterviewFeedback` 包含 `status`、`content`、`needs_followup`、`task`、`schema_version` 和 `completed_at`。`interview-feedback-v4` 在 STAR 结构诊断之外固定返回回答切题度、事实具体度、个人贡献清晰度、结果证据力度、表达结构与清晰度五个等权维度；非缺失评价的证据必须逐字来自本次回答。
+
+`InterviewResult` 包含 `completion_type=full|early`、已回答数量、结构化总结、未完成项、Schema 与时间。`interview-summary-v2` 仅为完整回答三道主问题且三题均使用 `interview-rubric-v1` 的练习计算表现指数：`strong=100`、`partial=50`、`missing=0`，先按维度平均三道主问题，再等权平均五个维度；追问和提前结束不计入数值。
 
 ## 2. 发起与列表
 

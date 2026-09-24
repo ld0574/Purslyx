@@ -35,6 +35,7 @@ from .config import settings
 from .db import get_db
 from .email_delivery import deliver_account_action_email
 from .errors import DomainError, NotFoundError
+from .interview_rubric import RUBRIC_VERSION, enrich_summary
 from .matching import merge_preference_contents
 from .model_provider import get_model_provider, merge_model_results
 from .models import (
@@ -4349,6 +4350,20 @@ def _interview_summary_input(db: Session, item: Interview) -> tuple[list[dict[st
 
 
 def _save_interview_summary(db: Session, item: Interview, completion_type: str, value: dict[str, Any]) -> None:
+    db.flush()
+    main_feedback = list(
+        db.scalars(
+            select(InterviewFeedback.content)
+            .join(InterviewQuestion, InterviewQuestion.id == InterviewFeedback.question_id)
+            .where(
+                InterviewFeedback.interview_id == item.id,
+                InterviewFeedback.status == "available",
+                InterviewQuestion.question_type == "main",
+            )
+            .order_by(InterviewQuestion.main_no)
+        ).all()
+    )
+    value = enrich_summary(value, main_feedback, completion_type)
     summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id))
     if summary is None:
         db.add(InterviewSummary(account_id=item.account_id, interview_id=item.id, completion_type=completion_type, content=value))
@@ -4554,6 +4569,11 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
             item.status = "feedback_failed"
             item.revision += 1
             db.commit()
+            LOGGER.error(
+                "interview evaluation failed request_id=%s account_id=%s interview_id=%s task_id=%s rubric_version=%s stage=feedback error_type=%s cause_type=%s",
+                _meta(request)["request_id"], account.public_id, interview_id, task.public_id, RUBRIC_VERSION,
+                type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
+            )
             raise DomainError("INTERVIEW_FEEDBACK_FAILED", "本轮反馈失败，请重试", 503, "retry") from exc
     db.refresh(item)
     return _ok(request, {"interview": _interview_view(db, item), "answer": {"id": answer.public_id, "answer_text": answer.answer_text}}, code=202)
@@ -4916,6 +4936,149 @@ def create_feedback(payload: FeedbackRequest, request: Request, account: WebAcco
     db.add(item)
     db.commit()
     return _ok(request, {"id": item.public_id, "status": item.status, "created_at": item.created_at.isoformat()}, code=201)
+
+
+def _local_metric_date(value: datetime) -> str:
+    aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+    return aware.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+
+
+@router.get("/dashboard", tags=["dashboard"])
+def dashboard(
+    request: Request,
+    account: WebAccount,
+    days: Literal[7, 14, 30] = Query(default=14),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """返回账号工作台所需的精确汇总，不用分页列表长度冒充总数。"""
+
+    require_verified(account)
+    stage = "range"
+    try:
+        today = datetime.strptime(shanghai_date(), "%Y-%m-%d").date()
+        start_date = today - timedelta(days=days - 1)
+        local_start = datetime.combine(start_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai"))
+        local_end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai"))
+        start_at = local_start.astimezone(timezone.utc)
+        end_at = local_end.astimezone(timezone.utc)
+        labels = [(start_date + timedelta(days=index)).isoformat() for index in range(days)]
+
+        stage = "counts"
+        confirmed_statuses = ("confirmed", "available")
+        confirmed_documents = int(db.scalar(select(func.count(Document.id)).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.status.in_(confirmed_statuses))) or 0)
+        confirmed_resumes = int(db.scalar(select(func.count(Document.id)).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.status.in_(confirmed_statuses), Document.document_type == "resume")) or 0)
+        confirmed_jobs = int(db.scalar(select(func.count(Document.id)).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.status.in_(confirmed_statuses), Document.document_type.in_(["job_description", "job"]))) or 0)
+        pool_items = int(db.scalar(select(func.count(JobPoolItem.id)).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))) or 0)
+        completed_analyses = int(db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]))) or 0)
+        active_tasks = int(db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), Task.status.in_(["queued", "running", "retry_wait"]))) or 0)
+        failed_tasks = int(db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), Task.status == "failed")) or 0)
+        pending_documents = int(db.scalar(select(func.count(Document.id)).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.status.in_(["importing", "parsing", "unconfirmed", "awaiting_confirmation"]))) or 0)
+        active_preferences = int(db.scalar(select(func.count(Preference.id)).where(Preference.account_id == account.id, Preference.deleted_at.is_(None), Preference.status == "active")) or 0)
+        completed_interviews = int(db.scalar(select(func.count(Interview.id)).where(Interview.account_id == account.id, Interview.deleted_at.is_(None), Interview.status == "completed")) or 0)
+
+        stage = "balances"
+        balances = usage_view(db, account, entries_limit=1)["balances"]
+
+        stage = "activity_trends"
+        activity = {label: {"date": label} for label in labels}
+        for row in activity.values():
+            if account.registration_role == "seeker":
+                row.update({"captured_jobs": 0, "completed_analyses": 0, "apply_clicks": 0})
+            else:
+                row.update({"candidate_documents": 0, "job_descriptions": 0, "completed_analyses": 0})
+
+        analysis_rows = db.scalars(select(Analysis).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]), Analysis.completed_at >= start_at, Analysis.completed_at < end_at)).all()
+        for item in analysis_rows:
+            label = _local_metric_date(item.completed_at)
+            if label in activity:
+                activity[label]["completed_analyses"] += 1
+
+        if account.registration_role == "seeker":
+            captures = db.scalars(select(BrowserJobDraft.captured_at).where(BrowserJobDraft.account_id == account.id, BrowserJobDraft.captured_at >= start_at, BrowserJobDraft.captured_at < end_at)).all()
+            for captured_at in captures:
+                label = _local_metric_date(captured_at)
+                if label in activity:
+                    activity[label]["captured_jobs"] += 1
+            click_rows = db.scalars(select(ApplyClick.metric_date).where(ApplyClick.account_id == account.id, ApplyClick.metric_date >= labels[0], ApplyClick.metric_date <= labels[-1])).all()
+            for label in click_rows:
+                if label in activity:
+                    activity[label]["apply_clicks"] += 1
+        else:
+            documents = db.scalars(select(Document).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.created_at >= start_at, Document.created_at < end_at)).all()
+            for item in documents:
+                label = _local_metric_date(item.created_at)
+                if label not in activity:
+                    continue
+                if item.document_type == "resume":
+                    activity[label]["candidate_documents"] += 1
+                elif _document_type_is_job(item.document_type):
+                    activity[label]["job_descriptions"] += 1
+
+        stage = "practice_progress"
+        practice = {label: {"date": label, "sessions": 0, "practice_index": None, "_scores": []} for label in labels}
+        summary_rows = db.scalars(
+            select(InterviewSummary)
+            .join(Interview, Interview.id == InterviewSummary.interview_id)
+            .where(InterviewSummary.account_id == account.id, Interview.deleted_at.is_(None), InterviewSummary.completion_type == "full", InterviewSummary.created_at >= start_at, InterviewSummary.created_at < end_at)
+            .order_by(InterviewSummary.created_at)
+        ).all() if account.registration_role == "seeker" else []
+        latest_dimensions = None
+        for item in summary_rows:
+            content = item.content if isinstance(item.content, dict) else {}
+            if content.get("rubric_version") != RUBRIC_VERSION or not isinstance(content.get("practice_index"), (int, float)):
+                continue
+            label = _local_metric_date(item.created_at)
+            if label in practice:
+                practice[label]["sessions"] += 1
+                practice[label]["_scores"].append(float(content["practice_index"]))
+                latest_dimensions = content.get("evaluation_dimensions")
+        practice_series = []
+        for row in practice.values():
+            scores = row.pop("_scores")
+            row["practice_index"] = round(sum(scores) / len(scores)) if scores else None
+            practice_series.append(row)
+
+        counts = {
+            "confirmed_documents": confirmed_documents,
+            "confirmed_resumes": confirmed_resumes,
+            "confirmed_job_descriptions": confirmed_jobs,
+            "job_pool_items": pool_items,
+            "completed_analyses": completed_analyses,
+            "active_tasks": active_tasks,
+            "failed_tasks": failed_tasks,
+            "completed_interviews": completed_interviews,
+        }
+        attention = {
+            "pending_documents": pending_documents,
+            "failed_tasks": failed_tasks,
+            "active_tasks": active_tasks,
+            "confirmed_resumes": confirmed_resumes,
+            "confirmed_job_descriptions": confirmed_jobs,
+            "active_preferences": active_preferences,
+            "job_pool_items": pool_items,
+            "completed_analyses": completed_analyses,
+            "completed_interviews": completed_interviews,
+        }
+        return _ok(request, {
+            "registration_role": account.registration_role,
+            "timezone": "Asia/Shanghai",
+            "range": {"days": days, "from": labels[0], "to": labels[-1]},
+            "counts": counts,
+            "balances": balances,
+            "attention": attention,
+            "activity_series": list(activity.values()),
+            "practice_series": practice_series,
+            "latest_practice_dimensions": latest_dimensions,
+        })
+    except DomainError:
+        raise
+    except Exception as exc:
+        LOGGER.error(
+            "dashboard load failed request_id=%s account_id=%s role=%s days=%s stage=%s error_type=%s cause_type=%s",
+            _meta(request)["request_id"], account.public_id, account.registration_role, days, stage,
+            type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
+        )
+        raise DomainError("DASHBOARD_LOAD_FAILED", "工作台数据读取失败，请稍后重试", 500, "retry") from None
 
 
 @router.get("/stats/me", tags=["stats"])

@@ -18,7 +18,7 @@
 | 面试 | [面试 API 设计](面试API设计.md) | `/interviews*` |
 | 任务 | [任务 API 设计](任务API设计.md) | `/tasks*` |
 | 用量 | [用量 API 设计](用量API设计.md) | `/usage`、`/admin/usage-grants*` |
-| 统计 | [统计 API 设计](统计API设计.md) | `/stats/me`、`/feedback`、`/admin/metrics`、`/admin/costs`、`/admin/feedback*` |
+| 统计 | [统计 API 设计](统计API设计.md) | `/dashboard`、`/stats/me`、`/feedback`、`/admin/metrics`、`/admin/costs`、`/admin/feedback*` |
 | 日志 | [日志 API 设计](日志API设计.md) | `/admin/logs*`、`/admin/log-exports*` |
 
 ## 调用入口
