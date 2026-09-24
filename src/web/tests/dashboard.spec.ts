@@ -55,7 +55,10 @@ describe("工作台", () => {
     apiMock.mockResolvedValue(seekerDashboard);
     const wrapper = mountDashboard("seeker");
     await flushPromises();
-    await wrapper.find('select[aria-label="趋势周期"]').setValue("30");
+    const range = wrapper.find('[role="group"][aria-label="趋势周期"]');
+    expect(range.findAll("button")).toHaveLength(3);
+    expect(range.find('button[aria-pressed="true"]').text()).toBe("近 14 天");
+    await range.findAll("button")[2].trigger("click");
     await flushPromises();
     expect(apiMock).toHaveBeenLastCalledWith("/api/v1/dashboard?days=30");
   });

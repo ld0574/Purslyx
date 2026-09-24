@@ -13,6 +13,7 @@ const auth = useAuthStore();
 const loading = ref(true);
 const error = ref("");
 const days = ref(14);
+const rangeOptions = [7, 14, 30] as const;
 const dashboard = ref<JsonMap>({ counts: {}, balances: [], attention: {}, activity_series: [], practice_series: [] });
 const role = computed(() => auth.role || "seeker");
 
@@ -82,6 +83,11 @@ async function load() {
   catch (value) { error.value = errorMessage(value, "工作台读取失败"); }
   finally { loading.value = false; }
 }
+function selectRange(value: number) {
+  if (days.value === value) return;
+  days.value = value;
+  void load();
+}
 onMounted(load);
 </script>
 
@@ -90,7 +96,7 @@ onMounted(load);
     <template v-if="!loading">
       <section class="metric-grid dashboard-metrics"><article v-for="item in metrics" :key="String(item.label)" class="metric-card"><strong>{{ item.value }}<small v-if="item.unit"> {{ item.unit }}</small></strong><span>{{ item.label }}</span></article></section>
       <section class="dashboard-main-grid">
-        <article class="card dashboard-trend-card"><div class="card-head dashboard-card-head"><div><h3>每日行动趋势</h3><p>按上海自然日统计，只展示系统能够确认的业务事实。</p></div><select v-model.number="days" class="select compact-select" aria-label="趋势周期" @change="load"><option :value="7">近 7 天</option><option :value="14">近 14 天</option><option :value="30">近 30 天</option></select></div><div class="card-body"><div class="trend-legend"><span v-for="item in activityDefinitions" :key="item.key"><i :class="item.className" />{{ item.label }}</span></div><div class="activity-chart"><div v-for="row in dashboard.activity_series || []" :key="row.date" class="activity-day" :title="`${row.date}：${activityDefinitions.map(item => `${item.label} ${row[item.key] || 0}`).join('，')}`"><div class="activity-bars"><i v-for="item in activityDefinitions" :key="item.key" :class="item.className" :style="{ height: `${Math.max(Number(row[item.key] || 0) ? 4 : 0, Number(row[item.key] || 0) / activityMax * 100)}%` }" /></div><small>{{ String(row.date).slice(5) }}</small></div></div><p v-if="role === 'seeker'" class="micro dashboard-definition">“去投递点击”表示 Purslyx 已记录并发起原岗位跳转，不代表外部平台已经提交成功。</p></div></article>
+        <article class="card dashboard-trend-card"><div class="card-head dashboard-card-head"><div><h3>每日行动趋势</h3><p>按上海自然日统计，只展示系统能够确认的业务事实。</p></div><div class="dashboard-range" role="group" aria-label="趋势周期"><button v-for="value in rangeOptions" :key="value" type="button" :class="{ active: days === value }" :aria-pressed="days === value" @click="selectRange(value)">近 {{ value }} 天</button></div></div><div class="card-body"><div class="trend-legend"><span v-for="item in activityDefinitions" :key="item.key"><i :class="item.className" />{{ item.label }}</span></div><div class="activity-chart"><div v-for="row in dashboard.activity_series || []" :key="row.date" class="activity-day" :title="`${row.date}：${activityDefinitions.map(item => `${item.label} ${row[item.key] || 0}`).join('，')}`"><div class="activity-bars"><i v-for="item in activityDefinitions" :key="item.key" :class="item.className" :style="{ height: `${Math.max(Number(row[item.key] || 0) ? 4 : 0, Number(row[item.key] || 0) / activityMax * 100)}%` }" /></div><small>{{ String(row.date).slice(5) }}</small></div></div><p v-if="role === 'seeker'" class="micro dashboard-definition">“去投递点击”表示 Purslyx 已记录并发起原岗位跳转，不代表外部平台已经提交成功。</p></div></article>
         <article class="card dashboard-next-card"><div class="card-head"><div><h3>下一步</h3><p>优先处理会阻塞流程的事项。</p></div></div><div class="card-body next-action-list"><RouterLink v-for="(item, index) in nextActions" :key="item.title" class="next-action" :to="item.to"><span>{{ index + 1 }}</span><div><strong>{{ item.title }}</strong><p>{{ item.description }}</p></div><b>→</b></RouterLink></div></article>
       </section>
       <section v-if="role === 'seeker'" class="card practice-card"><div class="card-head"><div><h3>面试练习进步</h3><p>练习表现指数用于比较自己的变化，不代表招聘方评分或录用概率。</p></div><RouterLink class="button soft small" to="/app/seeker/interview">开始练习</RouterLink></div><div class="card-body practice-layout"><div v-if="practicePoints.length" class="practice-chart-wrap"><svg class="practice-chart" viewBox="0 0 400 120" role="img" aria-label="面试练习表现指数趋势"><line x1="12" y1="8" x2="12" y2="108" /><line x1="12" y1="108" x2="388" y2="108" /><polyline :points="practiceLine" /><circle v-for="point in practicePoints" :key="`${point.date}-${point.score}`" :cx="point.x" :cy="point.y" r="4"><title>{{ point.date }}：{{ point.score }}</title></circle></svg><div class="practice-axis"><span>100</span><span>50</span><span>0</span></div></div><div v-else class="empty dashboard-empty"><div><strong>还没有可比较的完整练习</strong><p>完整回答三道主问题后，这里会开始记录趋势。</p></div></div><div class="dimension-list"><div class="dimension-title"><strong>最近一次五维拆解</strong><small v-if="latestDimensions.length">固定规则等权计算</small></div><div v-if="!latestDimensions.length" class="micro">新评价体系上线后的完整练习会显示在这里。</div><article v-for="item in latestDimensions" :key="item.key"><div><span>{{ item.label }}</span><strong>{{ item.score }}</strong></div><div class="dimension-track"><i :style="{ width: `${item.score}%` }" /></div></article></div></div></section>
