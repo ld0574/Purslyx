@@ -17,7 +17,6 @@ const rangeOptions = [7, 14, 30] as const;
 const dashboard = ref<JsonMap>({ counts: {}, balances: [], attention: {}, activity_series: [], practice_series: [] });
 const role = computed(() => auth.role || "seeker");
 
-const featureLabels: Record<string, string> = { analysis: "岗位分析", rewrite: "简历改写", interview: "面试练习" };
 const dimensionLabels: Record<string, string> = {
   relevance: "回答切题度", specificity: "事实具体度", ownership: "个人贡献清晰度",
   outcome_evidence: "结果证据力度", communication: "表达结构与清晰度",
@@ -28,10 +27,7 @@ const metrics = computed(() => {
   const base = role.value === "seeker"
     ? [[counts.confirmed_resumes || 0, "已确认简历"], [counts.job_pool_items || 0, "匹配池岗位"], [counts.completed_analyses || 0, "已完成分析"], [counts.active_tasks || 0, "进行中任务"]]
     : [[counts.confirmed_resumes || 0, "候选人资料"], [counts.confirmed_job_descriptions || 0, "岗位 JD"], [counts.completed_analyses || 0, "已完成分析"], [counts.active_tasks || 0, "进行中任务"]];
-  const balances = (dashboard.value.balances || []).map((item: JsonMap) => ({
-    value: item.available || 0, label: `${featureLabels[String(item.feature)] || "功能"}剩余`, unit: item.unit === "sessions" ? "场" : "次",
-  }));
-  return [...base.map(([value, label]) => ({ value, label, unit: "" })), ...balances];
+  return base.map(([value, label]) => ({ value, label, unit: "" }));
 });
 
 const activityDefinitions = computed(() => role.value === "seeker"

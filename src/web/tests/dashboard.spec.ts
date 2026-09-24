@@ -43,7 +43,8 @@ describe("工作台", () => {
     const wrapper = mountDashboard("seeker");
     await flushPromises();
     expect(apiMock).toHaveBeenCalledWith("/api/v1/dashboard?days=14");
-    expect(wrapper.text()).toContain("岗位分析剩余");
+    expect(wrapper.findAll(".dashboard-metrics .metric-card")).toHaveLength(4);
+    expect(wrapper.text()).not.toContain("岗位分析剩余");
     expect(wrapper.text()).toContain("去投递点击");
     expect(wrapper.text()).toContain("面试练习进步");
     expect(wrapper.text()).toContain("练习表现指数用于比较自己的变化");
