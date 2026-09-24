@@ -4947,21 +4947,22 @@ def _local_metric_date(value: datetime) -> str:
 def dashboard(
     request: Request,
     account: WebAccount,
-    days: Literal[7, 14, 30] = Query(default=14),
+    days: Literal["7", "14", "30"] = Query(default="14"),
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     """返回账号工作台所需的精确汇总，不用分页列表长度冒充总数。"""
 
     require_verified(account)
+    range_days = int(days)
     stage = "range"
     try:
         today = datetime.strptime(shanghai_date(), "%Y-%m-%d").date()
-        start_date = today - timedelta(days=days - 1)
+        start_date = today - timedelta(days=range_days - 1)
         local_start = datetime.combine(start_date, datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai"))
         local_end = datetime.combine(today + timedelta(days=1), datetime.min.time(), tzinfo=ZoneInfo("Asia/Shanghai"))
         start_at = local_start.astimezone(timezone.utc)
         end_at = local_end.astimezone(timezone.utc)
-        labels = [(start_date + timedelta(days=index)).isoformat() for index in range(days)]
+        labels = [(start_date + timedelta(days=index)).isoformat() for index in range(range_days)]
 
         stage = "counts"
         confirmed_statuses = ("confirmed", "available")
@@ -5062,7 +5063,7 @@ def dashboard(
         return _ok(request, {
             "registration_role": account.registration_role,
             "timezone": "Asia/Shanghai",
-            "range": {"days": days, "from": labels[0], "to": labels[-1]},
+            "range": {"days": range_days, "from": labels[0], "to": labels[-1]},
             "counts": counts,
             "balances": balances,
             "attention": attention,
@@ -5075,7 +5076,7 @@ def dashboard(
     except Exception as exc:
         LOGGER.error(
             "dashboard load failed request_id=%s account_id=%s role=%s days=%s stage=%s error_type=%s cause_type=%s",
-            _meta(request)["request_id"], account.public_id, account.registration_role, days, stage,
+            _meta(request)["request_id"], account.public_id, account.registration_role, range_days, stage,
             type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
         )
         raise DomainError("DASHBOARD_LOAD_FAILED", "工作台数据读取失败，请稍后重试", 500, "retry") from None

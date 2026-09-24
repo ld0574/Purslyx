@@ -5,13 +5,16 @@ from __future__ import annotations
 import asyncio
 import logging
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import pytest
+from fastapi.exceptions import RequestValidationError
+from pydantic import TypeAdapter
 from starlette.requests import Request
 
 from server.app import api as api_module
 from server.app.errors import DomainError
-from server.app.main import _error
+from server.app.main import _error, validation_error_handler
 from server.app.parsing import extract_file_text
 
 
@@ -36,6 +39,30 @@ def test_domain_error_log_contains_lookup_fields_but_not_private_cause(caplog: p
     assert "error_code=DOCUMENT_CONTENT_UNREADABLE" in caplog.text
     assert "cause_type=ValueError" in caplog.text
     assert "PRIVATE_RESUME_BODY" not in caplog.text
+
+
+def test_dashboard_days_accepts_http_query_strings() -> None:
+    annotation = get_type_hints(api_module.dashboard)["days"]
+
+    assert TypeAdapter(annotation).validate_python("7") == "7"
+    assert TypeAdapter(annotation).validate_python("14") == "14"
+    assert TypeAdapter(annotation).validate_python("30") == "30"
+
+
+def test_request_validation_log_records_field_code_without_input(caplog: pytest.LogCaptureFixture) -> None:
+    request = Request({"type": "http", "method": "GET", "scheme": "https", "server": ("example.test", 443), "path": "/api/v1/dashboard", "headers": [], "query_string": b"days=PRIVATE_VALUE"})
+    request.state.request_id = "req-dashboard-422"
+    error = RequestValidationError(
+        [{"type": "literal_error", "loc": ("query", "days"), "msg": "private", "input": "PRIVATE_VALUE"}]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        response = asyncio.run(validation_error_handler(request, error))
+
+    assert response.status_code == 422
+    assert "request_id=req-dashboard-422" in caplog.text
+    assert "fields=query.days:literal_error" in caplog.text
+    assert "PRIVATE_VALUE" not in caplog.text
 
 
 def test_file_extraction_log_does_not_include_filename_or_content(tmp_path, caplog: pytest.LogCaptureFixture) -> None:

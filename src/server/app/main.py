@@ -190,6 +190,14 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
                 "message": "字段不符合接口约定",
             }
         )
+    meta = _meta(request)
+    logging.getLogger("purslyx.validation").warning(
+        "request validation failed request_id=%s method=%s path=%s fields=%s",
+        meta["request_id"],
+        request.method,
+        request.url.path,
+        ",".join(f"{item['field']}:{item['code']}" for item in fields) or "none",
+    )
     return _error(
         request,
         DomainError("REQUEST_INVALID", "请求参数不符合接口约定", 422, fields=fields),
