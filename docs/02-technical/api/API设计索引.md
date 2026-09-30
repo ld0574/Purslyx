@@ -74,6 +74,7 @@ flowchart LR
 | 任务 | POST | `/tasks/{id}/retry` | Web | 恢复原任务 |
 | 用量 | GET | `/usage` | Web | 本账号适用功能余额与流水 |
 | 用量 | GET | `/admin/usage-grants` | `admin.usage.grant` | 发放记录 |
+| 用量 | GET | `/admin/usage-targets` | `admin.usage.grant` | 筛选可发放目标账号 |
 | 用量 | POST | `/admin/users/{id}/usage-grants` | `admin.usage.grant` | 追加适用功能次数 |
 | 统计 | GET | `/stats/me` | Web | 个人事实统计 |
 | 统计 | POST | `/feedback` | Web | 提交产品反馈 |

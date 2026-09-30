@@ -69,6 +69,10 @@
 
 ## 3. 管理端发放
 
+### GET `/api/v1/admin/usage-targets`
+
+需要 `admin.usage.grant`。为发放弹窗筛选当前正常账号；可用 `search` 搜索邮箱、用 `registration_role` 筛选求职或招聘，并通过 `cursor`、`limit` 分页。仅返回目标账号 ID、邮箱、注册身份和分页信息，不暴露用户资料或全站用量。
+
 ### GET `/api/v1/admin/usage-grants`
 
 需要 `admin.usage.grant`。查询参数：

@@ -5967,6 +5967,28 @@ def admin_list_grants(
     return _ok(request, {"items": [{"id": row.public_id, "account_id": db.get(Account, row.account_id).public_id if db.get(Account, row.account_id) else None, "feature": row.feature, "count": row.count, "reason": row.reason, "before_available": row.before_available, "after_available": row.after_available, "created_at": row.created_at.isoformat()} for row in rows], "page": page})
 
 
+@router.get("/admin/usage-targets", tags=["admin"])
+def admin_usage_targets(
+    request: Request,
+    account: WebAccount,
+    search: str | None = Query(default=None, max_length=160),
+    registration_role: Literal["seeker", "recruiter"] | None = Query(default=None),
+    cursor: str | None = Query(default=None, max_length=512),
+    limit: int = Query(default=20, ge=1, le=100),
+    db: Session = Depends(get_db),
+) -> JSONResponse:
+    """次数发放专用账号选择器，只披露选择目标所需的最小字段。"""
+
+    _admin_guard(request, account, db, "admin.usage.grant")
+    statement = select(Account).where(Account.status == "active")
+    if search and search.strip():
+        statement = statement.where(Account.email_normalized.ilike(f"%{normalize_email(search.strip())}%"))
+    if registration_role:
+        statement = statement.where(Account.registration_role == registration_role)
+    rows, page = page_rows(db, statement, Account, cursor=cursor, limit=limit, timestamp_field="created_at")
+    return _ok(request, {"items": [{"id": row.public_id, "email": row.email, "registration_role": row.registration_role} for row in rows], "page": page})
+
+
 @router.post("/admin/users/{user_id}/usage-grants", tags=["admin"], status_code=201)
 def admin_grant(payload: GrantRequest, request: Request, account: WebAccount, user_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.usage.grant", write=True)

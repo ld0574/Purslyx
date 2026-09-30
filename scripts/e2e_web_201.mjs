@@ -476,11 +476,12 @@ async function adminSuccessFlow(client, suffix, targetEmail) {
     "等待管理员用户搜索结果稳定",
   );
   await click(client, '[data-action="open-admin-user"]');
-  await waitForText(client, "USER DETAIL");
+  await waitForSelector(client, ".admin-dialog[open]");
   await waitForText(client, "后台角色分配");
 
   const roleName = `浏览器支持-${suffix}`;
   await openWorkbenchPage(client, "/app/admin/roles", "角色权限");
+  await click(client, '[data-action="open-admin-role"]');
   await setValue(client, '#admin-role-form [name="name"]', roleName);
   await setValue(client, '#admin-role-form [name="description"]', "由真实 Chrome 创建的受限后台角色");
   await setChecked(client, '#admin-role-form input[name="permission_keys"][value="admin.users.read"]');
@@ -489,18 +490,17 @@ async function adminSuccessFlow(client, suffix, targetEmail) {
   await waitForText(client, "后台角色已创建");
 
   await openWorkbenchPage(client, "/app/admin/usage", "次数管理");
-  const targetId = await client.evaluate(`(() => {
-    const option = [...document.querySelectorAll('#admin-grant-form [name="user_id"] option')]
-      .find(item => item.textContent.includes(${JSON.stringify(targetEmail)}));
-    return option?.value || "";
-  })()`);
-  assert(targetId, "次数管理没有加载目标账号选项");
-  await setValue(client, '#admin-grant-form [name="user_id"]', targetId);
+  await click(client, '[data-action="open-admin-grant"]');
+  await click(client, '[data-action="choose-grant-target"]');
+  await setValue(client, "#target-search", targetEmail);
+  await submit(client, ".admin-picker-filters");
+  await waitForValue(() => client.evaluate(`document.querySelector('.admin-picker-row')?.textContent.includes(${JSON.stringify(targetEmail)})`), "等待目标账号筛选结果");
+  await click(client, ".admin-picker-row");
   await setValue(client, '#admin-grant-form [name="feature"]', "analysis");
   await setValue(client, '#admin-grant-form [name="count"]', "1");
   await setValue(client, '#admin-grant-form [name="reason"]', "真实浏览器管理端验收发放");
   await submit(client, "#admin-grant-form");
-  await waitForText(client, "已发放 1 次analysis");
+  await waitForText(client, "已发放 1 次岗位分析");
 
   await openWorkbenchPage(client, "/app/admin/logs", "日志管理");
   await waitForText(client, "操作日志");

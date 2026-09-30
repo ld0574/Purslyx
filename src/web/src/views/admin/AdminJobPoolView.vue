@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from "vue";
 
+import AdminDialog from "@/components/AdminDialog.vue";
 import AppShell from "@/components/AppShell.vue";
 import AsyncState from "@/components/AsyncState.vue";
 import PageHeader from "@/components/PageHeader.vue";
@@ -108,6 +109,7 @@ async function previousPage() {
 async function openItem(item: JsonMap) {
   busy.value = true;
   error.value = "";
+  selected.value = null;
   try {
     selected.value = await api<JsonMap>(`/api/v1/admin/job-pool/items/${encodeURIComponent(item.id)}`);
   } catch (value) {
@@ -150,7 +152,7 @@ onMounted(() => load(true));
     <PageHeader eyebrow="ADMIN JOB POOL" title="抓取岗位管理" description="统一查看插件抓取的 JD、来源账号、抓取时间和待补充条件；需要清理时可按影响范围安全下架。"><button class="button outline small" type="button" :disabled="busy" @click="load(true)">刷新</button></PageHeader>
     <AsyncState :loading="loading" :error="error" :success="success" />
 
-    <form id="admin-job-pool-search" class="card filter-grid" @submit.prevent="applyFilters">
+    <form id="admin-job-pool-search" class="card filter-grid admin-filter-card" @submit.prevent="applyFilters">
       <div class="field-group"><label for="admin-job-pool-search-text">搜索 JD、公司或来源账号</label><input id="admin-job-pool-search-text" v-model="filters.search" class="field" placeholder="岗位、公司、邮箱或正文关键词" /></div>
       <div class="field-group"><label>来源平台</label><select v-model="filters.platform" class="select"><option value="">全部平台</option><option value="boss">BOSS</option><option value="liepin">猎聘</option><option value="manual">手动入池</option></select></div>
       <div class="field-group"><label>来源类型</label><select v-model="filters.source_type" class="select"><option value="browser_capture">插件抓取</option><option value="manual">手动入池</option><option value="">全部类型</option></select></div>
@@ -168,9 +170,9 @@ onMounted(() => load(true));
       <div class="pool-pagination"><button class="button outline small" type="button" :disabled="!cursorHistory.length || busy" @click="previousPage">上一页</button><span>第 {{ currentPageNumber }} 页 · 本页 {{ items.length }} 条</span><button class="button outline small" type="button" :disabled="!page.has_more || busy" @click="nextPage">下一页</button></div>
     </section>
 
-    <section v-if="selected" class="card admin-job-detail" style="margin-top:18px">
-      <div class="card-head"><div><div class="eyebrow">JD DETAIL</div><h3>{{ selected.job_title }}</h3><p>{{ selected.company_name || "未标注公司" }} · {{ selected.source_account?.email_masked || "未知来源账号" }} · 抓取 {{ formatDateTime(selected.captured_at) }}</p></div><div class="item-actions"><span class="tag" :class="statusClass(selected.in_pool ? selected.analysis_status : 'deleted')">{{ selected.in_pool ? statusLabel(selected.analysis_status) : "已下架" }}</span><button class="button link-button small" type="button" @click="selected = null">关闭</button></div></div>
-      <div class="card-body">
+    <AdminDialog :open="Boolean(selected)" :title="selected?.job_title || '岗位详情'" :description="selected ? `${selected.company_name || '未标注公司'} · ${selected.source_account?.email_masked || '未知来源账号'} · 抓取 ${formatDateTime(selected.captured_at)}` : ''" wide @close="selected = null">
+      <div v-if="selected" class="admin-job-detail-content">
+        <span class="tag" :class="statusClass(selected.in_pool ? selected.analysis_status : 'deleted')">{{ selected.in_pool ? statusLabel(selected.analysis_status) : "已下架" }}</span>
         <div class="job-condition-summary"><div><strong>来源</strong><span>{{ sourceLabel(selected) }}</span></div><div><strong>地点</strong><span>{{ conditionValue(selected, "location") }}</span></div><div><strong>办公方式</strong><span>{{ statusLabel(conditionValue(selected, "work_mode")) }}</span></div><div><strong>薪资</strong><span>{{ conditionValue(selected, "salary") }}</span></div><div><strong>分析数量</strong><span>{{ selected.analysis_count || selected.analysis_summary?.total || 0 }} 份</span></div><div><strong>待补充条件</strong><span>{{ selected.missing_conditions?.join("、") || "无" }}</span></div></div>
         <div v-if="selected.source_url" class="callout"><strong>原岗位链接</strong><a class="admin-source-link" :href="selected.source_url" target="_blank" rel="noreferrer">{{ selected.source_url }}</a></div>
         <div v-if="selected.job_description_text" class="admin-job-description"><h4>完整 JD 正文</h4><pre>{{ selected.job_description_text }}</pre></div>
@@ -179,6 +181,6 @@ onMounted(() => load(true));
         <section v-if="selected.analysis_history?.length" class="history-list" style="margin-top:18px"><h4>匹配历史</h4><div v-for="analysis in selected.analysis_history" :key="analysis.id" class="history-row"><div><strong>{{ analysis.id }}</strong><small>{{ statusLabel(analysis.status) }} · {{ analysis.ability_score == null ? "暂无评分" : `${analysis.ability_score} 分` }} · {{ formatDateTime(analysis.completed_at) }}</small></div><span v-if="analysis.deleted_at" class="tag attention">已清理</span></div></section>
         <div class="item-actions" style="margin-top:18px"><button v-if="canManage && selected.in_pool" class="button primary" type="button" :disabled="busy" @click="retire(selected)">下架这个岗位</button><span v-if="!canManage" class="micro">当前账号只有查看权限。</span></div>
       </div>
-    </section>
+    </AdminDialog>
   </AppShell>
 </template>
