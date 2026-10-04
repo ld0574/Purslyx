@@ -45,6 +45,10 @@
 
 `InterviewResult` 包含 `completion_type=full|early`、已回答数量、结构化总结、未完成项、Schema 与时间。`interview-summary-v2` 仅为完整回答三道主问题且三题均使用 `interview-rubric-v1` 的练习计算表现指数：`strong=100`、`partial=50`、`missing=0`，先按维度平均三道主问题，再等权平均五个维度；追问和提前结束不计入数值。
 
+证据校验先匹配完整引用，再截取展示长度；不通过的引用会删除，等级降为“信息不足”并标记 `evidence_status=unverified`。字段缺失、非法等级或未通过证据校验的反馈不生成整场指数，避免把模型输出问题当成用户的零分。有效指数直接平均 15 项原始等级值，不二次平均已取整的维度显示分。整场结果新增 `next_practice_focus`，包含最弱维度的 `key`、`label`、`score`、`status` 和 `suggestion`。
+
+结果中的五维数值位于 `summary.content`，模型文字总结、优势、缺口、建议和 STAR 诊断位于 `summary.content.content`；客户端同时兼容旧版的平铺结构。反馈详情返回实际生成的 `followup_question`。问题依据与切题评价使用报告冻结的岗位要求；发起入口只接受成功报告，并使用该报告的简历版本，允许从历史报告继续发起练习。
+
 ## 2. 发起与列表
 
 ### POST `/api/v1/interviews`

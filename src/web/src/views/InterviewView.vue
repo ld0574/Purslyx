@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRoute } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
@@ -16,11 +16,15 @@ const error = ref("");
 const success = ref("");
 const interviews = ref<JsonMap[]>([]);
 const poolItems = ref<JsonMap[]>([]);
+const sourceReportPool = ref<JsonMap | null>(null);
 const selected = ref<JsonMap | null>(null);
 const activeTask = ref<JsonMap | null>(null);
 const startForm = reactive({ pool_id: "", title: "岗位面试练习" });
 const answerText = ref("");
 let pollingTimer: number | undefined;
+let readGeneration = 0;
+let pollingInFlight = false;
+const taskWaitController = new AbortController();
 const starParts = [
   { key: "situation", label: "S · 情境" },
   { key: "task", label: "T · 任务" },
@@ -35,50 +39,93 @@ const evaluationParts = [
   { key: "communication", label: "表达结构与清晰度" },
 ];
 
-const availablePools = computed(() => poolItems.value.filter((item) => item.latest_analysis?.id && item.resume_version_id));
+const availablePools = computed(() => {
+  const rows = sourceReportPool.value
+    ? [sourceReportPool.value, ...poolItems.value.filter((item) => item.id !== sourceReportPool.value?.id)]
+    : poolItems.value;
+  return rows.filter((item) => item.latest_analysis?.id && ["available", "succeeded"].includes(item.latest_analysis.status)
+    && (item.latest_analysis.resume_version_id || item.resume_version_id));
+});
 const currentQuestion = computed(() => selected.value?.questions?.find((item: JsonMap) => item.id === selected.value?.current_question_id)
   || selected.value?.questions?.find((item: JsonMap) => item.status === "awaiting_answer") || null);
 const shouldPoll = computed(() => ["opening", "processing"].includes(String(selected.value?.status || "")));
+const summaryRecord = computed<JsonMap>(() => selected.value?.summary?.content || {});
+const summaryNarrative = computed<JsonMap>(() => summaryRecord.value.content || summaryRecord.value);
 
 async function settleInterview(response: JsonMap, interviewId?: string): Promise<JsonMap> {
   const view = response.interview || response;
   selected.value = view;
   const task = response.task || view.task;
   const targetId = interviewId || view.id;
-  if (task && ["queued", "running", "retry_wait"].includes(String(task.status))) {
-    activeTask.value = task;
-    await waitForTask(task, { onUpdate: (value) => { activeTask.value = value; } });
-    selected.value = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(targetId)}`);
+  try {
+    if (task && ["queued", "running", "retry_wait"].includes(String(task.status))) {
+      activeTask.value = task;
+      try {
+        await waitForTask(task, { signal: taskWaitController.signal, onUpdate: (value) => { activeTask.value = value; } });
+      } catch (value) {
+        // 恢复失败状态及重试入口，再把原始错误交给页面。
+        try { selected.value = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(targetId)}`); } catch { /* 保留已保存的回答 */ }
+        throw value;
+      }
+      selected.value = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(targetId)}`);
+    }
+  } finally {
+    activeTask.value = null;
   }
-  activeTask.value = null;
   return selected.value || view;
 }
 
 async function load(selectId?: string) {
+  const generation = ++readGeneration;
+  const previousId = selected.value?.id;
+  const previousQuestionId = selected.value?.current_question_id;
   loading.value = true; error.value = "";
   try {
     const [interviewResult, poolResult] = await Promise.all([
-      api<JsonMap>("/api/v1/interviews"), api<JsonMap>("/api/v1/job-pool/items"),
+      api<JsonMap>("/api/v1/interviews?limit=100"), api<JsonMap>("/api/v1/job-pool/items?limit=100"),
     ]);
+    if (generation !== readGeneration) return;
     interviews.value = interviewResult.items || [];
     poolItems.value = poolResult.items || [];
     const analysisId = String(route.query.analysis_id || "");
+    sourceReportPool.value = null;
+    if (analysisId) {
+      const source = await api<JsonMap>(`/api/v1/analyses/${encodeURIComponent(analysisId)}`);
+      const resumeId = source.input_versions?.find((item: JsonMap) => item.type === "resume")?.id;
+      if (["available", "succeeded"].includes(source.status) && source.job_pool_item_id && resumeId) {
+        const pool = poolItems.value.find((item) => item.id === source.job_pool_item_id)
+          || await api<JsonMap>(`/api/v1/job-pool/items/${encodeURIComponent(source.job_pool_item_id)}`);
+        if (generation !== readGeneration) return;
+        sourceReportPool.value = { ...pool, resume_version_id: resumeId, latest_analysis: { ...source, resume_version_id: resumeId } };
+      }
+    }
+    if (generation !== readGeneration) return;
     const preferredPool = availablePools.value.find((item) => item.latest_analysis?.id === analysisId) || availablePools.value[0];
-    startForm.pool_id ||= preferredPool?.id || "";
-    const targetId = selectId || String(route.query.interview_id || "") || selected.value?.id || interviews.value[0]?.id;
-    selected.value = targetId ? await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(targetId)}`) : null;
-  } catch (value) { error.value = errorMessage(value, "面试记录读取失败"); }
-  finally { loading.value = false; }
+    if (analysisId || !availablePools.value.some((item) => item.id === startForm.pool_id)) startForm.pool_id = preferredPool?.id || "";
+    const targetId = selectId !== undefined ? selectId : String(route.query.interview_id || "") || selected.value?.id || interviews.value[0]?.id;
+    const view = targetId ? await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(targetId)}`) : null;
+    if (generation === readGeneration) {
+      if (view?.id !== previousId || view?.current_question_id !== previousQuestionId) answerText.value = "";
+      selected.value = view;
+    }
+  } catch (value) { if (generation === readGeneration) error.value = errorMessage(value, "面试记录读取失败"); }
+  finally { if (generation === readGeneration) loading.value = false; }
 }
 
 async function openInterview(item: JsonMap) {
+  if (busy.value || loading.value) return;
+  const generation = ++readGeneration;
   busy.value = true; error.value = "";
-  try { selected.value = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(item.id)}`); answerText.value = ""; }
+  try {
+    const view = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(item.id)}`);
+    if (generation === readGeneration) { selected.value = view; answerText.value = ""; }
+  }
   catch (value) { error.value = errorMessage(value); }
   finally { busy.value = false; }
 }
 
 async function startInterview() {
+  if (busy.value) return;
   const pool = availablePools.value.find((item) => item.id === startForm.pool_id);
   if (!pool) { error.value = "请先选择一份已经完成分析的岗位"; return; }
   busy.value = true; error.value = ""; success.value = "";
@@ -87,7 +134,7 @@ async function startInterview() {
       method: "POST", idempotencyKey: idempotencyKey("interview-start"), body: {
         job_pool_item_id: pool.id,
         analysis_id: pool.latest_analysis.id,
-        resume_document_version_id: pool.resume_version_id,
+        resume_document_version_id: pool.latest_analysis.resume_version_id || pool.resume_version_id,
         title: startForm.title,
         confirm_usage: true,
       },
@@ -101,7 +148,7 @@ async function startInterview() {
 }
 
 async function submitAnswer() {
-  if (!selected.value || !currentQuestion.value) return;
+  if (busy.value || !selected.value || !currentQuestion.value) return;
   busy.value = true; error.value = ""; success.value = "";
   try {
     const result = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(selected.value.id)}/answers`, {
@@ -119,7 +166,7 @@ async function submitAnswer() {
 }
 
 async function finishInterview() {
-  if (!selected.value || !window.confirm("提前结束后，未回答题目会标记为跳过并按已有回答生成总结。确认继续？")) return;
+  if (busy.value || !selected.value || !window.confirm("提前结束后，未回答题目会标记为跳过并按已有回答生成总结。确认继续？")) return;
   busy.value = true; error.value = "";
   try {
     const interviewId = selected.value.id;
@@ -133,6 +180,7 @@ async function finishInterview() {
 }
 
 async function retryTask() {
+  if (busy.value) return;
   const taskId = selected.value?.task?.id;
   if (!taskId) return;
   busy.value = true; error.value = "";
@@ -142,15 +190,18 @@ async function retryTask() {
     });
     activeTask.value = result.task;
     success.value = "重试已受理，正在恢复原任务";
-    await waitForTask(result.task, { onUpdate: (value) => { activeTask.value = value; } });
+    await waitForTask(result.task, { signal: taskWaitController.signal, onUpdate: (value) => { activeTask.value = value; } });
     activeTask.value = null;
     await load(selected.value?.id);
-  } catch (value) { error.value = errorMessage(value); }
-  finally { busy.value = false; }
+  } catch (value) {
+    const message = errorMessage(value);
+    await load(selected.value?.id);
+    error.value = message;
+  } finally { activeTask.value = null; busy.value = false; }
 }
 
 async function deleteInterview() {
-  if (!selected.value) return;
+  if (busy.value || !selected.value) return;
   busy.value = true; error.value = "";
   try {
     const impact = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(selected.value.id)}/deletion-impact`);
@@ -158,7 +209,8 @@ async function deleteInterview() {
     await api(`/api/v1/interviews/${encodeURIComponent(selected.value.id)}`, {
       method: "DELETE", headers: { "If-Match": `"${impact.impact_version}"` },
     });
-    selected.value = null; success.value = "面试练习已删除"; await load();
+    const nextId = interviews.value.find((item) => item.id !== selected.value?.id)?.id || "";
+    selected.value = null; success.value = "面试练习已删除"; await load(nextId);
   } catch (value) { error.value = errorMessage(value); }
   finally { busy.value = false; }
 }
@@ -235,15 +287,31 @@ function richTextParts(value: unknown): RichTextPart[] {
 
 onMounted(() => {
   load();
-  pollingTimer = window.setInterval(() => { if (shouldPoll.value && selected.value) openInterview(selected.value); }, 2000);
+  pollingTimer = window.setInterval(pollInterview, 2000);
 });
-onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); });
+async function pollInterview() {
+  if (!shouldPoll.value || !selected.value || busy.value || loading.value || pollingInFlight) return;
+  const interviewId = selected.value.id;
+  const generation = readGeneration;
+  pollingInFlight = true;
+  try {
+    const view = await api<JsonMap>(`/api/v1/interviews/${encodeURIComponent(interviewId)}`);
+    if (generation === readGeneration && selected.value?.id === interviewId) {
+      if (view.current_question_id !== selected.value?.current_question_id) answerText.value = "";
+      selected.value = view;
+    }
+  } catch (value) {
+    if (generation === readGeneration) error.value = errorMessage(value, "面试状态读取失败");
+  } finally { pollingInFlight = false; }
+}
+onBeforeUnmount(() => { readGeneration += 1; taskWaitController.abort(); if (pollingTimer) window.clearInterval(pollingTimer); });
+watch(() => [route.query.analysis_id, route.query.interview_id], () => { answerText.value = ""; load(); });
 </script>
 
 <template>
   <AppShell>
     <PageHeader eyebrow="INTERVIEW PRACTICE" title="面试练习" description="围绕一份冻结的岗位报告逐轮回答；3 道主问题、每题最多一次追问，刷新后仍能恢复。">
-      <button class="button outline small" type="button" @click="load()">刷新</button>
+      <button class="button outline small" :disabled="busy || loading" type="button" @click="load()">刷新</button>
     </PageHeader>
     <AsyncState :loading="loading" :error="error" :success="success" />
     <div v-if="activeTask" class="callout opportunity task-inline-state"><span class="spinner" />{{ taskLabel(activeTask.task_type) }}：{{ statusLabel(activeTask.status) }} · {{ activeTask.current_step || "等待执行" }}</div>
@@ -261,7 +329,7 @@ onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); })
       <aside class="interview-nav">
         <div class="eyebrow" style="margin:4px 4px 12px">历史练习</div>
         <div v-if="!interviews.length" class="empty"><div><strong>还没有会话</strong><p>从上方已完成报告开始。</p></div></div>
-        <button v-for="item in interviews" :key="item.id" class="interview-item text-button" :class="{ active: selected?.id === item.id }" type="button" @click="openInterview(item)"><strong>{{ item.title }}</strong><small>{{ statusLabel(item.status) }} · {{ formatDate(item.updated_at) }}</small></button>
+        <button v-for="item in interviews" :key="item.id" class="interview-item text-button" :class="{ active: selected?.id === item.id }" :disabled="busy || loading" type="button" @click="openInterview(item)"><strong>{{ item.title }}</strong><small>{{ statusLabel(item.status) }} · {{ formatDate(item.updated_at) }}</small></button>
       </aside>
 
       <section v-if="selected" class="question">
@@ -272,13 +340,20 @@ onBeforeUnmount(() => { if (pollingTimer) window.clearInterval(pollingTimer); })
         <div v-if="selected.summary" class="summary-box">
           <div class="summary-head"><strong>练习总结 · {{ selected.summary.completion_type === 'full' ? '完整完成' : '提前结束' }}</strong><div class="item-actions"><span v-if="selected.summary.content?.practice_index != null" class="tag brand">练习表现指数 {{ selected.summary.content.practice_index }}</span><span class="tag neutral">仅用于个人练习对比</span></div></div>
           <p class="rich-text"><template v-for="(part, index) in richTextParts(summaryText(selected.summary.content))" :key="`summary-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p>
-          <p v-if="selected.summary.content?.next_steps?.length" class="rich-text"><strong>下一步：</strong><template v-for="(part, index) in richTextParts(selected.summary.content.next_steps.join('；'))" :key="`step-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p>
+          <p v-if="summaryRecord.answered_main_count != null" class="micro">已回答 {{ summaryRecord.answered_main_count }}/3 道主问题，{{ summaryRecord.answered_followup_count || 0 }} 道追问。练习指数只使用三道主问题的五维评价。</p>
+          <p v-if="summaryRecord.practice_index == null" class="micro">{{ selected.summary.completion_type === 'early' ? '提前结束仅保留实际反馈，不生成练习指数。' : summaryRecord.rubric_version ? '本次记录缺少完整的五维评价，暂不生成练习指数。' : '这场练习使用旧版评价，继续保留反馈，不计入新练习趋势。' }}</p>
+          <div v-if="textList(summaryNarrative.strengths).length || textList(summaryNarrative.gaps).length" class="feedback-support-grid">
+            <div v-if="textList(summaryNarrative.strengths).length"><strong>练习优势</strong><ul><li v-for="item in textList(summaryNarrative.strengths)" :key="item">{{ item }}</li></ul></div>
+            <div v-if="textList(summaryNarrative.gaps).length"><strong>需要加强</strong><ul><li v-for="item in textList(summaryNarrative.gaps)" :key="item">{{ item }}</li></ul></div>
+          </div>
+          <p v-if="summaryNarrative.next_steps?.length" class="rich-text"><strong>下一步：</strong><template v-for="(part, index) in richTextParts(textList(summaryNarrative.next_steps).join('；'))" :key="`step-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p>
           <div v-if="selected.summary.content?.evaluation_dimensions" class="interview-dimension-grid"><article v-for="part in evaluationParts" :key="part.key"><div><strong>{{ part.label }}</strong><span>{{ selected.summary.content.evaluation_dimensions[part.key]?.score ?? '—' }}</span></div><div class="dimension-track"><i :style="{ width: `${selected.summary.content.evaluation_dimensions[part.key]?.score || 0}%` }" /></div></article></div>
-          <div v-if="selected.summary.content?.star_assessment" class="feedback-section"><div class="feedback-section-title"><strong>STAR 结构诊断</strong><small>用于定位回答结构缺口，不等同于综合评价</small></div><div class="star-grid"><article v-for="part in starParts" :key="part.key"><div class="item-title"><strong>{{ part.label }}</strong><span class="tag" :class="starStatusClass(selected.summary.content.star_assessment[part.key]?.status)">{{ starStatusLabel(selected.summary.content.star_assessment[part.key]?.status) }}</span></div><p class="rich-text"><template v-for="(piece, index) in richTextParts(selected.summary.content.star_assessment[part.key]?.feedback || '尚未提供足够信息。')" :key="`summary-star-${part.key}-${index}`"><span v-if="piece.bold" class="rich-bold">{{ piece.text }}</span><span v-else>{{ piece.text }}</span></template></p></article></div></div>
+          <div v-if="summaryRecord.next_practice_focus" class="callout opportunity practice-focus"><div><strong>下次重点：{{ summaryRecord.next_practice_focus.label }}</strong><p>{{ summaryRecord.next_practice_focus.suggestion }}</p></div></div>
+          <div v-if="summaryNarrative.star_assessment" class="feedback-section"><div class="feedback-section-title"><strong>STAR 结构诊断</strong><small>用于定位回答结构缺口，不等同于综合评价</small></div><div class="star-grid"><article v-for="part in starParts" :key="part.key"><div class="item-title"><strong>{{ part.label }}</strong><span class="tag" :class="starStatusClass(summaryNarrative.star_assessment[part.key]?.status)">{{ starStatusLabel(summaryNarrative.star_assessment[part.key]?.status) }}</span></div><p class="rich-text"><template v-for="(piece, index) in richTextParts(summaryNarrative.star_assessment[part.key]?.feedback || '尚未提供足够信息。')" :key="`summary-star-${part.key}-${index}`"><span v-if="piece.bold" class="rich-bold">{{ piece.text }}</span><span v-else>{{ piece.text }}</span></template></p></article></div></div>
         </div>
-        <button v-if="selected.status === 'awaiting_answer'" class="button outline small" style="margin-top:12px" type="button" @click="finishInterview">提前结束并总结</button>
+        <button v-if="selected.status === 'awaiting_answer'" class="button outline small" :disabled="busy" style="margin-top:12px" type="button" @click="finishInterview">提前结束并总结</button>
 
-        <section v-if="selected.questions?.length" class="interview-history" style="margin-top:22px"><div class="card-head"><div><h3>逐题记录</h3><p>问题、本人回答与反馈完整保留。</p></div></div><div class="card-list"><article v-for="question in selected.questions" :key="question.id" class="interview-question-row"><div class="item-title"><strong>第 {{ question.main_no }} 题{{ question.question_type === 'followup' ? ' · 追问' : '' }}</strong><span class="tag" :class="statusClass(question.status)">{{ statusLabel(question.status) }}</span></div><p class="micro" style="margin-top:7px">{{ question.question_text }}</p><div v-if="question.answer" class="compare-pane original" style="margin-top:9px"><h4>我的回答</h4><p>{{ question.answer.answer_text }}</p></div><div v-if="question.feedback" class="feedback-box"><div class="feedback-head"><div><span class="feedback-kicker">AI COACH · 五维评价</span><strong>本题反馈</strong></div><span v-if="question.feedback.needs_followup" class="tag opportunity">需要一次追问</span></div><p class="feedback-summary rich-text"><template v-for="(part, index) in richTextParts(feedbackSummary(question))" :key="`feedback-summary-${question.id}-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p><div v-if="feedbackContent(question).evaluation_dimensions" class="question-dimension-grid"><article v-for="part in evaluationParts" :key="part.key"><div class="item-title"><strong>{{ part.label }}</strong><span class="tag" :class="starStatusClass(feedbackDimension(question, part.key).status)">{{ dimensionStatusLabel(feedbackDimension(question, part.key).status) }}</span></div><p>{{ feedbackDimension(question, part.key).feedback }}</p><blockquote v-if="feedbackDimension(question, part.key).evidence_quote">“{{ feedbackDimension(question, part.key).evidence_quote }}”</blockquote></article></div><div class="feedback-section-title"><strong>STAR 结构诊断</strong><small>帮助定位回答结构缺口</small></div><div class="feedback-star-grid"><article v-for="part in starParts" :key="part.key" class="feedback-star-card" :class="starStatusClass(feedbackStar(question, part.key).status)"><div class="feedback-star-head"><span class="feedback-star-code">{{ part.label.slice(0, 1) }}</span><div><strong>{{ part.label.slice(4) }}</strong><small>{{ starStatusLabel(feedbackStar(question, part.key).status) }}</small></div></div><p class="rich-text"><template v-for="(piece, index) in richTextParts(feedbackStar(question, part.key).feedback)" :key="`feedback-star-${question.id}-${part.key}-${index}`"><span v-if="piece.bold" class="rich-bold">{{ piece.text }}</span><span v-else>{{ piece.text }}</span></template></p></article></div><div v-if="feedbackItems(question, 'strengths').length || feedbackItems(question, 'gaps').length || feedbackItems(question, 'suggestions').length" class="feedback-support-grid"><div v-if="feedbackItems(question, 'strengths').length"><strong>回答中有效</strong><ul><li v-for="item in feedbackItems(question, 'strengths')" :key="`s-${item}`" class="rich-text"><template v-for="(part, index) in richTextParts(item)" :key="`strength-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div><div v-if="feedbackItems(question, 'gaps').length"><strong>总体缺口</strong><ul><li v-for="item in feedbackItems(question, 'gaps')" :key="`g-${item}`" class="rich-text"><template v-for="(part, index) in richTextParts(item)" :key="`gap-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div><div v-if="feedbackItems(question, 'suggestions').length"><strong>下一步动作</strong><ul><li v-for="item in feedbackItems(question, 'suggestions')" :key="`n-${item}`" class="rich-text"><template v-for="(part, index) in richTextParts(item)" :key="`suggestion-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div></div><div v-if="textList(feedbackContent(question).missing_details).length" class="feedback-section feedback-facts"><strong>还缺哪些事实</strong><ul><li v-for="item in textList(feedbackContent(question).missing_details)" :key="item" class="rich-text"><span class="feedback-bullet">+</span><template v-for="(part, index) in richTextParts(item)" :key="`missing-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div><div class="feedback-template"><div class="feedback-section-title"><strong>可以这样重答</strong><small>只填入你真实经历中的事实</small></div><p class="rich-text"><template v-for="(part, index) in richTextParts(feedbackAnswerTemplate(question))" :key="`template-${question.id}-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p></div><div v-if="question.feedback.needs_followup" class="feedback-followup"><span class="feedback-kicker">下一次具体会追问</span><p class="rich-text"><template v-for="(part, index) in richTextParts(question.feedback.followup_question || '请补充你本人采取的具体行动，以及可以核对的结果。')" :key="`followup-${question.id}-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p></div></div></article></div></section>
+        <section v-if="selected.questions?.length" class="interview-history" style="margin-top:22px"><div class="card-head"><div><h3>逐题记录</h3><p>问题、本人回答与反馈完整保留。</p></div></div><div class="card-list"><article v-for="question in selected.questions" :key="question.id" class="interview-question-row"><div class="item-title"><strong>第 {{ question.main_no }} 题{{ question.question_type === 'followup' ? ' · 追问' : '' }}</strong><span class="tag" :class="statusClass(question.status)">{{ statusLabel(question.status) }}</span></div><p class="micro" style="margin-top:7px">{{ question.question_text }}</p><div v-if="question.answer" class="compare-pane original" style="margin-top:9px"><h4>我的回答</h4><p>{{ question.answer.answer_text }}</p></div><div v-if="question.feedback" class="feedback-box"><div class="feedback-head"><div><span class="feedback-kicker">{{ feedbackContent(question).evaluation_dimensions ? '五维回答评价' : '本题回答反馈' }}</span><strong>本题反馈</strong></div><span v-if="question.feedback.needs_followup" class="tag opportunity">需要一次追问</span></div><p class="feedback-summary rich-text"><template v-for="(part, index) in richTextParts(feedbackSummary(question))" :key="`feedback-summary-${question.id}-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p><div v-if="feedbackContent(question).evaluation_dimensions" class="question-dimension-grid"><article v-for="part in evaluationParts" :key="part.key"><div class="item-title"><strong>{{ part.label }}</strong><span class="tag" :class="starStatusClass(feedbackDimension(question, part.key).status)">{{ dimensionStatusLabel(feedbackDimension(question, part.key).status) }}</span></div><p>{{ feedbackDimension(question, part.key).feedback }}</p><blockquote v-if="feedbackDimension(question, part.key).evidence_quote">“{{ feedbackDimension(question, part.key).evidence_quote }}”</blockquote></article></div><div class="feedback-section-title"><strong>STAR 结构诊断</strong><small>帮助定位回答结构缺口</small></div><div class="feedback-star-grid"><article v-for="part in starParts" :key="part.key" class="feedback-star-card" :class="starStatusClass(feedbackStar(question, part.key).status)"><div class="feedback-star-head"><span class="feedback-star-code">{{ part.label.slice(0, 1) }}</span><div><strong>{{ part.label.slice(4) }}</strong><small>{{ starStatusLabel(feedbackStar(question, part.key).status) }}</small></div></div><p class="rich-text"><template v-for="(piece, index) in richTextParts(feedbackStar(question, part.key).feedback)" :key="`feedback-star-${question.id}-${part.key}-${index}`"><span v-if="piece.bold" class="rich-bold">{{ piece.text }}</span><span v-else>{{ piece.text }}</span></template></p></article></div><div v-if="feedbackItems(question, 'strengths').length || feedbackItems(question, 'gaps').length || feedbackItems(question, 'suggestions').length" class="feedback-support-grid"><div v-if="feedbackItems(question, 'strengths').length"><strong>回答中有效</strong><ul><li v-for="item in feedbackItems(question, 'strengths')" :key="`s-${item}`" class="rich-text"><template v-for="(part, index) in richTextParts(item)" :key="`strength-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div><div v-if="feedbackItems(question, 'gaps').length"><strong>总体缺口</strong><ul><li v-for="item in feedbackItems(question, 'gaps')" :key="`g-${item}`" class="rich-text"><template v-for="(part, index) in richTextParts(item)" :key="`gap-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div><div v-if="feedbackItems(question, 'suggestions').length"><strong>下一步动作</strong><ul><li v-for="item in feedbackItems(question, 'suggestions')" :key="`n-${item}`" class="rich-text"><template v-for="(part, index) in richTextParts(item)" :key="`suggestion-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div></div><div v-if="textList(feedbackContent(question).missing_details).length" class="feedback-section feedback-facts"><strong>还缺哪些事实</strong><ul><li v-for="item in textList(feedbackContent(question).missing_details)" :key="item" class="rich-text"><span class="feedback-bullet">+</span><template v-for="(part, index) in richTextParts(item)" :key="`missing-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></li></ul></div><div class="feedback-template"><div class="feedback-section-title"><strong>可以这样重答</strong><small>只填入你真实经历中的事实</small></div><p class="rich-text"><template v-for="(part, index) in richTextParts(feedbackAnswerTemplate(question))" :key="`template-${question.id}-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p></div><div v-if="question.feedback.needs_followup" class="feedback-followup"><span class="feedback-kicker">下一次具体会追问</span><p class="rich-text"><template v-for="(part, index) in richTextParts(question.feedback.followup_question || '请补充你本人采取的具体行动，以及可以核对的结果。')" :key="`followup-${question.id}-${index}`"><span v-if="part.bold" class="rich-bold">{{ part.text }}</span><span v-else>{{ part.text }}</span></template></p></div></div></article></div></section>
         <div class="item-actions"><button class="button link-button small" :disabled="busy" type="button" @click="deleteInterview">删除这场练习</button></div>
       </section>
       <section v-else class="empty"><div><strong>选择一场练习</strong><p>系统会从报告生成 3 道主问题，并保留所有轮次。</p></div></section>

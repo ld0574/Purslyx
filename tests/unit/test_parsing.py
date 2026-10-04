@@ -29,6 +29,13 @@ def test_normalize_and_hash_are_stable() -> None:
     assert sha256_bytes(b"purslyx") != sha256_bytes(b"Purslyx")
 
 
+def test_job_sections_retain_unbulleted_and_inline_requirements() -> None:
+    value = parse_job_text("前端工程师\n任职要求：熟悉 React\n熟悉 TypeScript\n岗位职责\n负责组件交付\n福利：弹性办公\n地点：上海")["job_fields"]
+    assert value["requirements"] == ["熟悉 React", "熟悉 TypeScript"]
+    assert value["responsibilities"] == ["负责组件交付"]
+    assert value["locations"] == ["上海"]
+
+
 @pytest.mark.parametrize(
     ("filename", "content_type", "expected"),
     [

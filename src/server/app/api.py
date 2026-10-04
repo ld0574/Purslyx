@@ -36,7 +36,7 @@ from .db import get_db
 from .email_delivery import deliver_account_action_email
 from .errors import DomainError, NotFoundError
 from .interview_rubric import RUBRIC_VERSION, enrich_summary
-from .matching import merge_preference_contents
+from .matching import SCORING_RULE_VERSION, merge_preference_contents
 from .model_provider import get_model_provider, merge_model_results
 from .models import (
     Account,
@@ -3355,6 +3355,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         ).all()
     )
     analysis = analyses[0] if analyses else None
+    analysis_resume = db.get(DocumentVersion, analysis.resume_version_id) if analysis else None
     analysis_task = db.get(Task, analysis.task_id) if analysis and analysis.task_id else None
     match_score = (
         analysis.ability_score
@@ -3392,6 +3393,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
             {
                 "id": analysis.public_id,
                 "status": analysis.status,
+                "resume_version_id": analysis_resume.public_id if analysis_resume else None,
                 "ability_score": analysis.ability_score,
                 "preference_version_id": preference_version.public_id if preference_version else None,
                 "preference_version_ids": _analysis_preference_version_ids(db, analysis) if analysis else [],
@@ -3456,6 +3458,7 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
     preference_version = db.get(PreferenceVersion, item.preference_version_id) if item.preference_version_id else None
     preference = db.get(Preference, item.preference_id) if item.preference_id else None
     task = db.get(Task, item.task_id) if item.task_id else None
+    pool = db.get(JobPoolItem, item.job_pool_item_id) if item.job_pool_item_id else None
     task_data = task.input_data if task and isinstance(task.input_data, dict) else {}
     preference_version_ids = _analysis_preference_version_ids(db, item)
     preference_input_versions = [
@@ -3530,6 +3533,7 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
     data = {
         "id": item.public_id,
         "context_type": item.context_type,
+        "job_pool_item_id": pool.public_id if pool and pool.deleted_at is None else None,
         "status": item.status,
         "task": task_view(task) if task else None,
         "input_versions": [
@@ -3729,7 +3733,7 @@ def _start_analysis(
         analysis.ability_score = report.get("ability_score")
         analysis.evidence_coverage = report.get("evidence_coverage")
         analysis.result = report
-        analysis.scoring_rule_version = report.get("scoring_rule_version", "ability-v0.3")
+        analysis.scoring_rule_version = report.get("scoring_rule_version", SCORING_RULE_VERSION)
         analysis.result_schema_version = report.get("result_schema_version", "analysis-result-v1")
         analysis.prompt_version = report.get("prompt_version", "analysis-local-v1")
         analysis.completed_at = now_utc()
@@ -4204,6 +4208,7 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
     summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id).order_by(InterviewSummary.created_at.desc()))
     answer_map = {row.question_id: row for row in answers}
     feedback_map = {row.question_id: row for row in feedback}
+    followup_map = {row.parent_question_id: row.question_text for row in questions if row.parent_question_id}
     related_task = db.scalar(
         select(Task)
         .join(TaskInputRef, TaskInputRef.task_id == Task.id)
@@ -4242,7 +4247,7 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
                 "basis": row.basis,
                 "status": row.status,
                 "answer": {"id": answer_map[row.id].public_id, "answer_text": answer_map[row.id].answer_text} if row.id in answer_map else None,
-                "feedback": {"id": feedback_map[row.id].public_id, "status": feedback_map[row.id].status, "content": feedback_map[row.id].content, "needs_followup": feedback_map[row.id].needs_followup} if row.id in feedback_map else None,
+                "feedback": {"id": feedback_map[row.id].public_id, "status": feedback_map[row.id].status, "content": feedback_map[row.id].content, "needs_followup": feedback_map[row.id].needs_followup, "followup_question": followup_map.get(row.id)} if row.id in feedback_map else None,
             }
             for row in questions
         ],
@@ -4260,6 +4265,8 @@ def start_interview(payload: InterviewStartRequest, request: Request, account: W
     pool = _pool(db, account.id, payload.job_pool_item_id)
     analysis = _analysis(db, account.id, payload.analysis_id)
     resume_version = _version(db, account.id, payload.resume_document_version_id)
+    if analysis.status not in {"available", "succeeded"} or not isinstance(analysis.result, dict) or not analysis.result.get("dimensions"):
+        raise DomainError("INTERVIEW_SOURCE_UNAVAILABLE", "请等待岗位分析成功后再开始面试练习", 409, "wait")
     if analysis.job_pool_item_id != pool.id or analysis.resume_version_id != resume_version.id:
         raise DomainError("INTERVIEW_SOURCE_UNAVAILABLE", "面试输入不是该岗位报告的冻结版本", 409)
     task, reservation, existed = create_task(db, account, "interview_opening", {"job_pool_item_id": pool.public_id, "analysis_id": analysis.public_id, "resume_version_id": resume_version.public_id}, feature="interview", idempotency_key=key, input_refs=[("analysis", analysis.public_id, None, payload_hash(analysis.result)), ("resume_version", resume_version.public_id, resume_version.version_no, payload_hash(resume_version.content))])
@@ -4357,7 +4364,10 @@ def _save_interview_summary(db: Session, item: Interview, completion_type: str, 
             .join(InterviewQuestion, InterviewQuestion.id == InterviewFeedback.question_id)
             .where(
                 InterviewFeedback.interview_id == item.id,
+                InterviewFeedback.account_id == item.account_id,
                 InterviewFeedback.status == "available",
+                InterviewQuestion.interview_id == item.id,
+                InterviewQuestion.account_id == item.account_id,
                 InterviewQuestion.question_type == "main",
             )
             .order_by(InterviewQuestion.main_no)
@@ -4402,7 +4412,7 @@ def _interview_feedback_with_full_summary(
 
     provider = get_model_provider()
     feedback_result = provider.feedback(
-        {"question_text": question.question_text, "question_type": question.question_type},
+        _interview_question_context(db, item, question),
         answer_text,
     )
     if feedback_result.value.get("needs_followup"):
@@ -4425,6 +4435,32 @@ def _interview_feedback_with_full_summary(
         summary_result,
         value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "STAR"},
     )
+
+
+def _interview_question_context(db: Session, item: Interview, question: InterviewQuestion) -> dict[str, Any]:
+    """切题评价使用冻结报告，追问带上原题语境，证据仍只能引用本轮回答。"""
+
+    analysis = db.get(Analysis, item.analysis_id)
+    report = analysis.result if analysis and isinstance(analysis.result, dict) else {}
+    parent = db.get(InterviewQuestion, question.parent_question_id) if question.parent_question_id else None
+    basis = (parent.basis if parent else question.basis) or {}
+    requirement_ids = set(basis.get("requirement_ids") or [])
+    if basis.get("requirement_id"):
+        requirement_ids.add(basis["requirement_id"])
+    requirements = [
+        {"requirement_id": row.get("requirement_id"), "text": row.get("job_quote"), "dimension_key": dimension.get("key")}
+        for dimension in report.get("dimensions", [])
+        for row in dimension.get("requirements", [])
+        if not requirement_ids or row.get("requirement_id") in requirement_ids
+    ][:12]
+    return {
+        "question_text": question.question_text,
+        "question_type": question.question_type,
+        "basis": question.basis or {},
+        "job_category": report.get("job_category"),
+        "role_requirements": requirements,
+        "parent_question_text": parent.question_text if parent else None,
+    }
 
 
 @router.post("/interviews/{interview_id}/answers", tags=["interviews"])

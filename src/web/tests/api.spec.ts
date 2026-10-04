@@ -86,4 +86,19 @@ describe("API 客户端", () => {
     await expect(waitForTask({ id: "task-2", status: "failed", failure: { message: "模型暂时不可用" } }))
       .rejects.toMatchObject({ message: "模型暂时不可用", task: { id: "task-2", status: "failed" } });
   });
+
+  it("异步任务失败使用发起任务时的请求 ID", async () => {
+    await expect(waitForTask({ id: "task-3", status: "failed", request_id: "original-request", failure: { message: "评价生成失败" } }))
+      .rejects.toMatchObject({ message: "评价生成失败（请求 ID：original-request）" });
+  });
+
+  it("非 JSON 错误响应保留请求 ID", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("upstream unavailable", { status: 502, headers: { "X-Request-ID": "proxy-request" } }));
+    await expect(api("/api/v1/analyses/report-1")).rejects.toMatchObject({ code: "INVALID_RESPONSE", requestId: "proxy-request" });
+  });
+
+  it("HTTP 成功但正文无效时也会明确报错", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("not JSON", { status: 200, headers: { "X-Request-ID": "invalid-body-request" } }));
+    await expect(api("/api/v1/interviews/i1")).rejects.toMatchObject({ code: "INVALID_RESPONSE", requestId: "invalid-body-request" });
+  });
 });

@@ -43,10 +43,11 @@
 | 字段 | 规则 |
 | --- | --- |
 | `task_type` | `document_parse`、`analysis`、`rewrite`、`interview_opening`、`interview_turn`、`interview_summary`、`pdf_export`、`content_cleanup`、`log_export`、`integrity_scan`、`daily_rollup` |
+| `request_id` | 发起任务的原始 HTTP 请求 ID；旧任务可能为 `null`，重试与幂等重放保留原 ID |
 | `status` | `queued`、`running`、`retry_wait`、`needs_input`、`succeeded`、`failed`、`cancelled` |
 | `progress` | 只表示已持久化步骤；无法可靠计算时为 `null`，不使用虚假进度 |
 | `result` | 成功时包含 `resource_type`、`resource_id` 和 API `path`；不含业务正文 |
-| `failure` | 包含稳定 `code`、可展示 `message`、`retryable` 和 `action` |
+| `failure` | 包含稳定 `code`、可展示 `message`、`retryable` 和可选 `request_id`；不含供应商原始异常正文 |
 | `required_actions` | `needs_input` 时列出补充资料、选择期望等受控动作和产品路径 |
 | `poll_after_ms` | 建议轮询间隔；等待时间较长时服务端可逐步增大 |
 

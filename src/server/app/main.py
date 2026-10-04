@@ -24,6 +24,7 @@ from .config import settings
 from .db import engine, init_db
 from .errors import DomainError
 from .logging_config import configure_logging
+from .request_context import request_context
 
 configure_logging("api")
 
@@ -124,21 +125,18 @@ async def request_logging_middleware(request: Request, call_next: Any) -> Respon
     started = time.perf_counter()
     request_logger = logging.getLogger("purslyx.request")
     try:
-        response = await call_next(request)
+        with request_context(request_id):
+            response = await call_next(request)
     except Exception as exc:
-        if request.url.path.startswith("/api/v1/documents"):
-            # 解析器或供应商异常可能在 traceback 中包含上传正文，不能写入持久日志。
-            request_logger.error(
-                "request failed request_id=%s method=%s path=%s duration_ms=%.1f error_type=%s cause_type=%s",
-                request_id, request.method, request.url.path, (time.perf_counter() - started) * 1000,
-                type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
-            )
-        else:
-            request_logger.exception(
-                "request failed request_id=%s method=%s path=%s duration_ms=%.1f",
-                request_id, request.method, request.url.path, (time.perf_counter() - started) * 1000,
-            )
-        raise
+        # 供应商和数据库异常的 traceback 可能包含简历、JD 或回答。
+        request_logger.error(
+            "request failed request_id=%s method=%s path=%s duration_ms=%.1f error_type=%s cause_type=%s",
+            request_id, request.method, request.url.path, (time.perf_counter() - started) * 1000,
+            type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
+        )
+        error = DomainError("INTERNAL_ERROR", "服务处理失败，请稍后重试", 500, "retry")
+        error.__cause__ = exc
+        response = _error(request, error)
     duration_ms = (time.perf_counter() - started) * 1000
     response.headers.setdefault("X-Request-ID", request_id)
     request_logger.log(

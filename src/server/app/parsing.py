@@ -237,6 +237,7 @@ def parse_job_text(text: str) -> dict[str, Any]:
     requirements: list[str] = []
     responsibilities: list[str] = []
     work_mode = None
+    current_section: str | None = None
     for line in lines[1:]:
         if re.search(r"公司|企业", line) and company is None:
             company = re.sub(r"^(公司|企业)\s*[:：]?\s*", "", line)
@@ -255,12 +256,26 @@ def parse_job_text(text: str) -> dict[str, Any]:
                 work_mode = "hybrid"
             elif re.search(r"现场|坐班|到岗|onsite", line, re.IGNORECASE):
                 work_mode = "onsite"
-        if re.match(r"^(要求|任职要求|资格|技能)\s*[:：]?", line):
+        if re.match(r"^(薪资|薪酬|月薪|地点|工作地点|工作地|城市|办公方式|公司简介|公司介绍|公司|企业|福利|待遇|联系方式|投递方式|benefits|about us|location|compensation)\s*(?:[:：]|$)", line, re.IGNORECASE):
+            current_section = None
             continue
-        if re.match(r"^(职责|工作内容|岗位职责)\s*[:：]?", line):
-            continue
-        if re.match(r"^[一二三四五六七八九十0-9][、.)）]", line) or line.startswith(("-", "•")):
+        heading = re.match(
+            r"^(任职要求|任职资格|岗位要求|职位要求|要求|资格|技能|岗位职责|工作职责|职责|工作内容|requirements|qualifications|responsibilities)\s*(?:[:：]\s*(.*)|$)",
+            line, re.IGNORECASE,
+        )
+        if heading:
+            current_section = "responsibilities" if heading.group(1).lower() in {"岗位职责", "工作职责", "职责", "工作内容", "responsibilities"} else "requirements"
+            line = (heading.group(2) or "").strip()
+            if not line:
+                continue
+        if current_section == "requirements":
             requirements.append(line.lstrip("-• "))
+        elif current_section == "responsibilities":
+            responsibilities.append(line.lstrip("-• "))
+        elif re.match(r"^[一二三四五六七八九十0-9][、.)）]", line) or line.startswith(("-", "•")):
+            requirements.append(line.lstrip("-• "))
+        elif any(keyword in line for keyword in ("熟悉", "掌握", "具备", "要求", "了解")):
+            requirements.append(line)
         elif any(keyword in line for keyword in ("负责", "参与", "推动", "设计", "开发", "运营")):
             responsibilities.append(line)
     category = infer_job_category(" ".join(lines))

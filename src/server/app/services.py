@@ -10,6 +10,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Callable
@@ -26,6 +27,8 @@ from .budget import (
 )
 from .config import settings
 from .errors import DomainError
+from .interview_rubric import RUBRIC_VERSION
+from .matching import SCORING_RULE_VERSION
 from .model_provider import ModelResult
 from .models import (
     Account,
@@ -39,6 +42,7 @@ from .models import (
     UsageLedger,
     UsageReservation,
 )
+from .request_context import current_request_id, request_context, task_request_id
 
 FEATURES_BY_ROLE = {
     "seeker": {"analysis", "rewrite", "interview"},
@@ -493,6 +497,8 @@ def create_task(
     stored_input = dict(input_data)
     # 任务详情只需要版本引用，不把正文复制进任务日志；这是断线恢复和审计的最小快照。
     stored_input.setdefault("input_versions", frozen_refs)
+    if current_request_id():
+        stored_input["_request_id"] = current_request_id()
     task = Task(
         account_id=account.id,
         task_type=task_type,
@@ -871,6 +877,8 @@ def fail_task(
         "message": getattr(error, "message", "任务执行失败"),
         "retryable": True,
     }
+    if request_id := task_request_id(task.input_data):
+        task.failure["request_id"] = request_id
     task.completed_at = utcnow()
     if attempt is not None:
         attempt.status = "failed"
@@ -1036,6 +1044,7 @@ def task_view(task: Task) -> dict[str, Any]:
     retryable = bool((task.failure or {}).get("retryable")) and task.status in {"failed", "retry_wait", "needs_input"}
     return {
         "id": task.public_id,
+        "request_id": task_request_id(task.input_data),
         "task_type": task.task_type,
         "status": task.status,
         "current_step": task.current_step,
@@ -1091,6 +1100,15 @@ def run_local_task(
     provider_name = settings.model_provider.lower() or "local"
     model_name = settings.model_name
     billed_feature = cost_feature or feature
+    stage = "prepare"
+    task_data = task.input_data if isinstance(task.input_data, dict) else {}
+    # 在事务可能失效前缓存日志元信息，异常分支不能再次触发 ORM 查询。
+    log_fields = (
+        task_request_id(task_data) or current_request_id() or "unknown",
+        task.account_id, task.public_id, task.task_type,
+        task_data.get("interview_id") or (task_result or {}).get("resource_id") or "unknown",
+        RUBRIC_VERSION if task.task_type.startswith("interview_") else SCORING_RULE_VERSION if task.task_type == "analysis" else "unknown",
+    )
     try:
         attempt = attempt or mark_task_running(db, task, lease_owner=lease_owner)
         if billed_feature:
@@ -1105,14 +1123,18 @@ def run_local_task(
                 call_key=f"{task.public_id}:{attempt.execution_generation}:{billed_feature}",
             )
         db.commit()
-        raw_value = work()
+        stage = "model"
+        with request_context(task_request_id(task.input_data) or current_request_id()):
+            raw_value = work()
         model_result = raw_value if isinstance(raw_value, ModelResult) else None
         value = model_result.value if model_result is not None else raw_value
         # commit 后刷新对象，避免旧事务状态覆盖其他 Worker 的字段。
         db.refresh(task)
+        stage = "save_result"
         if on_success is not None:
             on_success(value)
         finish_task(db, task, reservation, task_result if task_result else value, attempt=attempt)
+        stage = "settlement"
         if billed_feature:
             provider_name = model_result.provider if model_result is not None else provider_name
             model_name = model_result.model if model_result is not None else model_name
@@ -1143,6 +1165,12 @@ def run_local_task(
         mark_outbox_published(db, task.id)
         db.commit()
     except Exception as exc:
+        logging.getLogger("purslyx.task").error(
+            "task execution failed request_id=%s account_id=%s task_id=%s task_type=%s resource_id=%s rule_version=%s stage=%s error_code=%s error_type=%s cause_type=%s",
+            *log_fields,
+            stage, getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
+            type(exc.__cause__).__name__ if exc.__cause__ else "none",
+        )
         db.rollback()
         if budget_reservation is not None:
             try:

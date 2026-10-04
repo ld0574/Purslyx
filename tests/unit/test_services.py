@@ -21,6 +21,7 @@ from server.app.models import (
     UsageLedger,
     UsageReservation,
 )
+from server.app.request_context import current_request_id, request_context
 from server.app.services import (
     available_count,
     check_feature_allowed,
@@ -404,3 +405,49 @@ def test_task_view_only_exposes_safe_result_references() -> None:
         "resource_id": "analysis-1",
         "path": "/api/v1/analyses/analysis-1",
     }
+
+
+def test_task_keeps_original_request_id_without_changing_idempotency() -> None:
+    with request_context("original-request"):
+        task, _, existed = create_task(_Session([7, None]), _account(), "analysis", {"resume_version_id": "r1"}, idempotency_key="trace-task")
+    assert existed is False
+    assert current_request_id() is None
+    assert task.input_data["_request_id"] == "original-request"
+    with request_context("second-request"):
+        replayed, _, existed = create_task(_Session([7, task]), _account(), "analysis", {"resume_version_id": "r1"}, idempotency_key="trace-task")
+    assert existed is True
+    assert replayed is task
+    assert task.input_data["_request_id"] == "original-request"
+    task.public_id = "task-trace"
+    task.created_at = task.updated_at = datetime.now(timezone.utc)
+    assert task_view(task)["request_id"] == "original-request"
+
+
+def test_task_failure_logs_request_stage_without_private_exception_body(monkeypatch, caplog) -> None:
+    task = Task(id=20, public_id="task-log", account_id=7, task_type="interview_feedback", input_data={"_request_id": "original-request", "interview_id": "i1"})
+    attempt = TaskAttempt(id=21, execution_generation=1)
+    db = SimpleNamespace(commit=lambda: None, rollback=lambda: None, refresh=lambda _: None)
+    monkeypatch.setattr(services, "mark_task_running", lambda *_args, **_kwargs: attempt)
+    monkeypatch.setattr(services, "fail_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(services, "mark_outbox_published", lambda *_: None)
+    monkeypatch.setattr(services, "settings", SimpleNamespace(execution_mode="inline", model_provider="local", model_name="test"))
+
+    def work():
+        assert current_request_id() == "original-request"
+        raise ValueError("PRIVATE_ANSWER_BODY")
+
+    with pytest.raises(ValueError), caplog.at_level("ERROR"):
+        run_local_task(db, task, None, work)
+    assert "request_id=original-request account_id=7 task_id=task-log" in caplog.text
+    assert "resource_id=i1 rule_version=interview-rubric-v1 stage=model" in caplog.text
+    assert "error_type=ValueError" in caplog.text
+    assert "PRIVATE_ANSWER_BODY" not in caplog.text
+    assert current_request_id() is None
+
+
+def test_failure_response_retains_valid_original_request_id() -> None:
+    task = Task(id=20, account_id=7, input_data={"_request_id": "original-request"})
+    db = SimpleNamespace(get=lambda *_: task, flush=lambda: None)
+    services.fail_task(db, 20, None, DomainError("MODEL_OUTPUT_INVALID", "模型输出无效", 503))
+    assert task.failure["request_id"] == "original-request"
+    assert task.failure["message"] == "模型输出无效"

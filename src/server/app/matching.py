@@ -6,9 +6,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
+
+from .request_context import current_request_id
+
+SCORING_RULE_VERSION = "ability-v0.4"
 
 DIMENSION_CONFIG = {
     "engineering": [
@@ -39,7 +44,7 @@ DIMENSION_CONFIG = {
 
 
 def _tokens(text: str) -> set[str]:
-    words = set(re.findall(r"[A-Za-z][A-Za-z0-9+#.-]*|[\u4e00-\u9fff]{2,6}", text.lower()))
+    words = {word.rstrip(".-") for word in re.findall(r"[A-Za-z][A-Za-z0-9+#.-]*|[\u4e00-\u9fff]{2,6}", text.lower())}
     # 中文短语再拆成二字词，保证“性能优化”能和“性能”有可解释的交集。
     for phrase in list(words):
         if re.fullmatch(r"[\u4e00-\u9fff]+", phrase):
@@ -48,25 +53,72 @@ def _tokens(text: str) -> set[str]:
 
 
 def _resume_segments(resume_content: dict[str, Any]) -> list[dict[str, Any]]:
+    sections = resume_content.get("sections")
     return [
         segment
-        for section in resume_content.get("sections", [])
-        for segment in section.get("segments", [])
-        if isinstance(segment, dict) and segment.get("text")
+        for section in (sections if isinstance(sections, list) else [])
+        if isinstance(section, dict) and isinstance(section.get("segments"), list)
+        for segment in section["segments"]
+        if isinstance(segment, dict) and isinstance(segment.get("text"), str)
+        and segment["text"].strip() and segment.get("segment_key")
     ]
 
 
 def _requirements(job_fields: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = job_fields.get("requirements") or job_fields.get("responsibilities") or []
-    result = []
-    if isinstance(raw, str):
-        raw = re.split(r"[\n；;。]", raw)
-    for index, item in enumerate(raw, start=1):
-        if isinstance(item, str) and item.strip():
-            result.append({"requirement_id": f"req-{index}", "text": item.strip()})
-        elif isinstance(item, dict) and item.get("text"):
-            result.append({"requirement_id": item.get("requirement_id", f"req-{index}"), **item})
+    result: list[dict[str, Any]] = []
+    used_text: set[str] = set()
+    used_ids: set[str] = set()
+    for field, source_type in (("requirements", "requirement"), ("responsibilities", "responsibility")):
+        raw = job_fields.get(field) or []
+        if isinstance(raw, str):
+            raw = re.split(r"[\n；;。]", raw)
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            row = item if isinstance(item, dict) else {"text": item}
+            text = row.get("text")
+            if not isinstance(text, str) or not text.strip():
+                continue
+            text = text.strip()
+            text_key = re.sub(r"\s+", "", text).casefold()
+            if text_key in used_text:
+                continue
+            requirement_id = str(row.get("requirement_id") or f"req-{len(result) + 1}")
+            if requirement_id in used_ids:
+                requirement_id = f"req-{len(result) + 1}"
+                while requirement_id in used_ids:
+                    requirement_id += "-next"
+            used_text.add(text_key)
+            used_ids.add(requirement_id)
+            result.append({**row, "requirement_id": requirement_id, "text": text, "source_type": source_type})
     return result
+
+
+_GENERIC_EVIDENCE_TERMS = frozenset({
+    "负责", "参与", "项目", "工作", "经验", "能力", "要求", "相关", "熟悉", "掌握", "了解",
+    "具备", "具有", "能够", "可以", "完成", "使用", "进行", "以及", "包括", "良好", "优先",
+    "开发", "设计", "推动", "团队", "协作", "years", "experience", "with", "and", "the", "for",
+})
+
+
+def _evidence_tokens(text: str) -> set[str]:
+    value = text
+    for term in sorted(_GENERIC_EVIDENCE_TERMS, key=len, reverse=True):
+        if re.fullmatch(r"[\u4e00-\u9fff]+", term):
+            value = value.replace(term, " ")
+    return _tokens(value) - _GENERIC_EVIDENCE_TERMS
+
+
+def _evidence_hits(req_tokens: set[str], text: str) -> set[str]:
+    hits = req_tokens & _evidence_tokens(text)
+    # 明确的否定表达不是能力依据；没有提及某项能力仍然只是未知。
+    for token in list(hits):
+        negative = rf"(?:没有|从未|尚未|未曾|不会|不熟悉|不了解|不具备|缺乏|未使用|未接触|无经验)[^，,。；;\n]{{0,12}}{re.escape(token)}"
+        english_negative = rf"\b(?:no experience|not familiar|never used|no knowledge)[^,.;\n]{{0,24}}\b{re.escape(token)}\b"
+        clauses = [part for part in re.split(r"[，,。；;\n]", text) if token in _evidence_tokens(part)]
+        if clauses and all(re.search(negative, part, re.IGNORECASE) or re.search(english_negative, part, re.IGNORECASE) for part in clauses):
+            hits.discard(token)
+    return hits
 
 
 def _dimension_for(text: str, category: str) -> str:
@@ -83,7 +135,14 @@ def _dimension_for(text: str, category: str) -> str:
         "problem_solving": ("问题", "解决", "协作", "沟通"),
         "core": ("能力", "经验", "专业"),
     }
-    for dimension, words in keywords.items():
+    order = {
+        "engineering": ("quality", "technical", "delivery", "business"),
+        "product": ("data", "discovery", "delivery", "business"),
+        "operations": ("data", "strategy", "growth", "business"),
+        "general": ("problem_solving", "business", "delivery", "core"),
+    }
+    for dimension in order.get(category, order["general"]):
+        words = keywords[dimension]
         if any(word in value for word in words):
             if dimension in {key for key, _, _ in DIMENSION_CONFIG.get(category, DIMENSION_CONFIG["general"])}:
                 return dimension
@@ -91,11 +150,11 @@ def _dimension_for(text: str, category: str) -> str:
 
 
 def _classify(requirement: str, segments: list[dict[str, Any]], explicit_gaps: set[str]) -> tuple[str, list[dict[str, Any]]]:
-    req_tokens = _tokens(requirement)
+    req_tokens = _evidence_tokens(requirement)
     evidence: list[dict[str, Any]] = []
     for segment in segments:
         segment_text = str(segment.get("text", ""))
-        hits = sorted(req_tokens & _tokens(segment_text))
+        hits = sorted(_evidence_hits(req_tokens, segment_text))
         if hits:
             evidence.append(
                 {
@@ -109,8 +168,10 @@ def _classify(requirement: str, segments: list[dict[str, Any]], explicit_gaps: s
         return "gap", evidence
     if not evidence:
         return "needs_confirmation", []
-    hit_count = sum(len(item["matched_terms"]) for item in evidence)
-    status = "supported" if hit_count >= max(2, len(req_tokens) // 2) else "partially_supported"
+    evidence = evidence[:3]
+    matched = set().union(*(set(item["matched_terms"]) for item in evidence))
+    # 重复段落不会提升覆盖程度；只有全部有效词项都有依据才标记支持。
+    status = "supported" if req_tokens and matched == req_tokens else "partially_supported"
     return status, evidence[:3]
 
 
@@ -132,19 +193,25 @@ def _model_classification(
     status = str(finding.get("status", "needs_confirmation"))
     if status not in allowed_statuses:
         status = "needs_confirmation"
-    segment_by_key = {str(item.get("segment_key")): item for item in segments}
+    if requirement in explicit_gaps:
+        status = "gap"
+    segment_by_key = {str(item["segment_key"]): item for item in segments if item.get("segment_key")}
     evidence: list[dict[str, Any]] = []
     raw_keys = finding.get("evidence_segment_keys") or []
     if isinstance(raw_keys, list):
-        for key in raw_keys:
+        for key in dict.fromkeys(str(value) for value in raw_keys):
             segment = segment_by_key.get(str(key))
             if segment is None:
+                continue
+            text = str(segment.get("text", ""))
+            req_tokens = _evidence_tokens(requirement)
+            if req_tokens & _evidence_tokens(text) and not _evidence_hits(req_tokens, text):
                 continue
             evidence.append(
                 {
                     "segment_key": segment.get("segment_key"),
                     "quote": str(segment.get("text", "")),
-                    "matched_terms": sorted(_tokens(requirement) & _tokens(str(segment.get("text", ""))))[:8],
+                    "matched_terms": sorted(_evidence_hits(req_tokens, text))[:8],
                     "source_type": segment.get("source", "user_confirmed"),
                 }
             )
@@ -161,7 +228,12 @@ def _model_classification(
             status = "partially_supported"
             evidence = fallback_evidence
             fallback_explanation = "模型未提交可用引用；服务端在确认资料中找到部分可核对依据，仍需补充完整经历。"
-    explanation = str(finding.get("explanation") or "").strip() or fallback_explanation
+    # 校验改变结论后，不继续展示模型原先的肯定描述。
+    explanation = fallback_explanation or (
+        str(finding.get("explanation") or "").strip()
+        if status == finding.get("status")
+        else ""
+    )
     if not explanation:
         explanation = {
             "supported": "模型识别到已有确认经历提供了对应依据。",
@@ -173,10 +245,11 @@ def _model_classification(
 
 
 def _number(value: Any) -> Decimal | None:
-    if value in (None, ""):
+    if value in (None, "") or isinstance(value, bool):
         return None
     try:
-        return Decimal(str(value))
+        number = Decimal(str(value))
+        return number if number.is_finite() else None
     except InvalidOperation:
         return None
 
@@ -242,7 +315,12 @@ def compare_salary(preference: dict[str, Any] | None, job_salary: dict[str, Any]
     fields = ("currency", "period", "tax_basis", "salary_months")
     if any(not preference.get(field) or not job_salary.get(field) for field in fields):
         return {"status": "unknown", "explanation": "币种、周期或税前税后口径缺失，暂不可比较。"}
-    if any(preference.get(field) != job_salary.get(field) for field in fields):
+    tax_aliases = {"gross": "pre_tax", "net": "after_tax"}
+    if any(
+        (tax_aliases.get(str(preference.get(field)), preference.get(field)) if field == "tax_basis" else preference.get(field))
+        != (tax_aliases.get(str(job_salary.get(field)), job_salary.get(field)) if field == "tax_basis" else job_salary.get(field))
+        for field in fields
+    ):
         return {"status": "unknown", "explanation": "双方薪资口径不同，未擅自换算。"}
     expected_min = _number(preference.get("min"))
     expected_max = _number(preference.get("max"))
@@ -325,9 +403,9 @@ def compare_conditions(preference: dict[str, Any] | None, job_fields: dict[str, 
     def profile_rank(rows: list[dict[str, Any]]) -> tuple[int, int, int, int]:
         statuses = [str(row.get("status")) for row in rows]
         return (
+            -sum(bool(row.get("required_conflict")) for row in rows),
             sum(status_weight.get(status, 0) for status in statuses),
             statuses.count("matched"),
-            -sum(bool(row.get("required_conflict")) for row in rows),
             -statuses.count("unknown"),
         )
 
@@ -350,7 +428,7 @@ def _job_title_matches(expected: str, actual: str, job_fields: dict[str, Any]) -
     actual_value = actual.strip().lower()
     if not expected_value or not actual_value:
         return False
-    if expected_value in actual_value or actual_value in expected_value:
+    if re.search(rf"(?<![a-z0-9]){re.escape(expected_value)}(?![a-z0-9])", actual_value) or re.search(rf"(?<![a-z0-9]){re.escape(actual_value)}(?![a-z0-9])", expected_value):
         return True
     aliases = {
         "前端": {"前端开发", "web前端", "前端工程师", "frontend", "frontend engineer"},
@@ -363,8 +441,13 @@ def _job_title_matches(expected: str, actual: str, job_fields: dict[str, Any]) -
         actual_in_family = family in actual_value or any(name in actual_value for name in names)
         if expected_in_family and actual_in_family:
             return True
-    expected_tokens = _tokens(expected_value)
-    actual_tokens = _tokens(actual_value)
+    def title_tokens(value: str) -> set[str]:
+        for generic in ("工程师", "负责人", "经理", "专员", "高级", "资深", "初级", "岗位", "职位"):
+            value = value.replace(generic, " ")
+        return _evidence_tokens(value)
+
+    expected_tokens = title_tokens(expected_value)
+    actual_tokens = title_tokens(actual_value)
     if expected_tokens and actual_tokens and expected_tokens & actual_tokens:
         return True
     responsibilities = job_fields.get("responsibilities") or []
@@ -479,11 +562,14 @@ def build_match_result(
 ) -> dict[str, Any]:
     """生成可持久化、可复核的匹配报告。"""
 
-    job_fields = job_content.get("job_fields") or {}
-    category = job_fields.get("category") or "general"
+    raw_fields = job_content.get("job_fields")
+    job_fields = raw_fields if isinstance(raw_fields, dict) else {}
+    raw_category = job_fields.get("category")
+    category = raw_category if isinstance(raw_category, str) and raw_category in DIMENSION_CONFIG else "general"
     dimensions = DIMENSION_CONFIG.get(category, DIMENSION_CONFIG["general"])
     segments = _resume_segments(resume_content)
-    explicit_gaps = set(resume_content.get("explicit_gaps", []))
+    raw_gaps = resume_content.get("explicit_gaps")
+    explicit_gaps = {value for value in (raw_gaps if isinstance(raw_gaps, list) else []) if isinstance(value, str)}
     requirements = _requirements(job_fields)
     model_requirements = {
         str(item.get("requirement_id")): item
@@ -491,12 +577,14 @@ def build_match_result(
         if isinstance(item, dict) and item.get("requirement_id")
     }
     dimension_rows: dict[str, list[dict[str, Any]]] = {key: [] for key, _, _ in dimensions}
+    downgraded_count = 0
     for requirement in requirements:
         model_finding = model_requirements.get(str(requirement["requirement_id"]))
         model_dimension = str(model_finding.get("dimension_key", "")) if model_finding else ""
-        dimension = model_dimension or requirement.get("dimension") or _dimension_for(requirement["text"], category)
-        if dimension not in dimension_rows:
-            dimension = dimensions[0][0]
+        dimension = next(
+            (value for value in (model_dimension, requirement.get("dimension")) if isinstance(value, str) and value in dimension_rows),
+            _dimension_for(requirement["text"], category),
+        )
         validated_model = _model_classification(requirement["text"], model_finding, segments, explicit_gaps) if model_finding else None
         if validated_model is None:
             status, evidence = _classify(requirement["text"], segments, explicit_gaps)
@@ -508,21 +596,32 @@ def build_match_result(
             }[status]
         else:
             status, evidence, explanation = validated_model
+            if status != model_finding.get("status"):
+                downgraded_count += 1
         coefficient = _match_coefficient(
             status,
-            model_finding.get("match_score") if model_finding else None,
+            model_finding.get("match_score")
+            if model_finding and status == model_finding.get("status")
+            else None,
         )
         dimension_rows[dimension].append(
             {
                 "requirement_id": requirement["requirement_id"],
                 "dimension_key": dimension,
                 "job_quote": requirement["text"],
+                "source_type": requirement["source_type"],
                 "status": status,
                 "evidence": evidence,
                 "explanation": explanation,
                 "match_coefficient": float(coefficient),
                 "match_score": float(coefficient * Decimal("100")) if status != "needs_confirmation" else None,
             }
+        )
+
+    if downgraded_count:
+        logging.getLogger(__name__).warning(
+            "matching findings normalised request_id=%s rule_version=%s stage=evidence_validation changed_count=%s",
+            current_request_id() or "unknown", SCORING_RULE_VERSION, downgraded_count,
         )
 
     total_score = Decimal("0")
@@ -593,6 +692,9 @@ def build_match_result(
         )
 
     conditions = compare_conditions(preference_content, job_fields)
+    for dimension in dimension_output:
+        if dimension["score"] is not None and applicable_weight:
+            dimension["effective_weight"] = float(Decimal(str(dimension["base_weight"])) / applicable_weight)
     verification_items = _verification_items(dimension_output, conditions)
     interview_questions = _interview_questions(dimension_output)
     hard_conflict = any(item.get("required_conflict") for item in conditions)
@@ -616,7 +718,7 @@ def build_match_result(
         "verification_items": verification_items,
         "interview_questions": interview_questions,
         "overall_advice": advice,
-        "scoring_rule_version": "ability-v0.3",
+        "scoring_rule_version": SCORING_RULE_VERSION,
         "result_schema_version": "analysis-result-v1",
         "prompt_version": prompt_version,
         "ai_insights": {

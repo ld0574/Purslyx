@@ -38,3 +38,22 @@ def test_summary_counts_only_main_questions() -> None:
     assert value["answered_main_count"] == 1
     assert value["answered_followup_count"] == 1
     assert value["unanswered_main_numbers"] == [2]
+
+
+def test_local_opening_does_not_repeat_one_question_three_times() -> None:
+    value = ModelProvider().opening_questions({"dimensions": [{"requirements": [{"job_quote": "验证接口性能"}]}]}, {}).value
+    assert len({item["question_text"] for item in value["questions"]}) == 3
+
+
+def test_summary_ignores_blank_unknown_and_duplicate_followup_answers() -> None:
+    value = ModelProvider().summary(
+        [{"id": "main-1", "question_type": "main", "main_no": 1}, {"id": "followup-1", "question_type": "followup", "main_no": 1}],
+        [{"question_id": "main-1", "answer_text": "  "},
+         {"question_id": "followup-1", "answer_text": "补充回答"},
+         {"question_id": "followup-1", "answer_text": "补充回答"},
+         {"question_id": "unknown", "answer_text": "不属于这场练习"}],
+        "early",
+    ).value
+    assert value["answered_main_count"] == 0
+    assert value["answered_followup_count"] == 1
+    assert value["unanswered_main_numbers"] == [1]

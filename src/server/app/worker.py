@@ -18,7 +18,7 @@ from .config import settings
 from .db import SessionLocal
 from .errors import DomainError, NotFoundError
 from .interview_rubric import RUBRIC_VERSION, enrich_summary
-from .matching import merge_preference_contents
+from .matching import SCORING_RULE_VERSION, merge_preference_contents
 from .model_provider import ModelResult, get_model_provider, merge_model_results
 from .models import (
     Account,
@@ -48,6 +48,7 @@ from .models import (
 )
 from .parsing import extract_file_text, sha256_bytes
 from .pdf_export import render_resume_pdf
+from .request_context import task_request_id
 from .services import (
     claim_outbox_batch,
     claim_task_execution,
@@ -205,6 +206,9 @@ class TaskWorker:
         attempt_id = 0
         task_public_id = ""
         task_type = ""
+        request_id = "unknown"
+        account_id: int | str = "unknown"
+        interview_id = "unknown"
         try:
             with SessionLocal() as db:
                 task = db.get(Task, task.id)
@@ -215,27 +219,32 @@ class TaskWorker:
                 attempt_id = attempt.id
                 task_public_id = task.public_id
                 task_type = task.task_type
+                request_id = task_request_id(task.input_data) or "unknown"
+                account_id = task.account_id
+                interview_id = str((task.input_data or {}).get("interview_id") or "unknown")
                 reservation = _reservation(db, task)
                 self._dispatch(db, task, attempt, reservation)
         except Exception as exc:
             if task_type == "document_parse":
                 # 第三方解析器／模型异常的 traceback 可能包含简历正文；只记录安全元数据。
                 LOGGER.error(
-                    "worker document parse failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s error_code=%s error_type=%s cause_type=%s",
+                    "worker document parse failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s error_code=%s error_type=%s cause_type=%s request_id=%s account_id=%s stage=dispatch",
                     event_id, task_id or "unknown", task_public_id or "unknown", attempt_id or "unknown",
                     getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
                     type(exc.__cause__).__name__ if exc.__cause__ else "none",
+                    request_id, account_id,
                 )
-            elif task_type in {"interview_feedback", "interview_summary"}:
+            elif task_type in {"interview_opening", "interview_feedback", "interview_summary"}:
                 LOGGER.error(
-                    "worker interview evaluation failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s rubric_version=%s error_code=%s error_type=%s cause_type=%s",
+                    "worker interview evaluation failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s rubric_version=%s error_code=%s error_type=%s cause_type=%s request_id=%s account_id=%s interview_id=%s stage=dispatch",
                     event_id, task_id or "unknown", task_public_id or "unknown", attempt_id or "unknown",
                     task_type, RUBRIC_VERSION, getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
                     type(exc.__cause__).__name__ if exc.__cause__ else "none",
+                    request_id, account_id, interview_id,
                 )
             else:
-                LOGGER.exception(
-                    "worker task failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s error_type=%s error_code=%s",
+                LOGGER.error(
+                    "worker task failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s error_type=%s error_code=%s request_id=%s account_id=%s stage=dispatch cause_type=%s",
                     event_id,
                     task_id or "unknown",
                     task_public_id or "unknown",
@@ -243,6 +252,7 @@ class TaskWorker:
                     task_type or "unknown",
                     type(exc).__name__,
                     getattr(exc, "code", "TASK_EXECUTION_FAILED"),
+                    request_id, account_id, type(exc.__cause__).__name__ if exc.__cause__ else "none",
                 )
             if task_id and attempt_id:
                 try:
@@ -253,15 +263,15 @@ class TaskWorker:
                             "worker could not persist document failure event_id=%s task_id=%s attempt_id=%s error_type=%s",
                             event_id, task_id, attempt_id, type(persist_exc).__name__,
                         )
-                    elif task_type in {"interview_feedback", "interview_summary"}:
+                    elif task_type in {"interview_opening", "interview_feedback", "interview_summary"}:
                         LOGGER.error(
                             "worker could not persist private-content failure event_id=%s task_id=%s attempt_id=%s task_type=%s error_type=%s",
                             event_id, task_id, attempt_id, task_type, type(persist_exc).__name__,
                         )
                     else:
-                        LOGGER.exception(
-                            "worker could not persist failure event_id=%s task_id=%s attempt_id=%s",
-                            event_id, task_id, attempt_id,
+                        LOGGER.error(
+                            "worker could not persist failure event_id=%s task_id=%s attempt_id=%s request_id=%s account_id=%s error_type=%s",
+                            event_id, task_id, attempt_id, request_id, account_id, type(persist_exc).__name__,
                         )
 
     def _record_failure(self, *, task_id: int, attempt_id: int, error: Exception) -> None:
@@ -457,7 +467,7 @@ class TaskWorker:
             analysis.ability_score = report.get("ability_score")
             analysis.evidence_coverage = report.get("evidence_coverage")
             analysis.result = report
-            analysis.scoring_rule_version = report.get("scoring_rule_version", "ability-v0.3")
+            analysis.scoring_rule_version = report.get("scoring_rule_version", SCORING_RULE_VERSION)
             analysis.result_schema_version = report.get("result_schema_version", "analysis-result-v1")
             analysis.prompt_version = report.get("prompt_version", "analysis-local-v1")
             analysis.completed_at = utcnow()
@@ -641,7 +651,12 @@ class TaskWorker:
             raise DomainError("INTERVIEW_SOURCE_INVALID", "面试占位不存在", 409)
         analysis = db.get(Analysis, interview.analysis_id)
         resume_version = db.get(DocumentVersion, interview.resume_version_id)
-        if analysis is None or resume_version is None or analysis.deleted_at is not None:
+        if (
+            analysis is None or resume_version is None
+            or analysis.deleted_at is not None or resume_version.deleted_at is not None
+            or analysis.account_id != task.account_id or resume_version.account_id != task.account_id
+            or analysis.status not in {"available", "succeeded"} or not analysis.result
+        ):
             raise DomainError("INTERVIEW_SOURCE_INVALID", "面试输入已不可用", 409)
 
         def work() -> ModelResult:
@@ -697,8 +712,10 @@ class TaskWorker:
             raise DomainError("INTERVIEW_ANSWER_NOT_FOUND", "面试回答不存在", 409)
 
         def work() -> ModelResult:
+            from .api import _interview_question_context
+
             provider = get_model_provider()
-            feedback_result = provider.feedback({"question_text": question.question_text, "question_type": question.question_type}, answer.answer_text)
+            feedback_result = provider.feedback(_interview_question_context(db, interview, question), answer.answer_text)
             if feedback_result.value.get("needs_followup"):
                 return feedback_result
             pending_main = db.scalar(
@@ -791,7 +808,10 @@ class TaskWorker:
                 .join(InterviewQuestion, InterviewQuestion.id == InterviewFeedback.question_id)
                 .where(
                     InterviewFeedback.interview_id == interview.id,
+                    InterviewFeedback.account_id == interview.account_id,
                     InterviewFeedback.status == "available",
+                    InterviewQuestion.interview_id == interview.id,
+                    InterviewQuestion.account_id == interview.account_id,
                     InterviewQuestion.question_type == "main",
                 )
                 .order_by(InterviewQuestion.main_no)

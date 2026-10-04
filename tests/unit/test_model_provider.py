@@ -141,7 +141,10 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
         "full",
     ).value
 
-    assert report["prompt_version"] == "analysis-openai-v4"
+    assert report["prompt_version"] == "analysis-openai-v5"
+    analysis_input = json.loads(chat.calls[2]["messages"][1]["content"])
+    assert [row["text"] for row in analysis_input["requirements"]] == ["熟悉 React", "负责 React 项目交付"]
+    assert [row["requirement_id"] for row in analysis_input["requirements"]] == ["req-1", "req-2"]
     assert report["ai_insights"]["strengths"] == ["React"]
     assert report["ai_insights"]["model_score"] == 84.0
     assert rewrite["method"] == "evidence-constrained-rewrite"
@@ -213,6 +216,42 @@ def test_oversized_resume_model_input_uses_local_fallback_without_call() -> None
     assert result.provider == "local"
     assert result.value["sections"][0]["segments"][0]["text"] == "负责" * 41_000
     assert chat.calls == []
+
+
+def test_job_model_omission_retains_original_duties_and_skill_requirements(caplog) -> None:
+    provider, _ = _provider()
+    value = provider.extract_job("前端工程师\n任职要求：熟悉 React\n熟悉 TypeScript\n岗位职责\n负责性能优化\n福利：弹性办公").value
+    fields = value["job_fields"]
+    assert "熟悉 TypeScript" in fields["requirements"]
+    assert "负责性能优化" in fields["responsibilities"]
+    assert not any("福利" in item for item in fields["requirements"] + fields["responsibilities"])
+    assert "omitted_count=" in caplog.text
+
+
+def test_interview_feedback_rejects_invented_evidence_and_template_facts() -> None:
+    provider, _ = _provider()
+    provider._json = lambda *_: ModelResult({"content": {
+        "evaluation_dimensions": {"relevance": {"status": "strong", "feedback": "虚构的充分依据", "evidence_quote": "我带领 20 人团队"}},
+        "answer_template": "我带领 20 人团队完成 Kubernetes 迁移，效率提升 99%。",
+    }, "needs_followup": False, "followup_question": None}, "test", "test")  # type: ignore[method-assign]
+    result = provider.feedback({"question_type": "main", "question_text": "请说明你的行动"}, "我负责 React 组件交付").value
+    assert result["content"]["evaluation_dimensions"]["relevance"]["status"] == "missing"
+    assert result["content"]["evaluation_dimensions"]["relevance"]["evidence_quote"] is None
+    assert "99" not in result["content"]["answer_template"]
+    assert "Kubernetes" not in result["content"]["answer_template"]
+    assert "【待补充】" in result["content"]["answer_template"]
+
+
+@pytest.mark.parametrize("invalid_basis", [False, True])
+def test_interview_opening_rejects_repeated_questions_or_unverifiable_basis(invalid_basis: bool) -> None:
+    provider, _ = _provider()
+    questions = [{"question_text": "重复问题" if not invalid_basis else f"问题 {i}",
+                  "basis": {"requirement_ids": ["invented"] if invalid_basis else ["req-1"], "evidence_segment_keys": []}}
+                 for i in range(3)]
+    provider._json = lambda *_: ModelResult({"questions": questions}, "test", "test")  # type: ignore[method-assign]
+    with pytest.raises(DomainError) as error:
+        provider.opening_questions({"dimensions": [{"requirements": [{"requirement_id": "req-1"}]}]}, {})
+    assert error.value.code == "MODEL_OUTPUT_INVALID"
 
 
 def test_openai_rewrite_rejects_new_unverified_numbers() -> None:

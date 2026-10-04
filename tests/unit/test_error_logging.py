@@ -11,11 +11,40 @@ import pytest
 from fastapi.exceptions import RequestValidationError
 from pydantic import TypeAdapter
 from starlette.requests import Request
+from starlette.responses import Response
 
 from server.app import api as api_module
 from server.app.errors import DomainError
-from server.app.main import _error, validation_error_handler
+from server.app.main import _error, request_logging_middleware, validation_error_handler
 from server.app.parsing import extract_file_text
+from server.app.request_context import current_request_id
+
+
+def test_http_request_context_is_cleared_after_handling() -> None:
+    request = _request()
+    seen = []
+
+    async def next_handler(value):
+        seen.append(current_request_id())
+        assert current_request_id() == value.state.request_id
+        return Response(status_code=200)
+
+    response = asyncio.run(request_logging_middleware(request, next_handler))
+    assert response.headers["X-Request-ID"] == seen[0]
+    assert current_request_id() is None
+
+
+def test_unhandled_errors_return_traceable_json_without_private_traceback(caplog) -> None:
+    async def next_handler(_):
+        raise ValueError("PRIVATE_ANSWER_BODY")
+
+    with caplog.at_level(logging.ERROR):
+        response = asyncio.run(request_logging_middleware(_request(), next_handler))
+    assert response.status_code == 500
+    assert response.headers["X-Request-ID"]
+    assert "error_type=ValueError" in caplog.text
+    assert "PRIVATE_ANSWER_BODY" not in caplog.text
+    assert current_request_id() is None
 
 
 def _request() -> Request:

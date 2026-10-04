@@ -55,6 +55,10 @@ function readCookie(name: string): string {
   }
 }
 
+function requestId(value: unknown): string | undefined {
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,64}$/.test(value) ? value : undefined;
+}
+
 export async function api<T = JsonMap>(
   path: string,
   options: {
@@ -89,13 +93,15 @@ export async function api<T = JsonMap>(
   try {
     payload = await response.json();
   } catch {
-    if (!response.ok) throw new ApiError(response.status, "INVALID_RESPONSE", `服务返回了无法读取的响应（HTTP ${response.status}）`);
+    throw new ApiError(response.status, "INVALID_RESPONSE", `服务返回了无法读取的响应（HTTP ${response.status}）`, undefined, requestId(response.headers.get("X-Request-ID")));
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new ApiError(response.status, "INVALID_RESPONSE", "服务返回了无效的响应结构", undefined, requestId(response.headers.get("X-Request-ID")));
   }
   if (!response.ok) {
     const error = payload.error || {};
-    const rawRequestId = String(error.request_id || payload.meta?.request_id || response.headers.get("X-Request-ID") || "");
-    const requestId = /^[A-Za-z0-9._:-]{1,64}$/.test(rawRequestId) ? rawRequestId : undefined;
-    throw new ApiError(response.status, error.code || "REQUEST_FAILED", error.message || "请求失败", error.action, requestId);
+    const traceId = requestId(error.request_id) || requestId(payload.meta?.request_id) || requestId(response.headers.get("X-Request-ID"));
+    throw new ApiError(response.status, error.code || "REQUEST_FAILED", error.message || "请求失败", error.action, traceId);
   }
   return (payload.data ?? payload) as T;
 }
@@ -158,8 +164,10 @@ export async function waitForTask(initialTask: JsonMap, options: TaskWaitOptions
   const required = Array.isArray(task.required_actions)
     ? task.required_actions.map((item: JsonMap) => item.message || item.action).filter(Boolean).join("；")
     : "";
+  const traceId = requestId(failure.request_id) || requestId(task.request_id);
   throw new TaskExecutionError(
-    failure.message || required || (task.status === "cancelled" ? "任务已取消" : "任务未能完成"),
+    (failure.message || required || (task.status === "cancelled" ? "任务已取消" : "任务未能完成"))
+      + (traceId ? `（请求 ID：${traceId}）` : ""),
     task,
   );
 }

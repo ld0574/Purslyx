@@ -173,6 +173,10 @@
 
 `AnalysisDimension` 包含 `key`、`label`、`base_weight`、`effective_weight`、`score`、`evidence_status`、`summary`、`requirements`。每个要求包含 JD 引用、`supported`／`partially_supported`／`gap`／`needs_confirmation` 状态、经证据校验的 `match_score` 和简历证据。前端展示服务端计算值，不能自行重算或把未知写成差距。
 
+新报告使用 `ability-v0.4`：任职要求与岗位职责合并去重，模型使用服务端提供的完整要求清单及稳定 ID；每条要求增加 `source_type=requirement|responsibility`。词项兜底剔除泛化词、明确否定依据和重复引用；校验改变模型结论时，同时重置无依据的分数与说明。已确认的明确缺口优先于模型肯定判断。适用且有依据的维度权重归一化为 1，未知项只降低覆盖率，不伪装为能力差距。多套期望优先选择必须条件冲突最少的一套。旧报告继续按原版本读取，不回填或重算。
+
+报告摘要返回 `job_pool_item_id`；岗位的 `latest_analysis` 返回其冻结的 `resume_version_id`，供面试入口使用。未知分数与覆盖率分别显示“待补充”和“—”；`conflicted` 显示中文冲突提示。未完成报告展示任务状态与恢复原任务的入口。
+
 `ConditionResult` 包含 `condition`、期望值、JD 值、强度、`matched`／`conflicted`／`unknown`／`not_applicable` 和说明。条件冲突不改变能力分。
 
 `VerificationItem` 包含 `id`、`kind`、`status`、定位字段、`reason` 和可直接使用的 `question`；只收录能力要求的缺口／待确认项及未知／冲突条件。`InterviewQuestion` 包含 `id`、`question_type`、`priority`、`question_text` 和 `basis`，其中 `basis` 至少记录对应要求、维度、发现类型、证据段落及 `rule_version`。两组字段由服务端生成，前端只负责展示。
