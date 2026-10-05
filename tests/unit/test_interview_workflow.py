@@ -9,7 +9,7 @@ from starlette.requests import Request
 from server.app import api as api_module
 from server.app.config import settings
 from server.app.errors import DomainError
-from server.app.interview_rubric import DIMENSIONS, attach_feedback_metadata
+from server.app.interview_rubric import DIMENSIONS, RUBRIC_VERSION, attach_feedback_metadata
 from server.app.model_provider import ModelProvider, ModelResult
 from server.app.models import (
     Analysis,
@@ -73,6 +73,8 @@ class _Db:
             return next((row.id for row in self.questions if row.question_type == "main" and row.status == "awaiting_answer"), None)
         if entity is InterviewSummary:
             return None
+        if entity is InterviewAnswer:
+            return self.answers[0]
         raise AssertionError(entity)
 
     def add(self, item):
@@ -83,7 +85,7 @@ class _Db:
 
 
 def _interview() -> Interview:
-    return Interview(id=10, account_id=7, analysis_id=20, revision=4, status="processing")
+    return Interview(id=10, account_id=7, analysis_id=20, revision=4, status="processing", rubric_version=RUBRIC_VERSION)
 
 
 @pytest.mark.parametrize("writer", ["api", "worker"])
@@ -128,6 +130,25 @@ def test_followup_keeps_parent_question_and_target_requirements() -> None:
     value = api_module._interview_question_context(db, _interview(), db.questions[3])
     assert value["parent_question_text"] == db.questions[0].question_text
     assert value["role_requirements"][0]["requirement_id"] == "req-1"
+    assert value["parent_answer_text"] == "我负责接口优化"
+
+
+def test_failed_final_summary_retains_feedback_and_summary_usage(monkeypatch):
+    class Provider(ModelProvider):
+        def feedback(self, question, answer):
+            return ModelResult({"content": _feedback("strong"), "needs_followup": False}, "openai", "test", 12, 8)
+
+        def summary(self, *_):
+            error = DomainError("MODEL_OUTPUT_INVALID", "暂未完成", 503)
+            error.model_result = ModelResult({}, "openai", "test", 20, 10)
+            raise error
+
+    monkeypatch.setattr(api_module, "get_model_provider", Provider)
+    db = _Db()
+    with pytest.raises(DomainError) as error:
+        api_module._interview_feedback_with_full_summary(db, _interview(), db.questions[2], "我负责接口优化")
+    assert (error.value.model_result.input_tokens, error.value.model_result.output_tokens) == (32, 18)
+    assert not error.value.model_result.usage_incomplete
 
 
 @pytest.mark.parametrize("status", ["queued", "running", "failed"])

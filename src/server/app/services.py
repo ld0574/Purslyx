@@ -27,7 +27,7 @@ from .budget import (
 )
 from .config import settings
 from .errors import DomainError
-from .interview_rubric import RUBRIC_VERSION
+from .interview_rubric import LEGACY_RUBRIC_VERSION
 from .matching import SCORING_RULE_VERSION
 from .model_provider import ModelResult
 from .models import (
@@ -1009,6 +1009,8 @@ _TASK_RESULT_KEYS = frozenset(
         "draft_id",
         "followup_id",
         "summary",
+        "interview_id",
+        "practice_id",
     }
 )
 
@@ -1097,6 +1099,7 @@ def run_local_task(
         return
 
     budget_reservation = None
+    model_result = None
     provider_name = settings.model_provider.lower() or "local"
     model_name = settings.model_name
     billed_feature = cost_feature or feature
@@ -1107,10 +1110,14 @@ def run_local_task(
         task_request_id(task_data) or current_request_id() or "unknown",
         task.account_id, task.public_id, task.task_type,
         task_data.get("interview_id") or (task_result or {}).get("resource_id") or "unknown",
-        RUBRIC_VERSION if task.task_type.startswith("interview_") else SCORING_RULE_VERSION if task.task_type == "analysis" else "unknown",
+        task_data.get("rubric_version") or LEGACY_RUBRIC_VERSION if task.task_type.startswith("interview_") else SCORING_RULE_VERSION if task.task_type == "analysis" else "unknown",
+        task_data.get("question_id") or "unknown", task_data.get("practice_id") or "unknown",
     )
     try:
-        attempt = attempt or mark_task_running(db, task, lease_owner=lease_owner)
+        if attempt is None:
+            attempt = mark_task_running(db, task, lease_owner=lease_owner)
+            # 预算不足也必须留下可失败/重试的代次；独立 Worker 已在认领时提交。
+            db.commit()
         if billed_feature:
             budget_reservation = reserve_budget(
                 db,
@@ -1144,7 +1151,7 @@ def run_local_task(
             price = ensure_price_version(db, provider_name, model_name)
             if actual_cost is None and provider_name == "local":
                 actual_cost = Decimal("0")
-            if actual_cost is None and input_tokens is not None and output_tokens is not None:
+            if actual_cost is None and input_tokens is not None and output_tokens is not None and not (model_result and model_result.usage_incomplete):
                 actual_cost = actual_cost_from_price(
                     price,
                     input_tokens=input_tokens,
@@ -1166,19 +1173,26 @@ def run_local_task(
         db.commit()
     except Exception as exc:
         logging.getLogger("purslyx.task").error(
-            "task execution failed request_id=%s account_id=%s task_id=%s task_type=%s resource_id=%s rule_version=%s stage=%s error_code=%s error_type=%s cause_type=%s",
+            "task execution failed request_id=%s account_id=%s task_id=%s task_type=%s resource_id=%s rule_version=%s question_id=%s practice_id=%s stage=%s error_code=%s error_type=%s cause_type=%s",
             *log_fields,
             stage, getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
             type(exc.__cause__).__name__ if exc.__cause__ else "none",
         )
         db.rollback()
+        failed_result = getattr(exc, "model_result", None) or model_result
+        failure_cost = None
+        if isinstance(failed_result, ModelResult) and not failed_result.usage_incomplete and failed_result.input_tokens is not None and failed_result.output_tokens is not None:
+            try:
+                failure_cost = actual_cost_from_price(ensure_price_version(db, failed_result.provider, failed_result.model), input_tokens=failed_result.input_tokens, output_tokens=failed_result.output_tokens)
+            except Exception:
+                db.rollback()
         if budget_reservation is not None:
             try:
                 if provider_name == "local":
                     release_budget(db, budget_reservation.id)
                 else:
                     # 外部调用是否已发出无法可靠判断，预算必须转为未知持有，不能当作零成本释放。
-                    settle_budget(db, budget_reservation.id, None)
+                    settle_budget(db, budget_reservation.id, failure_cost)
             except Exception:
                 db.rollback()
         fail_task(db, task.id, reservation.id if reservation else None, exc, attempt_id=attempt.id if attempt else None)
@@ -1191,6 +1205,9 @@ def run_local_task(
                 provider_name,
                 model_name,
                 status="failed",
+                input_tokens=failed_result.input_tokens if isinstance(failed_result, ModelResult) else None,
+                output_tokens=failed_result.output_tokens if isinstance(failed_result, ModelResult) else None,
+                cost_usd=failure_cost,
                 error_code=getattr(exc, "code", "TASK_EXECUTION_FAILED"),
                 budget_reservation_id=None,
             )

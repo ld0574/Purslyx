@@ -48,6 +48,7 @@ const TASK_LABELS: Record<string, string> = {
   interview_opening: "面试开场",
   interview_feedback: "面试反馈",
   interview_summary: "面试总结",
+  interview_practice: "面试重答训练",
   log_export: "日志导出",
 };
 

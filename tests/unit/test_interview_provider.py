@@ -1,3 +1,8 @@
+from server.app.interview_rubric import (
+    FEEDBACK_SCHEMA_VERSION,
+    LEGACY_RUBRIC_VERSION,
+    SUMMARY_SCHEMA_VERSION,
+)
 from server.app.model_provider import ModelProvider
 
 
@@ -14,12 +19,13 @@ def test_local_feedback_explains_star_gaps_and_reanswer_path() -> None:
         {"question_text": "请说明你的项目经历", "question_type": "main"},
         "我用了 TiDB 和 Apifox。",
     ).value
-    assert result["schema_version"] == "interview-feedback-v4"
+    assert result["schema_version"] == FEEDBACK_SCHEMA_VERSION
     assert result["content"]["summary"]
     assert set(result["content"]["star_assessment"]) == {"situation", "task", "action", "result"}
     assert set(result["content"]["evaluation_dimensions"]) == {"relevance", "specificity", "ownership", "outcome_evidence", "communication"}
-    assert result["content"]["missing_details"]
-    assert "【" in result["content"]["answer_template"]
+    assert result["content"]["priority_actions"]
+    assert result["content"]["answer_outline"]
+    assert "answer_template" not in result["content"]
     assert result["needs_followup"] is True
 
 
@@ -34,7 +40,7 @@ def test_summary_counts_only_main_questions() -> None:
         {"question_id": "followup-1", "answer_text": "追问回答"},
     ]
     value = ModelProvider().summary(questions, answers, "early").value
-    assert value["schema_version"] == "interview-summary-v2"
+    assert value["schema_version"] == SUMMARY_SCHEMA_VERSION
     assert value["answered_main_count"] == 1
     assert value["answered_followup_count"] == 1
     assert value["unanswered_main_numbers"] == [2]
@@ -57,3 +63,13 @@ def test_summary_ignores_blank_unknown_and_duplicate_followup_answers() -> None:
     assert value["answered_main_count"] == 0
     assert value["answered_followup_count"] == 1
     assert value["unanswered_main_numbers"] == [1]
+
+
+def test_legacy_pending_tasks_still_use_original_feedback_and_summary() -> None:
+    provider = ModelProvider()
+    feedback = provider.feedback({"question_type": "main", "rubric_version": LEGACY_RUBRIC_VERSION}, "原版回答").value
+    assert feedback["schema_version"] == "interview-feedback-v4"
+    assert feedback["content"]["rubric_version"] == LEGACY_RUBRIC_VERSION
+    assert feedback["content"]["answer_template"]
+    summary = provider.summary([{"id": "q1", "rubric_version": LEGACY_RUBRIC_VERSION}], [], "early").value
+    assert summary["schema_version"] == "interview-summary-v2"

@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from server.app.errors import DomainError
+from server.app.interview_rubric import LEGACY_RUBRIC_VERSION, QUESTION_KINDS
 from server.app.model_provider import (
     ModelProvider,
     ModelResult,
@@ -114,6 +115,13 @@ class _FakeChatCompletions:
                 },
             },
         }
+        values["interview_opening_v3"] = {"questions": [{**item, "question_kind": QUESTION_KINDS[index], "method": "mixed"} for index, item in enumerate(values["interview_opening_v2"]["questions"])]}
+        legacy = values["interview_feedback_v4"]
+        values["interview_feedback_v5"] = {"content": {"summary": legacy["content"]["summary"],
+            "evaluation_dimensions": legacy["content"]["evaluation_dimensions"], "star_assessment": legacy["content"]["star_assessment"],
+            "followup_review": None, "knowledge_checks": [], "answer_outline": [{"kind": "quote", "label": "行动", "text": "React 项目交付"}]},
+            "needs_followup": True, "followup_question": legacy["followup_question"]}
+        values["interview_summary_v3"] = {**values["interview_summary_v2"], "content": {**values["interview_summary_v2"]["content"], "star_assessment": None}}
         return SimpleNamespace(
             choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(values[schema_name], ensure_ascii=False)))],
             usage=SimpleNamespace(prompt_tokens=12, completion_tokens=8),
@@ -148,23 +156,25 @@ def test_openai_provider_runs_every_core_skill_through_structured_model() -> Non
     assert report["ai_insights"]["strengths"] == ["React"]
     assert report["ai_insights"]["model_score"] == 84.0
     assert rewrite["method"] == "evidence-constrained-rewrite"
-    assert questions["method"] == "STAR"
-    assert feedback["method"] == "STAR"
+    assert questions["method"] == "mixed"
+    assert feedback["method"] == "mixed"
     assert feedback["content"]["summary"] == "回答有具体项目，但结果证据不足。"
     assert feedback["content"]["star_assessment"]["result"]["status"] == "missing"
-    assert feedback["content"]["answer_template"] == "我负责【任务】，通过【行动】取得【结果】。"
-    assert summary["content"]["star_assessment"]["result"]["status"] == "missing"
+    assert "answer_template" not in feedback["content"]
+    assert feedback["content"]["answer_outline"][0]["text"] == "React 项目交付"
+    assert summary["content"]["star_assessment"] is None
     assert [call["response_format"]["json_schema"]["name"] for call in chat.calls] == [
         "document_resume_v2",
         "document_job_v2",
         "analysis_result_v2",
         "rewrite_result_v2",
-        "interview_opening_v2",
-        "interview_feedback_v4",
-        "interview_summary_v2",
+        "interview_opening_v3",
+        "interview_feedback_v5",
+        "interview_summary_v3",
     ]
     assert chat.calls[0]["messages"][0]["role"] == "system"
     assert chat.calls[0]["messages"][1]["role"] == "user"
+    assert [call["max_completion_tokens"] for call in chat.calls[-3:]] == [3000, 6000, 3000]
 
 
 def test_resume_model_omission_falls_back_to_complete_original_text() -> None:
@@ -234,7 +244,7 @@ def test_interview_feedback_rejects_invented_evidence_and_template_facts() -> No
         "evaluation_dimensions": {"relevance": {"status": "strong", "feedback": "虚构的充分依据", "evidence_quote": "我带领 20 人团队"}},
         "answer_template": "我带领 20 人团队完成 Kubernetes 迁移，效率提升 99%。",
     }, "needs_followup": False, "followup_question": None}, "test", "test")  # type: ignore[method-assign]
-    result = provider.feedback({"question_type": "main", "question_text": "请说明你的行动"}, "我负责 React 组件交付").value
+    result = provider.feedback({"question_type": "main", "question_text": "请说明你的行动", "rubric_version": LEGACY_RUBRIC_VERSION}, "我负责 React 组件交付").value
     assert result["content"]["evaluation_dimensions"]["relevance"]["status"] == "missing"
     assert result["content"]["evaluation_dimensions"]["relevance"]["evidence_quote"] is None
     assert "99" not in result["content"]["answer_template"]
@@ -317,4 +327,4 @@ def test_model_results_can_be_merged_for_feedback_and_summary_accounting() -> No
     assert result.value["summary"]["step"] == "summary"
     assert result.input_tokens == 32
     assert result.output_tokens == 18
-    assert ModelProvider().feedback({"question_type": "main"}, "回答一个具体项目").value["method"] == "STAR"
+    assert ModelProvider().feedback({"question_type": "main"}, "回答一个具体项目").value["method"] == "mixed"

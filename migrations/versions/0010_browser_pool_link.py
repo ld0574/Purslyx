@@ -12,19 +12,15 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column("job_pool_items", sa.Column("source_browser_draft_id", sa.Integer(), nullable=True))
-    op.create_index(
-        "ix_job_pool_items_source_browser_draft_id",
-        "job_pool_items",
-        ["source_browser_draft_id"],
-    )
-    op.create_index(
-        "uk_job_pool_browser_draft",
-        "job_pool_items",
-        ["account_id", "source_browser_draft_id"],
-        unique=True,
-        postgresql_where=sa.text("source_browser_draft_id IS NOT NULL AND deleted_at IS NULL"),
-    )
+    inspector = sa.inspect(op.get_bind())
+    if "source_browser_draft_id" not in {row["name"] for row in inspector.get_columns("job_pool_items")}:
+        op.add_column("job_pool_items", sa.Column("source_browser_draft_id", sa.Integer(), nullable=True))
+    indexes = {row["name"] for row in inspector.get_indexes("job_pool_items")}
+    if "ix_job_pool_items_source_browser_draft_id" not in indexes:
+        op.create_index("ix_job_pool_items_source_browser_draft_id", "job_pool_items", ["source_browser_draft_id"])
+    if "uk_job_pool_browser_draft" not in indexes:
+        op.create_index("uk_job_pool_browser_draft", "job_pool_items", ["account_id", "source_browser_draft_id"], unique=True,
+                        postgresql_where=sa.text("source_browser_draft_id IS NOT NULL AND deleted_at IS NULL"))
 
 
 def downgrade() -> None:

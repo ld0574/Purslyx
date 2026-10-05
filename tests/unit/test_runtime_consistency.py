@@ -15,6 +15,7 @@ from server.app.models import (
     Feedback,
     InterviewAnswer,
     InterviewFeedback,
+    InterviewPractice,
     InterviewSummary,
     JobPoolItem,
     LogExport,
@@ -73,6 +74,7 @@ def test_business_idempotency_is_enforced_by_postgres_metadata() -> None:
         LogExport: "uk_log_exports_account_idempotency",
         UsageGrant: "uk_usage_grant_trial_batch",
         InterviewAnswer: "uk_interview_answers_account_idempotency",
+        InterviewPractice: "uk_interview_practice_idempotency",
         JobPoolItem: "uk_job_pool_browser_draft",
     }
     for model, name in expected.items():
@@ -83,6 +85,7 @@ def test_interview_and_worker_generations_have_single_fact_constraints() -> None
     assert "uk_task_attempt_generation" in _unique_names(TaskAttempt)
     assert "uk_interview_feedback_question" in _unique_names(InterviewFeedback)
     assert "uk_interview_summary" in _unique_names(InterviewSummary)
+    assert "uk_interview_practice_question" in _unique_names(InterviewPractice)
 
 
 def test_integrity_conflicts_are_redacted_as_business_conflicts() -> None:

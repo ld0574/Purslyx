@@ -17,9 +17,9 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .db import SessionLocal
 from .errors import DomainError, NotFoundError
-from .interview_rubric import RUBRIC_VERSION, enrich_summary
+from .interview_rubric import LEGACY_RUBRIC_VERSION, RUBRIC_VERSION, enrich_summary, question_kind
 from .matching import SCORING_RULE_VERSION, merge_preference_contents
-from .model_provider import ModelResult, get_model_provider, merge_model_results
+from .model_provider import ModelResult, add_failure_usage, get_model_provider, merge_model_results
 from .models import (
     Account,
     Analysis,
@@ -31,6 +31,7 @@ from .models import (
     Interview,
     InterviewAnswer,
     InterviewFeedback,
+    InterviewPractice,
     InterviewQuestion,
     InterviewSummary,
     JobPoolItem,
@@ -68,6 +69,7 @@ SUPPORTED_TASK_TYPES = {
     "interview_opening",
     "interview_feedback",
     "interview_summary",
+    "interview_practice",
     "log_export",
 }
 
@@ -209,6 +211,9 @@ class TaskWorker:
         request_id = "unknown"
         account_id: int | str = "unknown"
         interview_id = "unknown"
+        question_id = "unknown"
+        practice_id = "unknown"
+        rubric_version = LEGACY_RUBRIC_VERSION
         try:
             with SessionLocal() as db:
                 task = db.get(Task, task.id)
@@ -222,6 +227,9 @@ class TaskWorker:
                 request_id = task_request_id(task.input_data) or "unknown"
                 account_id = task.account_id
                 interview_id = str((task.input_data or {}).get("interview_id") or "unknown")
+                question_id = str((task.input_data or {}).get("question_id") or "unknown")
+                practice_id = str((task.input_data or {}).get("practice_id") or "unknown")
+                rubric_version = str((task.input_data or {}).get("rubric_version") or LEGACY_RUBRIC_VERSION)
                 reservation = _reservation(db, task)
                 self._dispatch(db, task, attempt, reservation)
         except Exception as exc:
@@ -234,13 +242,13 @@ class TaskWorker:
                     type(exc.__cause__).__name__ if exc.__cause__ else "none",
                     request_id, account_id,
                 )
-            elif task_type in {"interview_opening", "interview_feedback", "interview_summary"}:
+            elif task_type in {"interview_opening", "interview_feedback", "interview_summary", "interview_practice"}:
                 LOGGER.error(
-                    "worker interview evaluation failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s rubric_version=%s error_code=%s error_type=%s cause_type=%s request_id=%s account_id=%s interview_id=%s stage=dispatch",
+                    "worker interview evaluation failed event_id=%s task_id=%s task_public_id=%s attempt_id=%s task_type=%s rubric_version=%s error_code=%s error_type=%s cause_type=%s request_id=%s account_id=%s interview_id=%s question_id=%s practice_id=%s stage=dispatch",
                     event_id, task_id or "unknown", task_public_id or "unknown", attempt_id or "unknown",
-                    task_type, RUBRIC_VERSION, getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
+                    task_type, rubric_version, getattr(exc, "code", "TASK_EXECUTION_FAILED"), type(exc).__name__,
                     type(exc.__cause__).__name__ if exc.__cause__ else "none",
-                    request_id, account_id, interview_id,
+                    request_id, account_id, interview_id, question_id, practice_id,
                 )
             else:
                 LOGGER.error(
@@ -263,7 +271,7 @@ class TaskWorker:
                             "worker could not persist document failure event_id=%s task_id=%s attempt_id=%s error_type=%s",
                             event_id, task_id, attempt_id, type(persist_exc).__name__,
                         )
-                    elif task_type in {"interview_opening", "interview_feedback", "interview_summary"}:
+                    elif task_type in {"interview_opening", "interview_feedback", "interview_summary", "interview_practice"}:
                         LOGGER.error(
                             "worker could not persist private-content failure event_id=%s task_id=%s attempt_id=%s task_type=%s error_type=%s",
                             event_id, task_id, attempt_id, task_type, type(persist_exc).__name__,
@@ -326,6 +334,10 @@ class TaskWorker:
             item = db.scalar(select(LogExport).where(LogExport.task_id == task.id, LogExport.account_id == task.account_id))
             if item is not None and item.status != "expired":
                 item.status = "failed"
+        elif task.task_type == "interview_practice":
+            item = db.scalar(select(InterviewPractice).where(InterviewPractice.public_id == data.get("practice_id"), InterviewPractice.account_id == task.account_id))
+            if item is not None and item.deleted_at is None and item.status != "available":
+                item.status = "failed"
         elif task.task_type.startswith("interview_"):
             if task.task_type == "interview_opening":
                 statement = select(Interview).where(Interview.task_id == task.id, Interview.account_id == task.account_id)
@@ -335,7 +347,7 @@ class TaskWorker:
                     Interview.account_id == task.account_id,
                 )
             item = db.scalar(statement)
-            if item is not None and item.deleted_at is None:
+            if item is not None and item.deleted_at is None and item.status not in {"completed", "ended_early"}:
                 item.status = {
                     "interview_opening": "opening_failed",
                     "interview_feedback": "feedback_failed",
@@ -646,6 +658,8 @@ class TaskWorker:
             raise
 
     def _handle_interview_opening(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
+        from .api import _interview_input_bound
+
         interview = db.scalar(select(Interview).where(Interview.task_id == task.id, Interview.account_id == task.account_id, Interview.deleted_at.is_(None)))
         if interview is None:
             raise DomainError("INTERVIEW_SOURCE_INVALID", "面试占位不存在", 409)
@@ -660,7 +674,7 @@ class TaskWorker:
             raise DomainError("INTERVIEW_SOURCE_INVALID", "面试输入已不可用", 409)
 
         def work() -> ModelResult:
-            return get_model_provider().opening_questions(analysis.result or {}, resume_version.content)
+            return get_model_provider().opening_questions(analysis.result or {}, resume_version.content, rubric_version=interview.rubric_version or LEGACY_RUBRIC_VERSION)
 
         def save_questions(value: dict[str, Any]) -> None:
             questions = value.get("questions", [])[:3]
@@ -693,6 +707,8 @@ class TaskWorker:
             work,
             owner=self.owner,
             feature="interview",
+            estimated_input_tokens=_interview_input_bound({"report": analysis.result or {}, "resume": resume_version.content}),
+            estimated_output_tokens=3000 if interview.rubric_version == RUBRIC_VERSION else 4000,
             cost_feature="interview",
             on_success=save_questions,
             task_result={
@@ -731,13 +747,17 @@ class TaskWorker:
                 return feedback_result
             questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
             answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == interview.id).order_by(InterviewAnswer.created_at)).all()
-            question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
+            question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_kind": question_kind({"basis": row.basis}), "rubric_version": interview.rubric_version or LEGACY_RUBRIC_VERSION, "question_text": row.question_text} for row in questions]
             answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
-            summary_result = provider.summary(question_values, answer_values, "full")
+            try:
+                summary_result = provider.summary(question_values, answer_values, "full")
+            except Exception as exc:
+                add_failure_usage(exc, feedback_result)
+                raise
             return merge_model_results(
                 feedback_result,
                 summary_result,
-                value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "STAR"},
+                value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "mixed" if interview.rubric_version == RUBRIC_VERSION else "STAR"},
             )
 
         def save_feedback(value: dict[str, Any]) -> None:
@@ -761,7 +781,7 @@ class TaskWorker:
                 if existing is None:
                     last_position = db.scalar(select(InterviewQuestion.position_no).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no.desc()).limit(1)) or 0
                     followup_question = str(value.get("followup_question") or "请再补充你本人采取的具体行动和可以核对的结果。").strip()[:800]
-                    existing = InterviewQuestion(account_id=task.account_id, interview_id=interview.id, question_type="followup", main_no=question.main_no, parent_question_id=question.id, position_no=int(last_position) + 1, question_text=followup_question, basis={"parent_question_id": question.public_id, "method": "STAR", "rule_version": "interview-followup-v2"}, status="awaiting_answer")
+                    existing = InterviewQuestion(account_id=task.account_id, interview_id=interview.id, question_type="followup", main_no=question.main_no, parent_question_id=question.id, position_no=int(last_position) + 1, question_text=followup_question, basis={"parent_question_id": question.public_id, "question_kind": question_kind({"basis": question.basis}), "method": "mixed" if interview.rubric_version == RUBRIC_VERSION else "STAR", "rule_version": "interview-followup-v3" if interview.rubric_version == RUBRIC_VERSION else "interview-followup-v2"}, status="awaiting_answer")
                     db.add(existing)
                     db.flush()
                 interview.current_question_id = existing.public_id
@@ -784,6 +804,8 @@ class TaskWorker:
             "resource_id": interview.public_id,
             "path": f"/api/v1/interviews/{interview.public_id}",
         }
+        from .api import _interview_feedback_input_bound
+
         _run_model(
             db,
             task,
@@ -792,11 +814,20 @@ class TaskWorker:
             work,
             owner=self.owner,
             cost_feature="interview_feedback",
-            estimated_input_tokens=24000,
-            estimated_output_tokens=8000,
+            estimated_input_tokens=_interview_feedback_input_bound(db, interview, question, answer.answer_text),
+            estimated_output_tokens=15000,
             on_success=save_feedback,
             task_result=task_result,
         )
+
+    def _handle_interview_practice(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
+        from .api import _run_interview_practice
+
+        item = db.scalar(select(InterviewPractice).where(InterviewPractice.public_id == _input(task, "practice_id"), InterviewPractice.account_id == task.account_id, InterviewPractice.deleted_at.is_(None)))
+        if item is None or item.task_id != task.id:
+            raise DomainError("INTERVIEW_PRACTICE_UNAVAILABLE", "重答训练已不可用", 409)
+        item.status = "processing"
+        _run_interview_practice(db, item, task, attempt=attempt, lease_owner=self.owner)
 
     def _save_summary_value(self, db: Session, interview: Interview, completion_type: str, value: dict[str, Any]) -> None:
         """写入已经生成的总结，避免在反馈任务里重复调用且不记账。"""
@@ -817,7 +848,7 @@ class TaskWorker:
                 .order_by(InterviewQuestion.main_no)
             ).all()
         )
-        value = enrich_summary(value, main_feedback, completion_type)
+        value = enrich_summary(value, main_feedback, completion_type, getattr(interview, "rubric_version", None) or LEGACY_RUBRIC_VERSION)
         summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == interview.id))
         if summary is None:
             db.add(InterviewSummary(account_id=interview.account_id, interview_id=interview.id, completion_type=completion_type, content=value))
@@ -834,23 +865,22 @@ class TaskWorker:
 
         questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
         answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == interview.id).order_by(InterviewAnswer.created_at)).all()
-        question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
+        question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_kind": question_kind({"basis": row.basis}), "rubric_version": interview.rubric_version or LEGACY_RUBRIC_VERSION, "question_text": row.question_text} for row in questions]
         answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
         value = get_model_provider().summary(question_values, answer_values, completion_type).value
         self._save_summary_value(db, interview, completion_type, value)
 
     def _handle_interview_summary(self, db: Session, task: Task, attempt: TaskAttempt, reservation: UsageReservation | None) -> None:
+        from .api import _interview_input_bound, _interview_summary_input
+
         interview = db.scalar(select(Interview).where(Interview.public_id == _input(task, "interview_id"), Interview.account_id == task.account_id, Interview.deleted_at.is_(None)))
         if interview is None:
             raise DomainError("INTERVIEW_SOURCE_INVALID", "面试会话不存在", 409)
         completion_type = str((task.input_data or {}).get("completion_type") or "early")
+        question_values, answer_values = _interview_summary_input(db, interview)
 
         def work() -> dict[str, Any]:
-            questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == interview.id).order_by(InterviewQuestion.position_no)).all()
-            answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == interview.id).order_by(InterviewAnswer.created_at)).all()
-            values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
-            answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
-            return get_model_provider().summary(values, answer_values, completion_type)
+            return get_model_provider().summary(question_values, answer_values, completion_type)
 
         def save_result(value: dict[str, Any]) -> None:
             self._save_summary_value(db, interview, completion_type, value)
@@ -863,6 +893,8 @@ class TaskWorker:
             work,
             owner=self.owner,
             cost_feature="interview_summary",
+            estimated_input_tokens=_interview_input_bound({"questions": question_values, "answers": answer_values, "completion_type": completion_type}),
+            estimated_output_tokens=3000 if interview.rubric_version == RUBRIC_VERSION else 4000,
             on_success=save_result,
             task_result={
                 "resource_type": "interview",

@@ -41,6 +41,7 @@ from .models import (
     Interview,
     InterviewAnswer,
     InterviewFeedback,
+    InterviewPractice,
     InterviewQuestion,
     InterviewSummary,
     JobPoolItem,
@@ -134,6 +135,7 @@ ACCOUNT_OWNED_MODELS: tuple[type[Any], ...] = (
     InterviewQuestion,
     InterviewAnswer,
     InterviewFeedback,
+    InterviewPractice,
     InterviewSummary,
 )
 
@@ -201,6 +203,10 @@ REFERENCE_RULES: tuple[ReferenceRule, ...] = (
     ReferenceRule("interview_feedback.interview", InterviewFeedback, "interview_id", Interview),
     ReferenceRule("interview_feedback.question", InterviewFeedback, "question_id", InterviewQuestion),
     ReferenceRule("interview_summary.interview", InterviewSummary, "interview_id", Interview),
+    ReferenceRule("practice.interview", InterviewPractice, "interview_id", Interview, parent_deleted_column="deleted_at", child_hidden_column="deleted_at"),
+    ReferenceRule("practice.question", InterviewPractice, "question_id", InterviewQuestion),
+    ReferenceRule("practice.original_answer", InterviewPractice, "original_answer_id", InterviewAnswer),
+    ReferenceRule("practice.task", InterviewPractice, "task_id", Task),
     ReferenceRule("usage_grant.operator", UsageGrant, "operator_account_id", Account, child_account_column=None, parent_account_column=None, compare_accounts=False),
     ReferenceRule("feedback.reviewer", Feedback, "reviewed_by_account_id", Account, child_account_column=None, parent_account_column=None, compare_accounts=False),
     ReferenceRule("audit.operator", AuditEvent, "operator_account_id", Account, child_account_column=None, parent_account_column=None, compare_accounts=False),

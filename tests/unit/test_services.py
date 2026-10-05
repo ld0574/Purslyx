@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 
 from server.app import services
 from server.app.errors import DomainError
+from server.app.model_provider import ModelResult
 from server.app.models import (
     Account,
     Task,
@@ -439,7 +441,8 @@ def test_task_failure_logs_request_stage_without_private_exception_body(monkeypa
     with pytest.raises(ValueError), caplog.at_level("ERROR"):
         run_local_task(db, task, None, work)
     assert "request_id=original-request account_id=7 task_id=task-log" in caplog.text
-    assert "resource_id=i1 rule_version=interview-rubric-v1 stage=model" in caplog.text
+    assert "resource_id=i1 rule_version=interview-rubric-v1" in caplog.text
+    assert "stage=model" in caplog.text
     assert "error_type=ValueError" in caplog.text
     assert "PRIVATE_ANSWER_BODY" not in caplog.text
     assert current_request_id() is None
@@ -451,3 +454,42 @@ def test_failure_response_retains_valid_original_request_id() -> None:
     services.fail_task(db, 20, None, DomainError("MODEL_OUTPUT_INVALID", "模型输出无效", 503))
     assert task.failure["request_id"] == "original-request"
     assert task.failure["message"] == "模型输出无效"
+
+
+@pytest.mark.parametrize("failure_stage", ["validation", "save_result", "partial_usage"])
+def test_paid_failure_keeps_usage_and_never_settles_unknown_calls_as_zero(monkeypatch, caplog, failure_stage) -> None:
+    task = Task(id=20, public_id="paid-training", account_id=7, task_type="interview_practice",
+                input_data={"_request_id": "paid-request", "interview_id": "i1", "question_id": "q1", "practice_id": "p1", "rubric_version": "interview-rubric-v2"})
+    attempt = TaskAttempt(id=21, execution_generation=1)
+    db = SimpleNamespace(commit=lambda: None, rollback=lambda: None, refresh=lambda _: None)
+    settled, calls = [], []
+    monkeypatch.setattr(services, "settings", SimpleNamespace(execution_mode="inline", model_provider="openai", model_name="test"))
+    monkeypatch.setattr(services, "mark_task_running", lambda *_args, **_kwargs: attempt)
+    monkeypatch.setattr(services, "reserve_budget", lambda *_args, **_kwargs: SimpleNamespace(id=22))
+    monkeypatch.setattr(services, "ensure_price_version", lambda *_args: SimpleNamespace())
+    monkeypatch.setattr(services, "actual_cost_from_price", lambda *_args, **_kwargs: Decimal("0.25"))
+    monkeypatch.setattr(services, "settle_budget", lambda _db, identifier, cost: settled.append((identifier, cost)))
+    monkeypatch.setattr(services, "fail_task", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(services, "mark_outbox_published", lambda *_args: None)
+    monkeypatch.setattr(services, "model_call", lambda *_args, **kwargs: calls.append(kwargs))
+    metrics = ModelResult({}, "openai", "test", 33, 21, usage_incomplete=failure_stage == "partial_usage")
+
+    def work():
+        if failure_stage == "save_result":
+            return metrics
+        error = DomainError("INTERVIEW_EVALUATION_INVALID", "PRIVATE_MODEL_BODY", 503, "retry")
+        error.model_result = metrics
+        raise error
+
+    def save(_value):
+        raise ValueError("PRIVATE_ANSWER_BODY")
+
+    with pytest.raises((DomainError, ValueError)), caplog.at_level("ERROR"):
+        run_local_task(db, task, None, work, cost_feature="interview_practice", on_success=save)
+    expected_cost = None if failure_stage == "partial_usage" else Decimal("0.25")
+    assert settled == [(22, expected_cost)]
+    assert calls[0]["status"] == "failed"
+    assert calls[0]["input_tokens"] == 33 and calls[0]["output_tokens"] == 21
+    assert calls[0]["cost_usd"] == expected_cost
+    assert "rule_version=interview-rubric-v2 question_id=q1 practice_id=p1" in caplog.text
+    assert "PRIVATE_" not in caplog.text

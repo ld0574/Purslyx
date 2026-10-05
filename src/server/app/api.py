@@ -35,9 +35,16 @@ from .config import settings
 from .db import get_db
 from .email_delivery import deliver_account_action_email
 from .errors import DomainError, NotFoundError
-from .interview_rubric import RUBRIC_VERSION, enrich_summary
+from .interview_rubric import (
+    LEGACY_RUBRIC_VERSION,
+    RUBRIC_VERSION,
+    SUMMARY_SCHEMA_VERSION,
+    compare_practice,
+    enrich_summary,
+    question_kind,
+)
 from .matching import SCORING_RULE_VERSION, merge_preference_contents
-from .model_provider import get_model_provider, merge_model_results
+from .model_provider import add_failure_usage, get_model_provider, merge_model_results
 from .models import (
     Account,
     AccountRole,
@@ -64,6 +71,7 @@ from .models import (
     Interview,
     InterviewAnswer,
     InterviewFeedback,
+    InterviewPractice,
     InterviewQuestion,
     InterviewSummary,
     JobPoolItem,
@@ -554,6 +562,7 @@ def _task_references(task: Task, resource_ids: set[str]) -> bool:
         "analysis_id",
         "rewrite_id",
         "interview_id",
+        "practice_id",
         "job_pool_item_id",
         "resume_variant_version_id",
     )
@@ -1640,6 +1649,7 @@ def delete_document(request: Request, account: WebAccount, document_id: str = Pa
     db.query(Analysis).filter(Analysis.id.in_(analysis_ids)).update({Analysis.deleted_at: now, Analysis.result: None}, synchronize_session=False) if analysis_ids else None
     db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in rewrite_rows})).update({Rewrite.deleted_at: now}, synchronize_session=False) if rewrite_rows else None
     db.query(Interview).filter(Interview.id.in_({row.id for row in interview_rows})).update({Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None}, synchronize_session=False) if interview_rows else None
+    _hide_interview_practices(db, {row.id for row in interview_rows}, now)
     db.query(ResumeVariant).filter(ResumeVariant.id.in_(variant_ids)).update({ResumeVariant.deleted_at: now, ResumeVariant.status: "deleted"}, synchronize_session=False) if variant_ids else None
     db.query(Export).filter(Export.id.in_({row.id for row in export_rows})).update({Export.status: "expired", Export.file_path: None, Export.failure_code: "SOURCE_DELETED"}, synchronize_session=False) if export_rows else None
     db.query(Fact).filter(Fact.id.in_({row.id for row in fact_rows})).update({Fact.deleted_at: now, Fact.status: "deleted"}, synchronize_session=False) if fact_rows else None
@@ -1690,6 +1700,7 @@ def delete_pool_item(request: Request, account: WebAccount, item_id: str = PathP
     db.query(Analysis).filter(Analysis.id.in_({row.id for row in analysis_rows})).update({Analysis.deleted_at: now, Analysis.result: None}, synchronize_session=False) if analysis_rows else None
     db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in rewrite_rows})).update({Rewrite.deleted_at: now}, synchronize_session=False) if rewrite_rows else None
     db.query(Interview).filter(Interview.id.in_({row.id for row in interview_rows})).update({Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None}, synchronize_session=False) if interview_rows else None
+    _hide_interview_practices(db, {row.id for row in interview_rows}, now)
     db.query(ResumeVariant).filter(ResumeVariant.id.in_({row.id for row in variant_rows})).update({ResumeVariant.deleted_at: now, ResumeVariant.status: "deleted"}, synchronize_session=False) if variant_rows else None
     db.query(Export).filter(Export.id.in_({row.id for row in export_rows})).update({Export.status: "expired", Export.file_path: None, Export.failure_code: "SOURCE_DELETED"}, synchronize_session=False) if export_rows else None
     db.commit()
@@ -1720,6 +1731,7 @@ def delete_analysis(request: Request, account: WebAccount, analysis_id: str = Pa
     item.result = None
     db.query(Rewrite).filter(Rewrite.id.in_({row.id for row in rewrite_rows})).update({Rewrite.deleted_at: now}, synchronize_session=False) if rewrite_rows else None
     db.query(Interview).filter(Interview.id.in_({row.id for row in interview_rows})).update({Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None}, synchronize_session=False) if interview_rows else None
+    _hide_interview_practices(db, {row.id for row in interview_rows}, now)
     db.commit()
     return _no_content(request)
 
@@ -1728,7 +1740,7 @@ def delete_analysis(request: Request, account: WebAccount, analysis_id: str = Pa
 def interview_deletion_impact(request: Request, account: WebAccount, interview_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     item = _interview(db, account.id, interview_id)
     version = _impact_version(item.public_id, item.revision)
-    return _ok(request, {"resource_id": item.public_id, "resource_type": "interview", "affected": {"questions": db.scalar(select(func.count(InterviewQuestion.id)).where(InterviewQuestion.interview_id == item.id)) or 0, "answers": db.scalar(select(func.count(InterviewAnswer.id)).where(InterviewAnswer.interview_id == item.id)) or 0}, "impact_version": version}, headers={"ETag": f'"{version}"'})
+    return _ok(request, {"resource_id": item.public_id, "resource_type": "interview", "affected": {"questions": db.scalar(select(func.count(InterviewQuestion.id)).where(InterviewQuestion.interview_id == item.id)) or 0, "answers": db.scalar(select(func.count(InterviewAnswer.id)).where(InterviewAnswer.interview_id == item.id)) or 0, "practices": db.scalar(select(func.count(InterviewPractice.id)).where(InterviewPractice.interview_id == item.id, InterviewPractice.deleted_at.is_(None))) or 0}, "impact_version": version}, headers={"ETag": f'"{version}"'})
 
 
 @router.delete("/interviews/{interview_id}", tags=["interviews"])
@@ -1750,8 +1762,14 @@ def delete_interview(request: Request, account: WebAccount, interview_id: str = 
     item.questions = None
     item.answers = None
     item.summary = None
+    _hide_interview_practices(db, {item.id}, now)
     db.commit()
     return _no_content(request)
+
+
+def _hide_interview_practices(db: Session, interview_ids: set[int], deleted_at: Any) -> None:
+    if interview_ids:
+        db.query(InterviewPractice).filter(InterviewPractice.interview_id.in_(interview_ids), InterviewPractice.deleted_at.is_(None)).update({InterviewPractice.deleted_at: deleted_at}, synchronize_session=False)
 
 
 # ------------------------------------ 期望与事实 ------------------------------------
@@ -4208,12 +4226,15 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
     summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id).order_by(InterviewSummary.created_at.desc()))
     answer_map = {row.question_id: row for row in answers}
     feedback_map = {row.question_id: row for row in feedback}
+    practices = db.scalars(select(InterviewPractice).where(InterviewPractice.interview_id == item.id, InterviewPractice.account_id == item.account_id, InterviewPractice.deleted_at.is_(None))).all()
+    practice_map = {row.question_id: row for row in practices}
     followup_map = {row.parent_question_id: row.question_text for row in questions if row.parent_question_id}
     related_task = db.scalar(
         select(Task)
         .join(TaskInputRef, TaskInputRef.task_id == Task.id)
         .where(
             Task.account_id == item.account_id,
+            Task.task_type != "interview_practice",
             Task.deleted_at.is_(None),
             TaskInputRef.account_id == item.account_id,
             TaskInputRef.resource_type == "interview",
@@ -4225,6 +4246,8 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
     return {
         "id": item.public_id,
         "title": item.title,
+        "rubric_version": item.rubric_version or LEGACY_RUBRIC_VERSION,
+        "legacy": item.rubric_version != RUBRIC_VERSION,
         "status": item.status,
         "revision": item.revision,
         "usage_settled": item.usage_settled,
@@ -4240,13 +4263,19 @@ def _interview_view(db: Session, item: Interview) -> dict[str, Any]:
             {
                 "id": row.public_id,
                 "question_type": row.question_type,
+                "question_kind": question_kind({"basis": row.basis}),
+                "practice_state": {
+                    "eligible": item.rubric_version == RUBRIC_VERSION and item.status in {"completed", "ended_early"} and row.question_type == "main" and row.id in answer_map and row.id not in practice_map,
+                    "remaining": 0 if row.id in practice_map and practice_map[row.id].status == "available" else 1,
+                    "practice": _practice_view(db, practice_map[row.id]) if row.id in practice_map else None,
+                },
                 "main_no": row.main_no,
                 "parent_question_id": db.get(InterviewQuestion, row.parent_question_id).public_id if row.parent_question_id and db.get(InterviewQuestion, row.parent_question_id) else None,
                 "position_no": row.position_no,
                 "question_text": row.question_text,
                 "basis": row.basis,
                 "status": row.status,
-                "answer": {"id": answer_map[row.id].public_id, "answer_text": answer_map[row.id].answer_text} if row.id in answer_map else None,
+                "answer": {"id": answer_map[row.id].public_id, "answer_text": answer_map[row.id].answer_text, "created_at": answer_map[row.id].created_at.isoformat()} if row.id in answer_map else None,
                 "feedback": {"id": feedback_map[row.id].public_id, "status": feedback_map[row.id].status, "content": feedback_map[row.id].content, "needs_followup": feedback_map[row.id].needs_followup, "followup_question": followup_map.get(row.id)} if row.id in feedback_map else None,
             }
             for row in questions
@@ -4269,18 +4298,19 @@ def start_interview(payload: InterviewStartRequest, request: Request, account: W
         raise DomainError("INTERVIEW_SOURCE_UNAVAILABLE", "请等待岗位分析成功后再开始面试练习", 409, "wait")
     if analysis.job_pool_item_id != pool.id or analysis.resume_version_id != resume_version.id:
         raise DomainError("INTERVIEW_SOURCE_UNAVAILABLE", "面试输入不是该岗位报告的冻结版本", 409)
-    task, reservation, existed = create_task(db, account, "interview_opening", {"job_pool_item_id": pool.public_id, "analysis_id": analysis.public_id, "resume_version_id": resume_version.public_id}, feature="interview", idempotency_key=key, input_refs=[("analysis", analysis.public_id, None, payload_hash(analysis.result)), ("resume_version", resume_version.public_id, resume_version.version_no, payload_hash(resume_version.content))])
+    task, reservation, existed = create_task(db, account, "interview_opening", {"job_pool_item_id": pool.public_id, "analysis_id": analysis.public_id, "resume_version_id": resume_version.public_id, "rubric_version": RUBRIC_VERSION}, feature="interview", idempotency_key=key, input_refs=[("analysis", analysis.public_id, None, payload_hash(analysis.result)), ("resume_version", resume_version.public_id, resume_version.version_no, payload_hash(resume_version.content))])
     if existed:
         item = db.scalar(select(Interview).where(Interview.task_id == task.id, Interview.account_id == account.id, Interview.deleted_at.is_(None)))
         return _ok(request, {"task": task_view(task), "interview": _interview_view(db, item) if item else None}, code=202)
-    item = Interview(account_id=account.id, job_pool_item_id=pool.id, analysis_id=analysis.id, resume_version_id=resume_version.id, title=payload.title.strip(), status="opening", questions=[], answers=[])
+    item = Interview(account_id=account.id, job_pool_item_id=pool.id, analysis_id=analysis.id, resume_version_id=resume_version.id, title=payload.title.strip(), status="opening", rubric_version=RUBRIC_VERSION, questions=[], answers=[])
     db.add(item)
     db.flush()
     item.task_id = task.id
+    task.input_data = {**task.input_data, "interview_id": item.public_id}
     db.commit()
 
     def work() -> Any:
-        return get_model_provider().opening_questions(analysis.result or {}, resume_version.content)
+        return get_model_provider().opening_questions(analysis.result or {}, resume_version.content, rubric_version=item.rubric_version)
 
     def save_questions(value: dict[str, Any]) -> None:
         questions = value.get("questions", [])[:3]
@@ -4304,6 +4334,8 @@ def start_interview(payload: InterviewStartRequest, request: Request, account: W
             work,
             on_success=save_questions,
             feature="interview",
+            estimated_input_tokens=_interview_input_bound({"report": analysis.result or {}, "resume": resume_version.content}),
+            estimated_output_tokens=3000,
             task_result={
                 "resource_type": "interview",
                 "resource_id": item.public_id,
@@ -4328,11 +4360,11 @@ def list_interviews(
     db: Session = Depends(get_db),
 ) -> JSONResponse:
     require_seeker(account)
-    statement = select(Interview).where(Interview.account_id == account.id, Interview.deleted_at.is_(None))
+    statement = select(Interview).where(Interview.account_id == account.id, Interview.deleted_at.is_(None), Interview.rubric_version == RUBRIC_VERSION)
     if interview_status:
         statement = statement.where(Interview.status == interview_status)
     rows, page = page_rows(db, statement, Interview, cursor=cursor, limit=limit, timestamp_field="updated_at")
-    return _ok(request, {"items": [{"id": row.public_id, "title": row.title, "status": row.status, "revision": row.revision, "updated_at": row.updated_at.isoformat()} for row in rows], "page": page})
+    return _ok(request, {"items": [{"id": row.public_id, "title": row.title, "status": row.status, "rubric_version": row.rubric_version, "revision": row.revision, "updated_at": row.updated_at.isoformat()} for row in rows], "page": page})
 
 
 @router.get("/interviews/{interview_id}", tags=["interviews"])
@@ -4348,10 +4380,166 @@ def _public_question_id(db: Session, account_id: int, value: str) -> InterviewQu
     return row
 
 
+class PracticeAnswerRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    answer_text: str = Field(min_length=1, max_length=8000)
+
+    @field_validator("answer_text")
+    @classmethod
+    def not_blank(cls, value: str) -> str:
+        return AnswerRequest.answer_not_blank(value)
+
+
+def _practice_view(db: Session, item: InterviewPractice) -> dict[str, Any]:
+    question = db.get(InterviewQuestion, item.question_id)
+    task = db.get(Task, item.task_id) if item.task_id else None
+    return {"id": item.public_id, "question_id": question.public_id if question else None,
+            "status": item.status, "answer_text": item.answer_text, "feedback": item.feedback,
+            "comparison": item.comparison, "rubric_version": item.rubric_version,
+            "task": task_view(task) if task else None, "completed_at": item.completed_at.isoformat() if item.completed_at else None}
+
+
+def _practice_source(db: Session, item: InterviewPractice, *, lock: bool = False) -> tuple[Interview, InterviewQuestion, InterviewAnswer]:
+    if lock:
+        db.refresh(item)
+    statement = select(Interview).where(Interview.id == item.interview_id, Interview.account_id == item.account_id, Interview.deleted_at.is_(None)).execution_options(populate_existing=True)
+    interview = db.scalar(statement.with_for_update() if lock else statement)
+    if interview is None:
+        raise NotFoundError("面试会话不存在")
+    question = db.get(InterviewQuestion, item.question_id)
+    original = db.get(InterviewAnswer, item.original_answer_id)
+    account = db.get(Account, item.account_id, populate_existing=True)
+    if (account is None or account.status != "active" or item.deleted_at is not None or item.rubric_version != RUBRIC_VERSION
+            or interview.account_id != item.account_id or interview.deleted_at is not None or interview.rubric_version != RUBRIC_VERSION or interview.status not in {"completed", "ended_early"}
+            or question is None or question.account_id != item.account_id or question.interview_id != interview.id or question.question_type != "main"
+            or original is None or original.account_id != item.account_id or original.interview_id != interview.id or original.question_id != question.id):
+        raise DomainError("INTERVIEW_PRACTICE_UNAVAILABLE", "此题当前不可重答", 409)
+    for model, identifier in ((Analysis, interview.analysis_id), (DocumentVersion, interview.resume_version_id), (JobPoolItem, interview.job_pool_item_id)):
+        source = db.get(model, identifier, populate_existing=True)
+        if source is None or source.account_id != item.account_id or source.deleted_at is not None:
+            raise DomainError("INTERVIEW_SOURCE_INVALID", "练习来源已不可用", 409)
+        if isinstance(source, DocumentVersion):
+            document = db.get(Document, source.document_id, populate_existing=True)
+            if document is None or document.account_id != item.account_id or document.deleted_at is not None:
+                raise DomainError("INTERVIEW_SOURCE_INVALID", "简历已不可用", 409)
+    return interview, question, original
+
+
+def _run_interview_practice(db: Session, item: InterviewPractice, task: Task, *, attempt: TaskAttempt | None = None, lease_owner: str = "local") -> None:
+    try:
+        interview, question, _ = _practice_source(db, item)
+    except Exception as exc:
+        if attempt is None and task.status in {"queued", "running"}:
+            fail_task(db, task.id, None, exc)
+            item.status = "failed"
+            db.commit()
+        LOGGER.error("interview practice rejected request_id=%s account_id=%s interview_id=%s question_id=%s practice_id=%s task_id=%s rubric_version=%s stage=source error_type=%s",
+                     (task.input_data or {}).get("_request_id", "unknown"), task.account_id, (task.input_data or {}).get("interview_id", "unknown"),
+                     (task.input_data or {}).get("question_id", "unknown"), item.public_id, task.public_id, item.rubric_version, type(exc).__name__)
+        raise
+    context = {**_interview_question_context(db, interview, question), "practice_mode": True}
+
+    def work() -> Any:
+        _practice_source(db, item)
+        other_running = db.scalar(select(func.count(Task.id)).where(Task.account_id == task.account_id, Task.id != task.id, Task.deleted_at.is_(None), Task.status == "running")) or 0
+        if other_running >= settings.account_running_task_limit:
+            raise DomainError("TASK_CONCURRENCY_LIMIT", "当前账号还有任务执行中，请稍后重试训练", 429, "retry")
+        return get_model_provider().feedback(context, item.answer_text)
+
+    def save(value: dict[str, Any]) -> None:
+        _practice_source(db, item, lock=True)
+        feedback = db.scalar(select(InterviewFeedback).where(InterviewFeedback.interview_id == item.interview_id, InterviewFeedback.question_id == item.question_id, InterviewFeedback.account_id == item.account_id))
+        item.feedback = value["content"]
+        item.comparison = compare_practice(feedback.content if feedback else None, item.feedback)
+        item.status = "available"
+        item.completed_at = now_utc()
+
+    try:
+        run_local_task(db, task, None, work, attempt=attempt, lease_owner=lease_owner, on_success=save,
+                       cost_feature="interview_practice", estimated_input_tokens=_interview_input_bound({"question": context, "answer": item.answer_text}, 2),
+                       estimated_output_tokens=12000, task_result={"resource_type": "interview_practice", "resource_id": item.public_id,
+                           "interview_id": interview.public_id, "practice_id": item.public_id, "question_id": question.public_id,
+                           "path": f"/api/v1/interviews/{interview.public_id}/practices"})
+    except Exception:
+        db.refresh(task)
+        db.refresh(item)
+        if task.status == "failed" and item.deleted_at is None:
+            item.status = "failed"
+            db.commit()
+        raise
+
+
+def _interview_input_bound(value: Any, calls: int = 1) -> int:
+    # UTF-8 字节数是文本 token 的保守上界；另预留系统指令及封装开销。
+    return calls * (len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")) + 8000)
+
+
+def _interview_feedback_input_bound(db: Session, item: Interview, question: InterviewQuestion, answer: str) -> int:
+    questions, answers = _interview_summary_input(db, item)
+    return _interview_input_bound({"question": _interview_question_context(db, item, question), "answer": answer}, 2) + _interview_input_bound({"questions": questions, "answers": answers, "completion_type": "full"})
+
+
+@router.post("/interviews/{interview_id}/questions/{question_id}/practice", tags=["interviews"])
+def practice_interview_question(payload: PracticeAnswerRequest, request: Request, account: WebAccount,
+                                interview_id: str = PathParam(min_length=1, max_length=36), question_id: str = PathParam(min_length=1, max_length=36),
+                                db: Session = Depends(get_db)) -> JSONResponse:
+    _write_guard(request, account)
+    require_seeker(account)
+    key = _idempotency_key(request)
+    _rate_limit(db, request, "interview.practice", limit=20, subject=account.public_id)
+    # 先串行化同账号的领取判定，包含跨场次复用幂等键的并发情况。
+    from .services import _lock_account_write_lane
+
+    _lock_account_write_lane(db, account.id)
+    interview = _interview(db, account.id, interview_id, lock=True)
+    question = _public_question_id(db, account.id, question_id)
+    original = db.scalar(select(InterviewAnswer).where(InterviewAnswer.account_id == account.id, InterviewAnswer.interview_id == interview.id, InterviewAnswer.question_id == question.id))
+    if interview.rubric_version != RUBRIC_VERSION or interview.status not in {"completed", "ended_early"} or question.interview_id != interview.id or question.question_type != "main" or original is None:
+        raise DomainError("INTERVIEW_PRACTICE_UNAVAILABLE", "请完成或提前结束练习后，重答已回答的主问题", 409)
+    digest = payload_hash({"interview_id": interview_id, "question_id": question_id, **payload.model_dump()})
+    previous = db.scalar(select(InterviewPractice).where(InterviewPractice.account_id == account.id, InterviewPractice.idempotency_key == key))
+    if previous:
+        if previous.request_hash != digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的重答不同", 409)
+        _practice_source(db, previous)
+        return _ok(request, {"practice": _practice_view(db, previous), "task": task_view(db.get(Task, previous.task_id))}, code=202)
+    existing = db.scalar(select(InterviewPractice).where(InterviewPractice.interview_id == interview.id, InterviewPractice.question_id == question.id))
+    if existing:
+        raise DomainError("INTERVIEW_PRACTICE_EXISTS", "此题已经提交重答；失败时请重试原任务，不能覆盖回答", 409, "retry")
+    pending = db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), Task.status.in_(["queued", "running", "retry_wait"]))) or 0
+    if pending >= settings.account_pending_task_limit:
+        raise DomainError("TASK_PENDING_LIMIT", "当前账号待处理任务较多，请稍后再提交重答", 429, "wait")
+    item = InterviewPractice(account_id=account.id, interview_id=interview.id, question_id=question.id, original_answer_id=original.id,
+                             answer_text=payload.answer_text, rubric_version=RUBRIC_VERSION, status="queued", idempotency_key=key, request_hash=digest)
+    db.add(item)
+    db.flush()
+    _practice_source(db, item)
+    task, _, _ = create_task(db, account, "interview_practice", {"interview_id": interview.public_id, "question_id": question.public_id,
+                           "practice_id": item.public_id, "rubric_version": RUBRIC_VERSION}, idempotency_key=key,
+                           input_refs=[("interview", interview.public_id, interview.revision, None), ("interview_practice", item.public_id, None, payload_hash(payload.model_dump()))])
+    item.task_id = task.id
+    db.commit()
+    try:
+        _run_interview_practice(db, item, task)
+    except Exception:
+        # 错误已由任务执行器安全记录；返回失败任务供前端恢复和重试。
+        db.refresh(item)
+    _interview(db, account.id, interview_id)
+    return _ok(request, {"practice": _practice_view(db, item), "task": task_view(task)}, code=202)
+
+
+@router.get("/interviews/{interview_id}/practices", tags=["interviews"])
+def list_interview_practices(request: Request, account: WebAccount, interview_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    interview = _interview(db, account.id, interview_id)
+    rows = db.scalars(select(InterviewPractice).where(InterviewPractice.account_id == account.id, InterviewPractice.interview_id == interview.id, InterviewPractice.deleted_at.is_(None)).order_by(InterviewPractice.created_at)).all() if interview.rubric_version == RUBRIC_VERSION else []
+    return _ok(request, {"items": [_practice_view(db, row) for row in rows]})
+
+
 def _interview_summary_input(db: Session, item: Interview) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     questions = db.scalars(select(InterviewQuestion).where(InterviewQuestion.interview_id == item.id).order_by(InterviewQuestion.position_no)).all()
     answers = db.scalars(select(InterviewAnswer).where(InterviewAnswer.interview_id == item.id).order_by(InterviewAnswer.created_at)).all()
-    question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_text": row.question_text} for row in questions]
+    question_values = [{"id": row.public_id, "main_no": row.main_no, "question_type": row.question_type, "question_kind": question_kind({"basis": row.basis}), "rubric_version": getattr(item, "rubric_version", None) or LEGACY_RUBRIC_VERSION, "question_text": row.question_text} for row in questions]
     answer_values = [{"question_id": db.get(InterviewQuestion, row.question_id).public_id, "answer_text": row.answer_text} for row in answers]
     return question_values, answer_values
 
@@ -4373,7 +4561,7 @@ def _save_interview_summary(db: Session, item: Interview, completion_type: str, 
             .order_by(InterviewQuestion.main_no)
         ).all()
     )
-    value = enrich_summary(value, main_feedback, completion_type)
+    value = enrich_summary(value, main_feedback, completion_type, getattr(item, "rubric_version", None) or LEGACY_RUBRIC_VERSION)
     summary = db.scalar(select(InterviewSummary).where(InterviewSummary.interview_id == item.id))
     if summary is None:
         db.add(InterviewSummary(account_id=item.account_id, interview_id=item.id, completion_type=completion_type, content=value))
@@ -4408,7 +4596,7 @@ def _interview_feedback_with_full_summary(
     question: InterviewQuestion,
     answer_text: str,
 ) -> Any:
-    """最后一轮反馈同时生成 STAR 总结，并合并 token/cost 记录。"""
+    """最后一轮反馈同时生成总结，并合并所有成功/失败调用消耗。"""
 
     provider = get_model_provider()
     feedback_result = provider.feedback(
@@ -4429,11 +4617,15 @@ def _interview_feedback_with_full_summary(
     if pending_main is not None:
         return feedback_result
     question_values, answer_values = _interview_summary_input(db, item)
-    summary_result = provider.summary(question_values, answer_values, "full")
+    try:
+        summary_result = provider.summary(question_values, answer_values, "full")
+    except Exception as exc:
+        add_failure_usage(exc, feedback_result)
+        raise
     return merge_model_results(
         feedback_result,
         summary_result,
-        value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "STAR"},
+        value={"feedback": feedback_result.value, "summary": summary_result.value, "method": "mixed" if item.rubric_version == RUBRIC_VERSION else "STAR"},
     )
 
 
@@ -4443,6 +4635,7 @@ def _interview_question_context(db: Session, item: Interview, question: Intervie
     analysis = db.get(Analysis, item.analysis_id)
     report = analysis.result if analysis and isinstance(analysis.result, dict) else {}
     parent = db.get(InterviewQuestion, question.parent_question_id) if question.parent_question_id else None
+    parent_answer = db.scalar(select(InterviewAnswer).where(InterviewAnswer.interview_id == item.id, InterviewAnswer.question_id == parent.id, InterviewAnswer.account_id == item.account_id)) if parent else None
     basis = (parent.basis if parent else question.basis) or {}
     requirement_ids = set(basis.get("requirement_ids") or [])
     if basis.get("requirement_id"):
@@ -4456,10 +4649,13 @@ def _interview_question_context(db: Session, item: Interview, question: Intervie
     return {
         "question_text": question.question_text,
         "question_type": question.question_type,
+        "question_kind": question_kind({"basis": parent.basis if parent else question.basis}),
+        "rubric_version": getattr(item, "rubric_version", None) or LEGACY_RUBRIC_VERSION,
         "basis": question.basis or {},
         "job_category": report.get("job_category"),
         "role_requirements": requirements,
         "parent_question_text": parent.question_text if parent else None,
+        "parent_answer_text": parent_answer.answer_text if parent_answer else None,
     }
 
 
@@ -4496,7 +4692,7 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
         db,
         account,
         "interview_feedback",
-        {"interview_id": item.public_id, "question_id": question.public_id},
+        {"interview_id": item.public_id, "question_id": question.public_id, "rubric_version": item.rubric_version or LEGACY_RUBRIC_VERSION},
         idempotency_key=key,
         input_refs=[
             ("interview", item.public_id, item.revision, payload_hash({"status": item.status, "current_question_id": item.current_question_id})),
@@ -4556,7 +4752,7 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                         parent_question_id=question.id,
                         position_no=int(last_position) + 1,
                         question_text=followup_question,
-                        basis={"parent_question_id": question.public_id, "method": "STAR", "rule_version": "interview-followup-v2"},
+                        basis={"parent_question_id": question.public_id, "question_kind": question_kind({"basis": question.basis}), "method": "mixed" if item.rubric_version == RUBRIC_VERSION else "STAR", "rule_version": "interview-followup-v3" if item.rubric_version == RUBRIC_VERSION else "interview-followup-v2"},
                         status="awaiting_answer",
                     )
                     db.add(followup)
@@ -4595,8 +4791,8 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
                 work,
                 on_success=save_feedback,
                 cost_feature="interview_feedback",
-                estimated_input_tokens=24000,
-                estimated_output_tokens=8000,
+                estimated_input_tokens=_interview_feedback_input_bound(db, item, question, answer.answer_text),
+                estimated_output_tokens=15000,
                 task_result=task_result,
             )
         except Exception as exc:
@@ -4606,8 +4802,8 @@ def submit_answer(payload: AnswerRequest, request: Request, account: WebAccount,
             item.revision += 1
             db.commit()
             LOGGER.error(
-                "interview evaluation failed request_id=%s account_id=%s interview_id=%s task_id=%s rubric_version=%s stage=feedback error_type=%s cause_type=%s",
-                _meta(request)["request_id"], account.public_id, interview_id, task.public_id, RUBRIC_VERSION,
+                "interview evaluation failed request_id=%s account_id=%s interview_id=%s question_id=%s task_id=%s rubric_version=%s stage=feedback error_type=%s cause_type=%s",
+                _meta(request)["request_id"], account.public_id, interview_id, question.public_id, task.public_id, item.rubric_version or LEGACY_RUBRIC_VERSION,
                 type(exc).__name__, type(exc.__cause__).__name__ if exc.__cause__ else "none",
             )
             raise DomainError("INTERVIEW_FEEDBACK_FAILED", "本轮反馈失败，请重试", 503, "retry") from exc
@@ -4646,7 +4842,7 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
         db,
         account,
         "interview_summary",
-        {"interview_id": item.public_id, "completion_type": "early"},
+        {"interview_id": item.public_id, "completion_type": "early", "rubric_version": item.rubric_version or LEGACY_RUBRIC_VERSION},
         idempotency_key=key,
         input_refs=[
             (
@@ -4659,9 +4855,9 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
     )
     db.commit()
     if not existed:
+        question_values, answer_values = _interview_summary_input(db, item)
 
         def work() -> Any:
-            question_values, answer_values = _interview_summary_input(db, item)
             return get_model_provider().summary(question_values, answer_values, "early")
 
         def save_result(value: dict[str, Any]) -> None:
@@ -4675,6 +4871,8 @@ def finish_interview(payload: FinishInterviewRequest, request: Request, account:
                 work,
                 on_success=save_result,
                 cost_feature="interview_summary",
+                estimated_input_tokens=_interview_input_bound({"questions": question_values, "answers": answer_values, "completion_type": "early"}),
+                estimated_output_tokens=3000 if item.rubric_version == RUBRIC_VERSION else 4000,
                 task_result={
                     "resource_type": "interview",
                     "resource_id": item.public_id,
@@ -4849,6 +5047,13 @@ def retry_task(
     _write_guard(request, account)
     key = _idempotency_key(request)
     item = _task(db, account.id, task_id, lock=True)
+    if item.task_type == "interview_practice":
+        _rate_limit(db, request, "interview.practice.retry", limit=20, subject=account.public_id)
+        item = _task(db, account.id, task_id, lock=True)
+        practice = db.scalar(select(InterviewPractice).where(InterviewPractice.task_id == item.id, InterviewPractice.account_id == account.id, InterviewPractice.deleted_at.is_(None)))
+        if practice is None:
+            raise NotFoundError("重答训练已不可用")
+        _practice_source(db, practice)
     previous_retry = db.scalars(
         select(TaskOutbox).where(TaskOutbox.task_id == item.id, TaskOutbox.event_type == "task.retry").order_by(TaskOutbox.created_at.desc())
     ).all()
@@ -5007,11 +5212,12 @@ def dashboard(
         confirmed_jobs = int(db.scalar(select(func.count(Document.id)).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.status.in_(confirmed_statuses), Document.document_type.in_(["job_description", "job"]))) or 0)
         pool_items = int(db.scalar(select(func.count(JobPoolItem.id)).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))) or 0)
         completed_analyses = int(db.scalar(select(func.count(Analysis.id)).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]))) or 0)
-        active_tasks = int(db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), Task.status.in_(["queued", "running", "retry_wait"]))) or 0)
-        failed_tasks = int(db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), Task.status == "failed")) or 0)
+        visible_task = or_(Task.task_type.notin_(["interview_opening", "interview_feedback", "interview_summary", "interview_practice"]), Task.input_data["rubric_version"].as_string() == RUBRIC_VERSION)
+        active_tasks = int(db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), visible_task, Task.status.in_(["queued", "running", "retry_wait"]))) or 0)
+        failed_tasks = int(db.scalar(select(func.count(Task.id)).where(Task.account_id == account.id, Task.deleted_at.is_(None), visible_task, Task.status == "failed")) or 0)
         pending_documents = int(db.scalar(select(func.count(Document.id)).where(Document.account_id == account.id, Document.deleted_at.is_(None), Document.status.in_(["importing", "parsing", "unconfirmed", "awaiting_confirmation"]))) or 0)
         active_preferences = int(db.scalar(select(func.count(Preference.id)).where(Preference.account_id == account.id, Preference.deleted_at.is_(None), Preference.status == "active")) or 0)
-        completed_interviews = int(db.scalar(select(func.count(Interview.id)).where(Interview.account_id == account.id, Interview.deleted_at.is_(None), Interview.status == "completed")) or 0)
+        completed_interviews = int(db.scalar(select(func.count(Interview.id)).where(Interview.account_id == account.id, Interview.deleted_at.is_(None), Interview.status == "completed", Interview.rubric_version == RUBRIC_VERSION)) or 0)
 
         stage = "balances"
         balances = usage_view(db, account, entries_limit=1)["balances"]
@@ -5056,18 +5262,20 @@ def dashboard(
         summary_rows = db.scalars(
             select(InterviewSummary)
             .join(Interview, Interview.id == InterviewSummary.interview_id)
-            .where(InterviewSummary.account_id == account.id, Interview.deleted_at.is_(None), InterviewSummary.completion_type == "full", InterviewSummary.created_at >= start_at, InterviewSummary.created_at < end_at)
+            .where(InterviewSummary.account_id == account.id, Interview.account_id == account.id, Interview.deleted_at.is_(None), Interview.rubric_version == RUBRIC_VERSION, Interview.status == "completed", InterviewSummary.completion_type == "full", InterviewSummary.created_at >= start_at, InterviewSummary.created_at < end_at)
             .order_by(InterviewSummary.created_at)
         ).all() if account.registration_role == "seeker" else []
         latest_dimensions = None
         for item in summary_rows:
             content = item.content if isinstance(item.content, dict) else {}
-            if content.get("rubric_version") != RUBRIC_VERSION or not isinstance(content.get("practice_index"), (int, float)):
+            index = content.get("practice_index")
+            if (content.get("rubric_version") != RUBRIC_VERSION or content.get("schema_version") != SUMMARY_SCHEMA_VERSION
+                    or isinstance(index, bool) or not isinstance(index, (int, float)) or not math.isfinite(index) or not 0 <= index <= 100):
                 continue
             label = _local_metric_date(item.created_at)
             if label in practice:
                 practice[label]["sessions"] += 1
-                practice[label]["_scores"].append(float(content["practice_index"]))
+                practice[label]["_scores"].append(float(index))
                 latest_dimensions = content.get("evaluation_dimensions")
         practice_series = []
         for row in practice.values():
@@ -5669,6 +5877,7 @@ def admin_delete_job_pool_item(
         {Interview.deleted_at: now, Interview.questions: None, Interview.answers: None, Interview.summary: None},
         synchronize_session=False,
     ) if snapshot["interview_rows"] else None
+    _hide_interview_practices(db, {row.id for row in snapshot["interview_rows"]}, now)
     db.query(ResumeVariant).filter(ResumeVariant.id.in_({row.id for row in snapshot["variant_rows"]})).update(
         {ResumeVariant.deleted_at: now, ResumeVariant.status: "deleted"}, synchronize_session=False
     ) if snapshot["variant_rows"] else None
@@ -6092,7 +6301,7 @@ def admin_metrics(
     task_types = {
         "analysis": {"analysis"},
         "rewrite": {"rewrite"},
-        "interview": {"interview_opening", "interview_feedback", "interview_turn", "interview_summary"},
+        "interview": {"interview_opening", "interview_feedback", "interview_turn", "interview_summary", "interview_practice"},
         "import": {"document_parse"},
     }.get(feature)
 
@@ -6537,7 +6746,7 @@ def admin_log_detail(request: Request, account: WebAccount, log_type: str, log_i
             failure = row.failure or {}
             calls = db.scalars(select(ModelCall).where(ModelCall.task_id == row.id).order_by(ModelCall.created_at)).all()
             task_account = db.get(Account, row.account_id)
-            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "account": {"id": task_account.public_id, "email_masked": _masked_email(task_account.email)} if task_account else None, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": float(call.cost_usd) if call.cost_usd is not None else None, "cost_usd_exact": f"{call.cost_usd:.8f}" if call.cost_usd is not None else None, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id", "followup_id"}) else None}
+            value = {"id": row.public_id, "category": "tasks", "task_type": row.task_type, "status": row.status, "account": {"id": task_account.public_id, "email_masked": _masked_email(task_account.email)} if task_account else None, "created_at": row.created_at.isoformat(), "started_at": row.started_at.isoformat() if row.started_at else None, "completed_at": row.completed_at.isoformat() if row.completed_at else None, "queue_duration_ms": int((row.started_at - row.created_at).total_seconds() * 1000) if row.started_at else None, "execution_duration_ms": int((row.completed_at - row.started_at).total_seconds() * 1000) if row.completed_at and row.started_at else None, "retry_count": row.retry_count, "failure_code": failure.get("code"), "retryable": bool(failure.get("retryable")), "model_calls": [{"id": call.public_id, "provider": call.provider, "model": call.model, "status": call.status, "input_tokens": call.input_tokens, "output_tokens": call.output_tokens, "cost_usd": float(call.cost_usd) if call.cost_usd is not None else None, "cost_usd_exact": f"{call.cost_usd:.8f}" if call.cost_usd is not None else None, "error_code": call.error_code, "duration_ms": call.duration_ms, "created_at": call.created_at.isoformat()} for call in calls], "result": row.result if row.result and isinstance(row.result, dict) and set(row.result).issubset({"resource_type", "resource_id", "path", "export_id", "file_ready", "question_id", "needs_followup", "document_id", "draft_id", "followup_id", "interview_id", "practice_id", "summary"}) else None}
         else:
             value = None
     if value is None:

@@ -115,6 +115,7 @@ def _upgrade_legacy_schema() -> None:
                 )
             )
         additive_columns = {
+            "interview_sessions": (("rubric_version", "VARCHAR(80)"),),
             # 201 上的早期开发库可能已经有这些表，但还没有当前审计字段。
             "accounts": (("revision", "INTEGER DEFAULT 1"),),
             "product_feedback": (
@@ -132,6 +133,11 @@ def _upgrade_legacy_schema() -> None:
             for column_name, column_type in column_values:
                 if column_name not in columns:
                     connection.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
+        if "async_tasks" in inspector.get_table_names():
+            constraints = {row["name"]: row["sqltext"] for row in inspector.get_check_constraints("async_tasks")}
+            if "interview_practice" not in constraints.get("ck_async_tasks_type", ""):
+                connection.execute(text("ALTER TABLE async_tasks DROP CONSTRAINT IF EXISTS ck_async_tasks_type"))
+                connection.execute(text("ALTER TABLE async_tasks ADD CONSTRAINT ck_async_tasks_type CHECK (task_type IN ('document_parse', 'analysis', 'rewrite', 'resume_export', 'interview_opening', 'interview_feedback', 'interview_summary', 'interview_practice', 'log_export'))"))
         if "resume_variant_versions" in inspector.get_table_names():
             columns = {item["name"] for item in inspector.get_columns("resume_variant_versions")}
             if "rewrite_id" not in columns:
