@@ -555,6 +555,8 @@ def claim_outbox_batch(
     limit: int = 10,
     now: datetime | None = None,
     lease_seconds: int = 60,
+    account_id: int | None = None,
+    automatic_only: bool = False,
 ) -> list[TaskOutbox]:
     """使用 PostgreSQL ``SKIP LOCKED`` 认领一批待执行 outbox 事件。
 
@@ -586,6 +588,13 @@ def claim_outbox_batch(
         .limit(limit)
         .with_for_update(skip_locked=True)
     )
+    if account_id is not None or automatic_only:
+        tasks = select(Task.id).where(Task.deleted_at.is_(None))
+        if account_id is not None:
+            tasks = tasks.where(Task.account_id == account_id)
+        if automatic_only:
+            tasks = tasks.where(Task.input_data["auto_match_job_id"].as_string().is_not(None))
+        statement = statement.where(TaskOutbox.task_id.in_(tasks))
     events = list(db.scalars(statement).all())
     for event in events:
         event.status = "claimed"
@@ -715,6 +724,8 @@ def recover_expired_leases(
     limit: int = 50,
     now: datetime | None = None,
     retry_delay_seconds: int = 5,
+    account_id: int | None = None,
+    automatic_only: bool = False,
 ) -> list[int]:
     """把过期执行代次转为可恢复任务，并为未知模型成本保留预算。"""
 
@@ -724,8 +735,7 @@ def recover_expired_leases(
     if not 1 <= limit <= 100:
         raise DomainError("WORKER_BATCH_INVALID", "Worker 批量大小必须在 1 到 100 之间", 422)
     current = now or utcnow()
-    attempt_rows = list(
-        db.scalars(
+    statement = (
             select(TaskAttempt)
             .where(
                 TaskAttempt.status == "running",
@@ -735,8 +745,15 @@ def recover_expired_leases(
             .order_by(TaskAttempt.lease_expires_at.asc(), TaskAttempt.id.asc())
             .limit(limit)
             .with_for_update(skip_locked=True)
-        ).all()
     )
+    if account_id is not None or automatic_only:
+        tasks = select(Task.id)
+        if account_id is not None:
+            tasks = tasks.where(Task.account_id == account_id)
+        if automatic_only:
+            tasks = tasks.where(Task.input_data["auto_match_job_id"].as_string().is_not(None))
+        statement = statement.where(TaskAttempt.task_id.in_(tasks))
+    attempt_rows = list(db.scalars(statement).all())
     recovered: list[int] = []
     for expired_attempt in attempt_rows:
         task = db.scalar(select(Task).where(Task.id == expired_attempt.task_id).with_for_update())
@@ -1048,6 +1065,7 @@ def task_view(task: Task) -> dict[str, Any]:
         "id": task.public_id,
         "request_id": task_request_id(task.input_data),
         "task_type": task.task_type,
+        "automatic": bool((task.input_data or {}).get("auto_match_job_id")),
         "status": task.status,
         "current_step": task.current_step,
         "progress": progress,

@@ -22,7 +22,7 @@ from typing import Annotated, Any, Literal
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -30,6 +30,18 @@ from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
+from .application_recommendations import TIER_LABELS, application_recommendation
+from .auto_matching import (
+    AUTOMATION_VERSION,
+    automatic_task_source,
+    automatic_view,
+    config_for,
+    config_view,
+    dispatch_account,
+    hide_jobs,
+    register_capture,
+    selected_inputs,
+)
 from .budget import settle_budget
 from .config import settings
 from .db import get_db
@@ -57,6 +69,8 @@ from .models import (
     AnalysisRequirementResult,
     ApplyClick,
     AuditEvent,
+    AutoMatchingConfig,
+    AutoMatchJob,
     BrowserAuthCode,
     BrowserJobDraft,
     BrowserSession,
@@ -133,6 +147,7 @@ from .security import (
     verify_password,
 )
 from .services import (
+    _lock_account_write_lane,
     create_task,
     decode_score_page_cursor,
     encode_score_page_cursor,
@@ -1584,6 +1599,7 @@ def document_deletion_impact(request: Request, account: WebAccount, document_id:
 @router.delete("/documents/{document_id}", tags=["documents"])
 def delete_document(request: Request, account: WebAccount, document_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _write_guard(request, account)
+    _lock_account_write_lane(db, account.id)
     item = _document(db, account.id, document_id)
     version_rows = db.scalars(select(DocumentVersion).where(DocumentVersion.document_id == item.id, DocumentVersion.deleted_at.is_(None))).all()
     version_ids = {row.id for row in version_rows}
@@ -1641,6 +1657,7 @@ def delete_document(request: Request, account: WebAccount, document_id: str = Pa
         if path not in files:
             files.append(path)
     now = now_utc()
+    hide_jobs(db, account.id, pool_ids=pool_ids, version_ids=version_ids, analysis_ids=analysis_ids)
     _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="来源资料已删除")
     item.deleted_at = now
     item.status = "deleted"
@@ -1673,6 +1690,7 @@ def pool_deletion_impact(request: Request, account: WebAccount, item_id: str = P
 @router.delete("/job-pool/items/{item_id}", tags=["job-pool"])
 def delete_pool_item(request: Request, account: WebAccount, item_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _write_guard(request, account)
+    _lock_account_write_lane(db, account.id)
     item = _pool(db, account.id, item_id)
     analysis_rows = db.scalars(select(Analysis).where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))).all()
     rewrite_rows = db.scalars(select(Rewrite).where(Rewrite.account_id == account.id, Rewrite.analysis_id.in_({row.id for row in analysis_rows}), Rewrite.deleted_at.is_(None))).all() if analysis_rows else []
@@ -1692,6 +1710,7 @@ def delete_pool_item(request: Request, account: WebAccount, item_id: str = PathP
         if path not in files:
             files.append(path)
     now = now_utc()
+    hide_jobs(db, account.id, pool_ids={item.id})
     _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="匹配池岗位已删除")
     item.deleted_at = now
     item.analysis_status = "deleted"
@@ -1710,7 +1729,7 @@ def delete_pool_item(request: Request, account: WebAccount, item_id: str = PathP
 
 @router.get("/analyses/{analysis_id}/deletion-impact", tags=["analyses"])
 def analysis_deletion_impact(request: Request, account: WebAccount, analysis_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
-    item = _analysis(db, account.id, analysis_id)
+    item = _analysis(db, account.id, analysis_id, require_available=False)
     version = _impact_version(item.public_id, item.updated_at.isoformat())
     return _ok(request, {"resource_id": item.public_id, "resource_type": "analysis", "affected": {"rewrites": db.scalar(select(func.count(Rewrite.id)).where(Rewrite.analysis_id == item.id, Rewrite.deleted_at.is_(None))) or 0, "interviews": db.scalar(select(func.count(Interview.id)).where(Interview.analysis_id == item.id, Interview.deleted_at.is_(None))) or 0}, "impact_version": version}, headers={"ETag": f'"{version}"'})
 
@@ -1718,7 +1737,8 @@ def analysis_deletion_impact(request: Request, account: WebAccount, analysis_id:
 @router.delete("/analyses/{analysis_id}", tags=["analyses"])
 def delete_analysis(request: Request, account: WebAccount, analysis_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> Response:
     _write_guard(request, account)
-    item = _analysis(db, account.id, analysis_id)
+    _lock_account_write_lane(db, account.id)
+    item = _analysis(db, account.id, analysis_id, require_available=False)
     rewrite_rows = db.scalars(select(Rewrite).where(Rewrite.analysis_id == item.id, Rewrite.deleted_at.is_(None))).all()
     interview_rows = db.scalars(select(Interview).where(Interview.analysis_id == item.id, Interview.deleted_at.is_(None))).all()
     task_ids = {value for value in [item.task_id, *(row.task_id for row in rewrite_rows), *(row.task_id for row in interview_rows)] if value}
@@ -1726,6 +1746,7 @@ def delete_analysis(request: Request, account: WebAccount, analysis_id: str = Pa
     task_ids.update(row.id for row in db.scalars(select(Task).where(Task.account_id == account.id, Task.status.in_(["queued", "running", "retry_wait"]))).all() if _task_references(row, resource_ids))
     _require_deletion_match(request, _impact_version(item.public_id, item.updated_at.isoformat()))
     now = now_utc()
+    hide_jobs(db, account.id, analysis_ids={item.id})
     _mark_tasks_cancelled(db, account.id, resource_ids=resource_ids, task_ids=task_ids, reason="分析报告已删除")
     item.deleted_at = now
     item.result = None
@@ -2017,8 +2038,10 @@ def update_preference(payload: PreferenceUpdateRequest, request: Request, accoun
 @router.delete("/preferences/{preference_id}", tags=["preferences"])
 def delete_preference(request: Request, account: WebAccount, preference_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _write_guard(request, account)
+    _lock_account_write_lane(db, account.id)
     _idempotency_key(request, required=False)
     item = _preference(db, account.id, preference_id)
+    hide_jobs(db, account.id, preference_id=item.public_id)
     item.deleted_at = now_utc()
     item.status = "archived"
     item.is_default = False
@@ -2197,9 +2220,9 @@ def delete_fact(request: Request, account: WebAccount, fact_id: str = PathParam(
 # ------------------------------------ 改写与岗位版 ------------------------------------
 
 
-def _analysis(db: Session, account_id: int, public_id: str) -> Analysis:
+def _analysis(db: Session, account_id: int, public_id: str, *, require_available: bool = True) -> Analysis:
     item = db.scalar(select(Analysis).where(Analysis.public_id == public_id, Analysis.account_id == account_id, Analysis.deleted_at.is_(None)))
-    if item is None or item.status not in {"succeeded", "available"}:
+    if item is None or (require_available and item.status not in {"succeeded", "available"}):
         raise NotFoundError("分析报告不存在或尚未完成")
     return item
 
@@ -2948,6 +2971,115 @@ class AnalysisRequest(BaseModel):
     confirm_usage: bool
 
 
+class AutoMatchingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    resume_document_id: str | None = Field(default=None, max_length=36)
+    preference_ids: list[str] = Field(default_factory=list, max_length=10)
+    daily_limit: int = Field(default=10, ge=1, le=50)
+    base_revision: int = Field(ge=0)
+    confirm_usage: bool = False
+
+
+def _wake_automatic(background_tasks: BackgroundTasks, account_id: int) -> None:
+    if settings.execution_mode == "inline":
+        from .worker import run_automatic_inline
+
+        background_tasks.add_task(run_automatic_inline, account_id)
+
+
+@router.get("/job-pool/automation", tags=["job-pool"])
+def get_auto_matching(request: Request, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    return _ok(request, config_view(db, account.id))
+
+
+@router.put("/job-pool/automation", tags=["job-pool"])
+def update_auto_matching(payload: AutoMatchingRequest, request: Request, background_tasks: BackgroundTasks, account: WebAccount, db: Session = Depends(get_db)) -> JSONResponse:
+    _write_guard(request, account)
+    require_seeker(account)
+    _rate_limit(db, request, "auto_matching.policy", limit=20, subject=account.public_id)
+    key = _idempotency_key(request)
+    _lock_account_write_lane(db, account.id)
+    config = config_for(db, account.id)
+    digest = payload_hash(payload.model_dump(mode="json"))
+    if config and config.idempotency_key == key:
+        if config.request_hash != digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的设置不同", 409)
+        return _ok(request, config_view(db, account.id))
+    if payload.base_revision != (config.revision if config else 0):
+        raise DomainError("AUTO_CONFIG_REVISION_CONFLICT", "自动处理设置已变化，请刷新后重试", 409, "refresh")
+    document = db.scalar(select(Document).where(Document.public_id == payload.resume_document_id, Document.account_id == account.id, Document.deleted_at.is_(None))) if payload.resume_document_id else None
+    if payload.enabled:
+        if not payload.confirm_usage:
+            raise DomainError("USAGE_CONFIRMATION_REQUIRED", "开启前请确认：自动匹配每个新岗位预留 1 次分析额度，成功才计次", 422)
+        selected_inputs(db, account.id, document.id if document else None, payload.preference_ids)
+    if config is None:
+        config = AutoMatchingConfig(account_id=account.id)
+        db.add(config)
+    else:
+        config.revision += 1
+    config.enabled = payload.enabled
+    config.resume_document_id = document.id if document else (config.resume_document_id if not payload.enabled else None)
+    config.preference_ids = list(payload.preference_ids)
+    config.daily_limit = payload.daily_limit
+    config.idempotency_key = key
+    config.request_hash = digest
+    if payload.enabled:
+        config.confirmed_at = now_utc()
+    db.flush()
+    dispatch_account(db, account.id)
+    db.commit()
+    LOGGER.info("automatic matching policy saved request_id=%s account_id=%s rule_version=%s revision=%s enabled=%s daily_limit=%s stage=confirm", _meta(request)["request_id"], account.id, AUTOMATION_VERSION, config.revision, config.enabled, config.daily_limit)
+    _wake_automatic(background_tasks, account.id)
+    return _ok(request, config_view(db, account.id))
+
+
+@router.get("/job-pool/recommendations", tags=["job-pool"])
+def daily_recommendations(request: Request, account: WebAccount, limit: int = Query(default=50, ge=1, le=100), db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    try:
+        day = now_utc().astimezone(ZoneInfo("Asia/Shanghai")).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = day + timedelta(days=1)
+        live_pool = (JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))
+        completed_ids = select(Analysis.job_pool_item_id).where(Analysis.account_id == account.id, Analysis.deleted_at.is_(None), Analysis.status.in_(["available", "succeeded"]), Analysis.completed_at >= day, Analysis.completed_at < end)
+        daily_filter = or_(and_(JobPoolItem.created_at >= day, JobPoolItem.created_at < end), JobPoolItem.id.in_(completed_ids))
+        statement = select(JobPoolItem).where(*live_pool, daily_filter)
+        total = db.scalar(select(func.count(JobPoolItem.id)).where(*live_pool, daily_filter)) or 0
+        pools = db.scalars(statement.order_by(JobPoolItem.created_at.desc(), JobPoolItem.id.desc()).limit(500)).all()
+        items = []
+        tiers = {key: 0 for key in TIER_LABELS}
+        for pool in pools:
+            analysis = db.scalar(select(Analysis).where(Analysis.account_id == account.id, Analysis.job_pool_item_id == pool.id, Analysis.deleted_at.is_(None)).order_by(Analysis.created_at.desc(), Analysis.id.desc()))
+            if analysis is None or analysis.status not in {"available", "succeeded"} or not analysis.result:
+                continue
+            recommendation = application_recommendation(analysis.result)
+            tiers[recommendation["tier"]] += 1
+            items.append({"id": pool.public_id, "job_title": pool.job_title, "company_name": pool.company_name,
+                          "analysis_id": analysis.public_id, "completed_at": analysis.completed_at.isoformat() if analysis.completed_at else None,
+                          "recommendation": recommendation, "source_url": pool.source_url,
+                          "apply_action": _apply_action(pool) if pool.source_url else {"available": False}})
+        rank = {tier: index for index, tier in enumerate(TIER_LABELS)}
+        items.sort(key=lambda item: (rank[item["recommendation"]["tier"]], -(item["recommendation"]["ability_score"] or 0), item["id"]))
+        active = db.scalar(select(func.count(AutoMatchJob.id)).join(Task, Task.id == AutoMatchJob.task_id).where(AutoMatchJob.account_id == account.id, AutoMatchJob.deleted_at.is_(None), Task.deleted_at.is_(None), Task.status.in_(["queued", "running", "retry_wait"]))) or 0
+        waiting = db.scalar(select(func.count(AutoMatchJob.id)).where(AutoMatchJob.account_id == account.id, AutoMatchJob.deleted_at.is_(None), AutoMatchJob.state == "waiting")) or 0
+        failed = db.scalar(select(func.count(AutoMatchJob.id)).join(Task, Task.id == AutoMatchJob.task_id).where(AutoMatchJob.account_id == account.id, AutoMatchJob.deleted_at.is_(None), Task.deleted_at.is_(None), Task.status == "failed")) or 0
+        waiting_codes = db.execute(select(AutoMatchJob.blocked_code, func.count(AutoMatchJob.id)).where(AutoMatchJob.account_id == account.id, AutoMatchJob.deleted_at.is_(None), AutoMatchJob.state == "waiting").group_by(AutoMatchJob.blocked_code)).all()
+        from .auto_matching import BLOCK_MESSAGES
+
+        captured = db.scalar(select(func.count(JobPoolItem.id)).where(*live_pool, JobPoolItem.source_type == "browser_capture", JobPoolItem.created_at >= day, JobPoolItem.created_at < end)) or 0
+        return _ok(request, {"date": day.date().isoformat(), "timezone": "Asia/Shanghai", "automation": config_view(db, account.id),
+                             "progress": {"captured": captured, "completed": len(items), "active": active, "waiting": waiting, "failed": failed},
+                             "waiting_reasons": [{"code": code, "count": count, "message": BLOCK_MESSAGES.get(code, "已保留待处理")} for code, count in waiting_codes],
+                             "tier_counts": tiers, "items": items[:limit], "truncated": len(items) > limit or total > 500,
+                             "scope": "今日新增岗位或今日完成分析的岗位；等待和失败统计含之前保留的自动任务"})
+    except Exception as exc:
+        LOGGER.error("daily recommendations failed request_id=%s account_id=%s rule_version=%s stage=aggregate error_type=%s", _meta(request)["request_id"], account.id, AUTOMATION_VERSION, type(exc).__name__)
+        if isinstance(exc, DomainError):
+            raise
+        raise DomainError("RECOMMENDATIONS_UNAVAILABLE", "投递建议暂时不可用，请稍后刷新", 503, "retry") from None
+
+
 def _normalize_job_url(platform: str, value: str) -> str:
     parsed = urlparse(value.strip())
     host = (parsed.hostname or "").lower().rstrip(".")
@@ -3058,17 +3190,20 @@ def _browser_pool_idempotency_key(draft: BrowserJobDraft) -> str:
 
 
 def _ensure_browser_pool_item(db: Session, account: Account, draft: BrowserJobDraft) -> JobPoolItem:
-    """把一次浏览器抓取直接落成待匹配岗位，不绑定简历、期望或分析任务。"""
+    """抓取入池；明确授权之后的新岗位登记自动领取，历史抓取重放不重复领取。"""
 
     existing = db.scalar(
         select(JobPoolItem).where(
             JobPoolItem.account_id == account.id,
             JobPoolItem.source_browser_draft_id == draft.id,
-            JobPoolItem.deleted_at.is_(None),
         )
     )
     if existing is not None:
+        if existing.deleted_at is not None:
+            raise DomainError("JOB_CAPTURE_DELETED", "该抓取岗位已删除，不会自动恢复或再次扣次", 410)
         return existing
+    if draft.status == "expired":
+        raise DomainError("JOB_CAPTURE_DELETED", "该抓取已下架，不能重新入池", 410)
 
     fields, confirmed_text = _browser_draft_confirmation(draft, {})
     fields["missing_field_codes"] = draft.missing_field_codes or []
@@ -3134,10 +3269,13 @@ def _ensure_browser_pool_item(db: Session, account: Account, draft: BrowserJobDr
     )
     db.add(pool)
     db.flush()
+    from .request_context import current_request_id
+
+    register_capture(db, account, pool, current_request_id())
     return pool
 
 
-def _browser_capture_view(draft: BrowserJobDraft, pool: JobPoolItem) -> dict[str, Any]:
+def _browser_capture_view(draft: BrowserJobDraft, pool: JobPoolItem, db: Session | None = None) -> dict[str, Any]:
     value = _browser_draft_view(draft)
     # 浏览器受限接口只需要岗位引用和状态；不要把 Web 端的去投递签名令牌
     # 或其它匹配池摘要暴露给用户脚本。
@@ -3151,17 +3289,23 @@ def _browser_capture_view(draft: BrowserJobDraft, pool: JobPoolItem) -> dict[str
         "blocking_reasons": pool.blocking_reasons or [],
     }
     value["pool_path"] = f"/app/seeker/pool?pool_item_id={pool.public_id}"
+    if db is not None:
+        value["automatic_processing"] = automatic_view(db, pool.account_id, pool.id)
     return value
 
 
 @router.post("/browser/job-drafts", tags=["browser"])
-def create_browser_draft(payload: BrowserDraftRequest, request: Request, account: BrowserAccount, db: Session = Depends(get_db)) -> JSONResponse:
+def create_browser_draft(payload: BrowserDraftRequest, request: Request, background_tasks: BackgroundTasks, account: BrowserAccount, db: Session = Depends(get_db)) -> JSONResponse:
+    _rate_limit(db, request, "browser.capture", limit=120, subject=account.public_id)
     key = _idempotency_key(request)
+    _lock_account_write_lane(db, account.id)
     source_url = _normalize_job_url(payload.platform, payload.source_url)
     source_hash = hashlib.sha256(source_url.encode("utf-8")).hexdigest()
     normalized_payload = payload.model_dump(mode="json")
     normalized_payload["source_url"] = source_url
-    request_digest = payload_hash(normalized_payload)
+    # 重访同一页面只改变抓取时间，脚本会复用内容幂等键；时间不属于业务冲突。
+    semantic_payload = {name: value for name, value in normalized_payload.items() if name != "captured_at"}
+    request_digest = payload_hash(semantic_payload)
     if key:
         existing_by_key = db.scalar(
             select(BrowserJobDraft).where(
@@ -3170,17 +3314,23 @@ def create_browser_draft(payload: BrowserDraftRequest, request: Request, account
             )
         )
         if existing_by_key is not None:
-            if existing_by_key.request_hash != request_digest:
+            original_payload = existing_by_key.captured_payload or {}
+            legacy_digest = payload_hash({name: value for name, value in original_payload.items() if name != "captured_at"})
+            if existing_by_key.request_hash != request_digest and legacy_digest != request_digest:
                 raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的岗位草稿不同", 409)
             pool = _ensure_browser_pool_item(db, account, existing_by_key)
+            dispatch_account(db, account.id)
             db.commit()
-            return _ok(request, _browser_capture_view(existing_by_key, pool))
+            _wake_automatic(background_tasks, account.id)
+            return _ok(request, _browser_capture_view(existing_by_key, pool, db))
     content_hash = payload_hash(payload.model_dump(exclude={"source_url", "captured_at"}))
     existing = db.scalar(select(BrowserJobDraft).where(BrowserJobDraft.account_id == account.id, BrowserJobDraft.platform == payload.platform, BrowserJobDraft.source_url_hash == source_hash, BrowserJobDraft.content_hash == content_hash))
     if existing:
         pool = _ensure_browser_pool_item(db, account, existing)
+        dispatch_account(db, account.id)
         db.commit()
-        return _ok(request, _browser_capture_view(existing, pool))
+        _wake_automatic(background_tasks, account.id)
+        return _ok(request, _browser_capture_view(existing, pool, db))
     draft = BrowserJobDraft(
         account_id=account.id,
         platform=payload.platform,
@@ -3205,9 +3355,11 @@ def create_browser_draft(payload: BrowserDraftRequest, request: Request, account
     db.add(draft)
     db.flush()
     pool = _ensure_browser_pool_item(db, account, draft)
+    dispatch_account(db, account.id)
     db.commit()
     db.refresh(draft)
-    return _ok(request, _browser_capture_view(draft, pool), code=201)
+    _wake_automatic(background_tasks, account.id)
+    return _ok(request, _browser_capture_view(draft, pool, db), code=201)
 
 
 @router.get("/browser/job-drafts/{draft_id}", tags=["browser"])
@@ -3215,11 +3367,12 @@ def get_browser_draft(request: Request, account: BrowserAccount, draft_id: str =
     draft = db.scalar(select(BrowserJobDraft).where(BrowserJobDraft.public_id == draft_id, BrowserJobDraft.account_id == account.id))
     if draft is None:
         raise NotFoundError("岗位草稿不存在")
-    if draft.expires_at <= now_utc() or draft.status == "expired":
+    if draft.status == "expired" or (draft.status != "confirmed" and draft.expires_at <= now_utc()):
         draft.status = "expired"
         db.commit()
         raise DomainError("JOB_DRAFT_EXPIRED", "岗位草稿已过期", 410)
-    return _ok(request, _browser_draft_view(draft))
+    pool = db.scalar(select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.source_browser_draft_id == draft.id, JobPoolItem.deleted_at.is_(None)))
+    return _ok(request, _browser_capture_view(draft, pool, db) if pool else _browser_draft_view(draft))
 
 
 def _preference_version(
@@ -3432,6 +3585,8 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
             else None
         ),
         "analysis_summary": _pool_analysis_summary(analyses),
+        "automatic_processing": automatic_view(db, item.account_id, item.id),
+        "application_recommendation": application_recommendation(analysis.result) if analysis and analysis.status in {"available", "succeeded"} and analysis.result else None,
         "match_score": match_score,
         "apply_action": _apply_action(item) if item.source_url else {"available": False},
         "revision": item.revision,
@@ -3669,6 +3824,8 @@ def _start_analysis(
     pool: JobPoolItem | None,
     key: str,
     preferences: list[PreferenceVersion] | None = None,
+    enqueue_only: bool = False,
+    automatic_job: AutoMatchJob | None = None,
 ) -> tuple[Analysis, Task, bool]:
     resume_document = db.get(Document, resume_version.document_id)
     job_document = db.get(Document, job_version.document_id)
@@ -3692,6 +3849,8 @@ def _start_analysis(
         "preference_version_id": preference_ids[0] if len(preference_ids) == 1 else None,
         "preference_version_ids": preference_ids,
     }
+    if automatic_job:
+        input_data.update({"auto_match_job_id": automatic_job.public_id, "automation_version": AUTOMATION_VERSION, "job_pool_item_id": pool.public_id if pool else None})
     task, reservation, existed = create_task(
         db,
         account,
@@ -3730,6 +3889,8 @@ def _start_analysis(
         pool.resume_version_id = resume_version.id
         pool.preference_id = preference_versions[0].preference_id if len(preference_versions) == 1 else None
         pool.analysis_status = "queued"
+    if enqueue_only:
+        return analysis, task, False
     db.commit()
 
     def work() -> Any:
@@ -5046,7 +5207,10 @@ def retry_task(
 ) -> JSONResponse:
     _write_guard(request, account)
     key = _idempotency_key(request)
+    _lock_account_write_lane(db, account.id)
     item = _task(db, account.id, task_id, lock=True)
+    if (item.input_data or {}).get("auto_match_job_id"):
+        automatic_task_source(db, item)
     if item.task_type == "interview_practice":
         _rate_limit(db, request, "interview.practice.retry", limit=20, subject=account.public_id)
         item = _task(db, account.id, task_id, lock=True)
@@ -5093,7 +5257,7 @@ def retry_task(
         # 默认内联部署没有常驻 Worker；用户点击重试时立即消费持久 outbox，不能永久停在 queued。
         from .worker import TaskWorker
 
-        TaskWorker(owner=f"inline-retry-{uuid.uuid4()}", batch_size=100).run_once()
+        TaskWorker(owner=f"inline-retry-{uuid.uuid4()}", batch_size=100).run_once(account_id=account.id)
         db.refresh(item)
     return _ok(request, {"task": task_view(item)}, code=202)
 
@@ -5832,6 +5996,7 @@ def admin_delete_job_pool_item(
 ) -> Response:
     _admin_guard(request, account, db, "admin.job_pool.manage", write=True)
     item = _admin_pool(db, item_id, active_only=True)
+    _lock_account_write_lane(db, item.account_id)
     snapshot = _admin_pool_deletion_snapshot(db, item)
     _require_deletion_match(request, snapshot["affected"]["impact_version"])
     owner = db.get(Account, item.account_id)
@@ -5851,6 +6016,7 @@ def admin_delete_job_pool_item(
         if path not in files:
             files.append(path)
     now = now_utc()
+    hide_jobs(db, item.account_id, pool_ids={item.id})
     _mark_tasks_cancelled(
         db,
         item.account_id,
@@ -6235,14 +6401,17 @@ def admin_usage_targets(
 
 
 @router.post("/admin/users/{user_id}/usage-grants", tags=["admin"], status_code=201)
-def admin_grant(payload: GrantRequest, request: Request, account: WebAccount, user_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
+def admin_grant(payload: GrantRequest, request: Request, background_tasks: BackgroundTasks, account: WebAccount, user_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
     _admin_guard(request, account, db, "admin.usage.grant", write=True)
     key = _idempotency_key(request)
     target = _account_or_404(db, user_id)
     grant, existed = grant_feature(db, target, payload.feature, payload.count, source_type="admin_grant", reason=payload.reason, operator_account_id=account.id, idempotency_key=key)
     if not existed:
         _admin_audit(db, account, "usage.grant", target, request, payload.reason, after={"feature": payload.feature, "count": payload.count, "grant_id": grant.public_id}, idempotency_key=key)
+    if payload.feature == "analysis" and target.registration_role == "seeker":
+        dispatch_account(db, target.id)
     db.commit()
+    _wake_automatic(background_tasks, target.id)
     balance = next(item for item in usage_view(db, target)["balances"] if item["feature"] == payload.feature)
     return _ok(request, {"grant": {"id": grant.public_id, "feature": grant.feature, "count": grant.count, "reason": grant.reason, "before_available": grant.before_available, "after_available": grant.after_available, "created_at": grant.created_at.isoformat()}, "balance": balance}, code=200 if existed else 201)
 

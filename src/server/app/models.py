@@ -459,6 +459,58 @@ class JobPoolItem(TimestampMixin, Base):
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
 
 
+class AutoMatchingConfig(TimestampMixin, Base):
+    """账号明确授权的自动匹配策略；不自动替用户切换简历或期望。"""
+
+    __tablename__ = "auto_matching_configs"
+    __table_args__ = (
+        UniqueConstraint("account_id", name="uk_auto_matching_account"),
+        CheckConstraint("daily_limit BETWEEN 1 AND 50", name="ck_auto_matching_daily_limit"),
+        CheckConstraint("revision >= 1", name="ck_auto_matching_revision"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    resume_document_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    preference_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    daily_limit: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str | None] = mapped_column(String(128))
+    request_hash: Mapped[str | None] = mapped_column(String(64))
+
+
+class AutoMatchJob(TimestampMixin, Base):
+    """仅保存自动领取与冻结引用；执行状态仍由原 Analysis/Task 决定。"""
+
+    __tablename__ = "auto_match_jobs"
+    __table_args__ = (
+        UniqueConstraint("job_pool_item_id", name="uk_auto_match_pool"),
+        UniqueConstraint("account_id", "source_key", name="uk_auto_match_source"),
+        Index("ix_auto_match_waiting", "account_id", "state", "created_at"),
+        CheckConstraint("state IN ('waiting', 'enqueued', 'cancelled')", name="ck_auto_match_state"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    config_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    config_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    job_pool_item_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    source_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    resume_version_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    preference_version_ids: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), default="waiting", nullable=False)
+    blocked_code: Mapped[str | None] = mapped_column(String(80))
+    scheduled_date: Mapped[str | None] = mapped_column(String(10), index=True)
+    analysis_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    task_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64))
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
 class Analysis(TimestampMixin, Base):
     __tablename__ = "analysis_reports"
     __table_args__ = (

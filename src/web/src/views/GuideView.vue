@@ -50,11 +50,11 @@ import SiteFooter from "@/components/SiteFooter.vue";
       </section>
 
       <section id="capture" class="guide-section">
-        <div class="section-heading"><div><div class="eyebrow">BROWSER ASSISTANT</div><h2>抓取岗位：只抓完整 JD，不自动投递</h2></div><p>抓取和分析是两个动作。你可以先连续收集多个岗位，之后再集中比较。</p></div>
-        <div class="guide-flow"><div><span>岗位详情页</span><small>BOSS / 猎聘</small></div><i>→</i><div><span>同步 Purslyx</span><small>当前页面的按钮</small></div><i>→</i><div><span>匹配池</span><small>保存岗位和抓取时间</small></div><i>→</i><div><span>选择后匹配</span><small>由你确认简历</small></div></div>
+        <div class="section-heading"><div><div class="eyebrow">BROWSER ASSISTANT</div><h2>抓取岗位：自动处理，不自动投递</h2></div><p>在工作台先确认默认简历、岗位期望和每日上限，再开启自动处理。抓到一个新岗位就排队解析与匹配。</p></div>
+        <div class="guide-flow"><div><span>确认自动处理</span><small>工作台首次设置</small></div><i>→</i><div><span>抓取完整 JD</span><small>BOSS / 猎聘</small></div><i>→</i><div><span>自动解析匹配</span><small>余额充足时排队</small></div><i>→</i><div><span>今日投递建议</span><small>由你决定去投递</small></div></div>
         <div class="guide-two-column">
           <article class="guide-panel"><div class="guide-panel-title"><span class="guide-step-no">A</span><h3>第一次安装</h3></div><ol class="guide-list"><li>先安装 <a href="https://www.tampermonkey.net/" target="_blank" rel="noreferrer">Tampermonkey</a>。</li><li>点击本页顶部或首页的“安装脚本”，在扩展页面确认安装。</li><li>保持 Purslyx 已登录，再打开 BOSS 直聘或猎聘的岗位详情页。</li></ol><a class="button primary small" href="/purslyx-job-capture.user.js">安装 Purslyx 脚本</a></article>
-          <article class="guide-panel"><div class="guide-panel-title"><span class="guide-step-no">B</span><h3>每个岗位的操作</h3></div><ol class="guide-list"><li>确认岗位正文已经展开；如果页面显示“查看完整内容”，先在原平台展开。</li><li>点击脚本面板里的“同步 Purslyx”，等待提示“已获取……并直接写入匹配池”。</li><li>点击“打开匹配池”查看岗位。这里不会消耗 AI 次数，之后再决定是否匹配。</li></ol><div class="callout attention">如果正文被折叠、要求登录或平台触发验证码，脚本会停止，先处理原页面后点击“重试识别”。</div></article>
+          <article class="guide-panel"><div class="guide-panel-title"><span class="guide-step-no">B</span><h3>每个岗位的操作</h3></div><ol class="guide-list"><li>确认岗位正文已经展开；如果页面显示“查看完整内容”，先在原平台展开。</li><li>点击脚本面板里的“同步 Purslyx”，等待提示写入匹配池及自动处理状态。</li><li>开启自动处理后，回工作台查看“优先投、可以尝试、先核实、暂缓投”。未开启时仅入池，仍可手动匹配。</li></ol><div class="callout attention">自动匹配成功消耗 1 次分析额度，失败释放。余额不足、队列繁忙或每日上限已用完会保留待处理；重复抓取不自动重复扣次。正文不完整、验证码或登录限制需先在原页面处理。</div></article>
         </div>
       </section>
 
@@ -82,8 +82,8 @@ import SiteFooter from "@/components/SiteFooter.vue";
         <div class="guide-faq">
           <details open><summary>岗位一直显示“排队中”或“匹配执行中”怎么办？</summary><p>页面会自动刷新状态。“排队中”表示任务还没有被 Worker 领取；“匹配执行中”表示模型正在运行。长时间没有变化时打开“任务中心”查看任务，或联系管理员检查 Worker 日志。</p></details>
           <details><summary>为什么抓取到的 JD 不完整？</summary><p>先在 BOSS 或猎聘原页面登录并展开完整岗位正文，等待页面加载稳定，再点击“重试识别”。脚本不会用猜测补齐被折叠或无法读取的内容。</p></details>
-          <details><summary>有多条岗位期望，会不会对同一个岗位扣很多次？</summary><p>不会。对同一个岗位，所有有效岗位期望会合并为一次模型请求；批量选择多个岗位时，按岗位数量提交匹配。</p></details>
-          <details><summary>为什么匹配时还要选择简历？</summary><p>一个账号可以维护多份简历，不同岗位可能使用不同版本。只有多份简历时才弹窗选择；岗位期望不需要你逐条选择，默认全部参与。</p></details>
+          <details><summary>有多条岗位期望，会不会对同一个岗位扣很多次？</summary><p>不会。自动处理合并你选中的多套期望，按整体最合适的一套判断条件，每个新岗位成功匹配计 1 次。解析与匹配会分别调用模型，但不额外扣一次用户额度。</p></details>
+          <details><summary>为什么匹配时还要选择简历？</summary><p>手动匹配可以为不同岗位选择不同简历。自动处理只需在工作台确认默认简历和参与匹配的期望；新岗位用最新已确认版本，待处理岗位保留原版本。暂停只停止继续排队，已经领取的任务会完成。</p></details>
           <details><summary>Purslyx 会自动帮我投递或联系招聘者吗？</summary><p>不会。点击“去投递”只记录你主动发起的入口并打开原岗位页面，是否投递、沟通和提交简历都由你在招聘平台确认。</p></details>
           <details><summary>AI 会不会把不存在的经历写进简历？</summary><p>产品以已确认事实为边界。解析、报告和改写都保留证据引用；发现事实不准确时，请先回到资料页面修正并确认新版本。</p></details>
         </div>

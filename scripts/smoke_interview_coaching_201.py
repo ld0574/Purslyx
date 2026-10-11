@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在随机隔离 Schema 演练新版面试迁移与 Worker；不触碰已有业务表。"""
+"""在随机隔离 Schema 演练面试及自动匹配迁移与 Worker；不触碰已有业务表。"""
 
 from __future__ import annotations
 
@@ -51,6 +51,7 @@ def main() -> None:
                 "-m",
                 "pytest",
                 "tests/integration/test_interview_coaching_postgres.py",
+                "tests/integration/test_auto_matching_postgres.py",
                 "-q",
                 "--tb=short",
             ],

@@ -99,7 +99,43 @@
 .materials-empty { min-height: 210px; }
 .dashboard-metrics { margin-bottom: 18px; }
 .dashboard-metrics .metric-card strong small { font-size: 12px; font-weight: 800; }
-.dashboard-main-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(280px, .85fr); gap: 18px; align-items: start; }
+.dashboard-main-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; align-items: start; }
+.daily-recommendations { margin-bottom: 20px; }
+.daily-recommendations-head, .recommendation-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.daily-recommendations-head .item-actions { flex-shrink: 0; }
+.auto-processing-state, .daily-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.daily-progress { margin: 16px 0; padding: 14px; border: 1px solid var(--line); border-radius: 10px; background: #f7fafc; }
+.daily-progress span { font-size: 13px; color: var(--muted); }
+.daily-progress strong { margin-left: 5px; color: var(--ink); }
+.daily-failures { font-size: 13px; color: #a34920; }
+.auto-waiting-reason { font-size: 13px; padding: 9px 12px; border-radius: 8px; background: #fff8ed; }
+.recommendation-filters { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
+.recommendation-filters button { padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--muted); background: #fff; cursor: pointer; }
+.recommendation-filters button.active { border-color: var(--brand); color: var(--brand); background: #f0f5ff; }
+.recommendation-list { display: flex; flex-direction: column; gap: 14px; }
+.recommendation-item { padding: 18px; border: 1px solid var(--line); border-radius: 12px; overflow-wrap: anywhere; }
+.recommendation-priority { border-left: 4px solid #32876d; }
+.recommendation-title h4 { font-size: 16px; margin: 0 0 5px; }
+.recommendation-title p { margin: 0; color: var(--muted); font-size: 13px; }
+.recommendation-title .tag { flex-shrink: 0; }
+.recommendation-reason { margin: 12px 0 6px; font-size: 14px; }
+.recommendation-evidence { margin: 14px 0; padding: 12px; background: #f7fafc; border-radius: 8px; font-size: 13px; }
+.recommendation-evidence p { margin: 6px 0; }
+.recommendation-evidence blockquote { margin: 0; color: var(--muted); border-left: 2px solid var(--line); padding-left: 10px; }
+.recommendation-risks, .recommendation-item details { margin: 14px 0; font-size: 13px; }
+.recommendation-item ul { padding-left: 20px; margin: 7px 0; line-height: 1.8; }
+.recommendation-item summary { cursor: pointer; color: var(--muted); }
+.daily-disclaimer { margin: 18px 0 0; }
+.daily-empty .item-actions { margin-top: 14px; }
+.auto-matching-form { display: flex; flex-direction: column; gap: 16px; }
+.auto-matching-form fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.auto-matching-form legend { font-size: 14px; font-weight: 600; margin-bottom: 10px; }
+.auto-choice-list { max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.auto-choice-list .resume-choice { margin: 0; padding: 12px; }
+.auto-consent { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; line-height: 1.7; }
+.auto-consent input { margin-top: 5px; flex-shrink: 0; }
+.auto-consent-confirm { padding: 12px; background: #f0f5ff; border-radius: 8px; }
+@media (max-width: 560px) { .daily-recommendations-head { flex-direction: column; } .daily-recommendations-head .item-actions { width: 100%; } .daily-recommendations-head .button { flex: 1; } .daily-progress { align-items: flex-start; gap: 12px 18px; } .daily-progress span { flex-basis: 40%; } .recommendation-item { padding: 14px; } .auto-matching-form .item-actions { flex-wrap: wrap; } .auto-matching-form .item-actions .button { width: 100%; } }
 .dashboard-card-head { align-items: center; }
 .dashboard-range { display: inline-flex; flex: 0 0 auto; padding: 3px; border: 1px solid var(--line); border-radius: 11px; background: #f4f8fc; }
 .dashboard-range button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font: inherit; font-size: 11px; font-weight: 800; white-space: nowrap; cursor: pointer; transition: color .16s, background .16s, box-shadow .16s; }

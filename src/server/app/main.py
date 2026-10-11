@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import secrets
@@ -103,7 +104,27 @@ async def lifespan(_: FastAPI):
             init_db()
     except SQLAlchemyError as exc:
         raise RuntimeError("无法连接 PostgreSQL，请检查 DATABASE_URL 和数据库网络访问") from exc
-    yield
+    stop = asyncio.Event()
+
+    async def automatic_loop() -> None:
+        from .worker import TaskWorker, run_automatic_inline
+
+        automatic_worker = TaskWorker(owner=f"inline-auto-loop-{secrets.token_hex(8)}", batch_size=1)
+        while not stop.is_set():
+            await asyncio.to_thread(run_automatic_inline, worker=automatic_worker)
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=3)
+            except TimeoutError:
+                pass
+
+    runner = asyncio.create_task(automatic_loop()) if settings.execution_mode == "inline" else None
+    try:
+        yield
+    finally:
+        stop.set()
+        if runner:
+            # 不取消正在提交结果的线程；已持久化的 outbox 仍可由重启后的 Worker 恢复。
+            await runner
 
 
 app = FastAPI(

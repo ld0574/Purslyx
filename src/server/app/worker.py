@@ -11,9 +11,18 @@ import logging
 from datetime import timedelta
 from typing import Any, Callable
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .application_recommendations import application_recommendation
+from .auto_matching import (
+    AUTOMATION_VERSION,
+    MATCH_OUTPUT_LIMIT,
+    PARSE_OUTPUT_LIMIT,
+    automatic_task_source,
+    dispatch_account,
+    token_bounds,
+)
 from .config import settings
 from .db import SessionLocal
 from .errors import DomainError, NotFoundError
@@ -23,6 +32,8 @@ from .model_provider import ModelResult, add_failure_usage, get_model_provider, 
 from .models import (
     Account,
     Analysis,
+    AutoMatchingConfig,
+    AutoMatchJob,
     Document,
     DocumentDraft,
     DocumentVersion,
@@ -51,11 +62,13 @@ from .parsing import extract_file_text, sha256_bytes
 from .pdf_export import render_resume_pdf
 from .request_context import task_request_id
 from .services import (
+    _lock_account_write_lane,
     claim_outbox_batch,
     claim_task_execution,
     fail_task,
     mark_outbox_published,
     recover_expired_leases,
+    reserve_feature,
     run_local_task,
     utcnow,
 )
@@ -147,23 +160,59 @@ class TaskWorker:
         self.batch_size = batch_size
         self.lease_seconds = lease_seconds
         self.outbox_lease_seconds = outbox_lease_seconds
+        self._automatic_account_cursor = 0
 
-    def run_once(self) -> int:
+    def run_once(self, *, account_id: int | None = None, automatic_only: bool = False) -> int:
         """恢复过期租约并处理一批事件，返回本次处理的事件数。"""
 
+        self._schedule_automatic(account_id)
         with SessionLocal() as db:
-            recover_expired_leases(db, limit=self.batch_size)
+            recover_expired_leases(db, limit=self.batch_size, account_id=account_id, automatic_only=automatic_only)
             events = claim_outbox_batch(
                 db,
                 owner=self.owner,
                 limit=self.batch_size,
                 lease_seconds=self.outbox_lease_seconds,
+                account_id=account_id,
+                automatic_only=automatic_only,
             )
             event_ids = [event.id for event in events]
             db.commit()
         for event_id in event_ids:
             self._process_event(event_id)
         return len(event_ids)
+
+    def _schedule_automatic(self, account_id: int | None) -> None:
+        """每次 Worker tick 恢复额度、每日上限、队列繁忙时保留的岗位。"""
+        with SessionLocal() as db:
+            statement = (
+                select(AutoMatchJob.account_id)
+                .join(AutoMatchingConfig, AutoMatchingConfig.id == AutoMatchJob.config_id)
+                .where(
+                    AutoMatchJob.state == "waiting",
+                    AutoMatchJob.deleted_at.is_(None),
+                    AutoMatchingConfig.enabled.is_(True),
+                )
+                .distinct()
+                .order_by(AutoMatchJob.account_id)
+                .limit(100)
+            )
+            if account_id is not None:
+                statement = statement.where(AutoMatchJob.account_id == account_id)
+                account_ids = list(db.scalars(statement).all())
+            else:
+                # 有界轮转，避免前 100 个长期余额不足的账号阻塞后续账号。
+                account_ids = list(db.scalars(statement.where(AutoMatchJob.account_id > self._automatic_account_cursor)).all())
+                if not account_ids and self._automatic_account_cursor:
+                    account_ids = list(db.scalars(statement).all())
+                self._automatic_account_cursor = account_ids[-1] if account_ids else 0
+        for value in account_ids:
+            try:
+                with SessionLocal() as db:
+                    dispatch_account(db, value)
+                    db.commit()
+            except Exception as exc:
+                LOGGER.error("automatic scheduling failed account_id=%s rule_version=%s stage=dispatch error_type=%s", value, AUTOMATION_VERSION, type(exc).__name__)
 
     def _process_event(self, event_id: int) -> None:
         with SessionLocal() as db:
@@ -184,6 +233,16 @@ class TaskWorker:
                 event.published_at = utcnow()
                 db.commit()
                 return
+            if (task.input_data or {}).get("auto_match_job_id"):
+                _lock_account_write_lane(db, task.account_id)
+                running = db.scalar(select(func.count(Task.id)).where(Task.account_id == task.account_id, Task.deleted_at.is_(None), Task.status == "running", Task.id != task.id)) or 0
+                if running >= settings.account_running_task_limit:
+                    event.status = "pending"
+                    event.claimed_by = None
+                    event.claimed_at = None
+                    event.available_at = utcnow() + timedelta(seconds=3)
+                    db.commit()
+                    return
             claimed = claim_task_execution(
                 db,
                 task.id,
@@ -427,6 +486,12 @@ class TaskWorker:
         if resume_version is None or job_version is None:
             raise DomainError("ANALYSIS_SOURCE_DELETED", "分析输入版本已不可用", 409)
         task_data = task.input_data if isinstance(task.input_data, dict) else {}
+        automatic = bool(task_data.get("auto_match_job_id"))
+        if automatic:
+            automatic_task_source(db, task)
+            if reservation is None:
+                reservation = reserve_feature(db, account, task, "analysis", idempotency_key=f"auto-retry:{task.public_id}:{task.retry_count}")
+                db.commit()
         preference_version_ids = [str(value) for value in task_data.get("preference_version_ids", []) if value]
         if preference_version_ids:
             preference_rows = list(
@@ -454,8 +519,47 @@ class TaskWorker:
             else None
         )
 
+        parsed_job = job_version.content
+        source = db.get(Document, job_version.document_id)
+        source_text = source.raw_text or "" if source else ""
+
         def work() -> ModelResult:
-            return get_model_provider().analyze(
+            nonlocal parsed_job
+            provider = get_model_provider()
+            if automatic:
+                automatic_task_source(db, task)
+                LOGGER.info("automatic analysis request_id=%s account_id=%s task_id=%s automatic_job_id=%s pool_id=%s rule_version=%s stage=parse", task_request_id(task.input_data) or "unknown", task.account_id, task.public_id, task_data["auto_match_job_id"], task_data.get("job_pool_item_id") or "unknown", AUTOMATION_VERSION)
+                task.current_step = "parsing_job"
+                db.commit()
+                extracted = provider.extract_job(source_text, max_output_tokens=PARSE_OUTPUT_LIMIT)
+                matching_called = False
+                try:
+                    parsed_job = extracted.value
+                    # 抓取的标题/地点/薪资为实际页面字段；只补抽取没有读出的字段。
+                    original_fields = job_version.content.get("job_fields") or {}
+                    fields = dict(parsed_job.get("job_fields") or {})
+                    for key in ("title", "company_name", "location_text", "locations", "work_mode", "salary_text", "salary", "source_url"):
+                        if fields.get(key) in (None, "", []):
+                            fields[key] = original_fields.get(key)
+                    parsed_job = {**parsed_job, "job_fields": fields}
+                    if not fields.get("requirements") and not fields.get("responsibilities"):
+                        raise DomainError("AUTO_JOB_REQUIREMENTS_EMPTY", "岗位正文没有可用于匹配的要求，请检查抓取内容", 422, "retry")
+                    automatic_task_source(db, task)
+                    LOGGER.info("automatic analysis request_id=%s account_id=%s task_id=%s automatic_job_id=%s pool_id=%s rule_version=%s stage=match", task_request_id(task.input_data) or "unknown", task.account_id, task.public_id, task_data["auto_match_job_id"], task_data.get("job_pool_item_id") or "unknown", AUTOMATION_VERSION)
+                    task.current_step = "matching"
+                    db.commit()
+                    matching_called = True
+                    matched = provider.analyze(resume_version.content, parsed_job, preference_content, analysis.context_type, max_output_tokens=MATCH_OUTPUT_LIMIT)
+                    value = {**matched.value, "parsed_job": parsed_job, "automation_version": AUTOMATION_VERSION, "application_recommendation": application_recommendation(matched.value)}
+                    return merge_model_results(extracted, matched, value=value)
+                except Exception as exc:
+                    if matching_called:
+                        add_failure_usage(exc, extracted)
+                    else:
+                        exc.model_result = extracted
+                    LOGGER.error("automatic analysis failed request_id=%s account_id=%s task_id=%s automatic_job_id=%s pool_id=%s rule_version=%s stage=%s error_type=%s error_code=%s", task_request_id(task.input_data) or "unknown", task.account_id, task.public_id, task_data["auto_match_job_id"], task_data.get("job_pool_item_id") or "unknown", AUTOMATION_VERSION, "match" if matching_called else "parse_validation", type(exc).__name__, getattr(exc, "code", "TASK_EXECUTION_FAILED"))
+                    raise
+            return provider.analyze(
                 resume_version.content,
                 job_version.content,
                 preference_content,
@@ -463,6 +567,11 @@ class TaskWorker:
             )
 
         def save_result(report: dict[str, Any]) -> None:
+            if automatic:
+                _lock_account_write_lane(db, task.account_id)
+                automatic_task_source(db, task)
+                db.refresh(analysis)
+                LOGGER.info("automatic analysis request_id=%s account_id=%s task_id=%s automatic_job_id=%s pool_id=%s rule_version=%s stage=save", task_request_id(task.input_data) or "unknown", task.account_id, task.public_id, task_data["auto_match_job_id"], task_data.get("job_pool_item_id") or "unknown", AUTOMATION_VERSION)
             if analysis.deleted_at is not None:
                 raise DomainError("ANALYSIS_SOURCE_DELETED", "分析已删除，结果不会写回", 409)
             if len(preferences) > 1:
@@ -490,7 +599,7 @@ class TaskWorker:
                 report,
                 resume_version.id,
                 preference_content,
-                job_version.content,
+                parsed_job,
             )
             if analysis.job_pool_item_id:
                 pool = db.get(JobPoolItem, analysis.job_pool_item_id)
@@ -517,6 +626,8 @@ class TaskWorker:
             owner=self.owner,
             feature="analysis",
             cost_feature="analysis",
+            estimated_input_tokens=token_bounds(source_text)[0] if automatic else 12000,
+            estimated_output_tokens=token_bounds(source_text)[1] if automatic else 4000,
             on_success=save_result,
             task_result={
                 "resource_type": "analysis",
@@ -943,3 +1054,16 @@ def task_status_snapshot(task: Task) -> dict[str, Any]:
     """Worker CLI 使用的安全任务摘要。"""
 
     return {"id": task.public_id, "task_type": task.task_type, "status": task.status, "retry_count": task.retry_count}
+
+
+def run_automatic_inline(account_id: int | None = None, *, worker: TaskWorker | None = None) -> None:
+    """HTTP 返回后消费自动任务；只消费已授权的自动任务，不触碰其他账号手动队列。"""
+    import uuid
+
+    worker = worker or TaskWorker(owner=f"inline-auto-{uuid.uuid4()}", batch_size=1)
+    try:
+        for _ in range(50):
+            if not worker.run_once(account_id=account_id, automatic_only=True):
+                break
+    except Exception as exc:
+        LOGGER.error("inline automatic worker failed account_id=%s rule_version=%s stage=background error_type=%s", account_id or "authorized-accounts", AUTOMATION_VERSION, type(exc).__name__)

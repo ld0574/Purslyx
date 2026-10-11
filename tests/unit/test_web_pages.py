@@ -118,7 +118,8 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert 'class="guide-link active"' in guide
     assert "首次匹配完整流程" in guide
     assert "同步 Purslyx" in guide
-    assert "合并为一次模型请求" in guide
+    assert "每个新岗位成功匹配计 1 次" in guide
+    assert "解析与匹配会分别调用模型" in guide
     assert (WEB_ROOT / "public" / "purslyx-logo.png").is_file()
     assert 'src="/purslyx-logo.png"' in shell
     assert 'src="/purslyx-logo.png"' in read("src/views/AuthView.vue")

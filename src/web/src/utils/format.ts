@@ -38,6 +38,12 @@ const STATUS_LABELS: Record<string, string> = {
   analysis: "分析",
   rewrite: "改写",
   interview: "面试",
+  parsing_job: "解析岗位要求",
+  matching: "匹配简历与期望",
+  resume_version: "简历版本",
+  job_version: "岗位版本",
+  preference_version: "期望版本",
+  input_preparation: "准备输入",
 };
 
 const TASK_LABELS: Record<string, string> = {

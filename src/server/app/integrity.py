@@ -9,6 +9,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
@@ -25,6 +26,8 @@ from .models import (
     AnalysisRequirementResult,
     ApplyClick,
     AuditEvent,
+    AutoMatchingConfig,
+    AutoMatchJob,
     BrowserAuthCode,
     BrowserJobDraft,
     BrowserSession,
@@ -103,6 +106,8 @@ ACCOUNT_OWNED_MODELS: tuple[type[Any], ...] = (
     UsageBalance,
     UsageLedger,
     JobPoolItem,
+    AutoMatchJob,
+    AutoMatchingConfig,
     Analysis,
     Rewrite,
     RewriteDecision,
@@ -141,6 +146,12 @@ ACCOUNT_OWNED_MODELS: tuple[type[Any], ...] = (
 
 
 REFERENCE_RULES: tuple[ReferenceRule, ...] = (
+    ReferenceRule("auto_matching.resume", AutoMatchingConfig, "resume_document_id", Document),
+    ReferenceRule("auto_job.config", AutoMatchJob, "config_id", AutoMatchingConfig),
+    ReferenceRule("auto_job.pool", AutoMatchJob, "job_pool_item_id", JobPoolItem, parent_deleted_column="deleted_at", child_hidden_column="deleted_at"),
+    ReferenceRule("auto_job.resume", AutoMatchJob, "resume_version_id", DocumentVersion, parent_deleted_column="deleted_at", child_hidden_column="deleted_at"),
+    ReferenceRule("auto_job.analysis", AutoMatchJob, "analysis_id", Analysis, parent_deleted_column="deleted_at", child_hidden_column="deleted_at"),
+    ReferenceRule("auto_job.task", AutoMatchJob, "task_id", Task),
     ReferenceRule("account_role.role", AccountRole, "role_id", AdminRole, child_account_column=None, parent_account_column=None, compare_accounts=False),
     ReferenceRule("role_permission.role", RolePermission, "role_id", AdminRole, child_account_column=None, parent_account_column=None, compare_accounts=False),
     ReferenceRule("role_permission.permission", RolePermission, "permission_id", AdminPermission, child_account_column=None, parent_account_column=None, compare_accounts=False),
@@ -317,7 +328,29 @@ def collect_integrity_findings(db: Session) -> tuple[list[dict[str, Any]], dict[
                     _finding("deleted_parent_visible_child", rule.child.__tablename__, resource_id, rule.name, row[1])
                 )
 
-    return findings, {"checked_rows": checked_rows, "checked_rules": len(ACCOUNT_OWNED_MODELS) + len(REFERENCE_RULES)}
+    # 自动授权的多套期望存放在 JSON 引用中，也必须复核归属；扫描不读取任何正文。
+    for child, column, parent, rule in (
+        (AutoMatchingConfig, "preference_ids", Preference, "auto_config.preferences"),
+        (AutoMatchJob, "preference_version_ids", PreferenceVersion, "auto_job.preferences"),
+    ):
+        parents = {row[0]: row for row in db.execute(select(parent.public_id, parent.account_id, parent.deleted_at)).all()}
+        columns = [child.public_id, child.account_id, getattr(child, column), child.enabled if child is AutoMatchingConfig else child.deleted_at]
+        for resource_id, account_id, refs, visibility in db.execute(select(*columns)).all():
+            for ref in refs if isinstance(refs, list) else [None]:
+                checked_rows += 1
+                try:
+                    value = str(UUID(str(ref)))
+                except (ValueError, TypeError):
+                    findings.append(_finding("orphan_reference", child.__tablename__, resource_id, rule, "invalid-id"))
+                    continue
+                source = parents.get(value)
+                if source is None:
+                    findings.append(_finding("orphan_reference", child.__tablename__, resource_id, rule, value))
+                elif source[1] != account_id:
+                    findings.append(_finding("cross_account_reference", child.__tablename__, resource_id, rule, value))
+                elif source[2] is not None and (visibility is True if child is AutoMatchingConfig else visibility is None):
+                    findings.append(_finding("deleted_parent_visible_child", child.__tablename__, resource_id, rule, value))
+    return findings, {"checked_rows": checked_rows, "checked_rules": len(ACCOUNT_OWNED_MODELS) + len(REFERENCE_RULES) + 2}
 
 
 def run_integrity_scan(db: Session, *, max_persisted_findings: int = 1000) -> IntegrityScanRun:

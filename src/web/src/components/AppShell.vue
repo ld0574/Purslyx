@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, provide, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
 import { api } from "@/services/api";
@@ -63,6 +63,7 @@ async function loadBalances() {
   }
 }
 
+provide("refreshUsage", loadBalances);
 onMounted(loadBalances);
 </script>
 

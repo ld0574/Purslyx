@@ -11,6 +11,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from .config import settings
@@ -79,13 +80,15 @@ def _bucket(db: Session, date_label: str):
         .with_for_update()
     )
     if row is None:
-        row = SiteBudgetBucket(
-            metric_date=date_label,
-            budget_usd=decimal_value(settings.site_budget_usd, default=Decimal("30.00")) or Decimal("30.00"),
-            concurrent_limit=settings.model_concurrency_limit,
+        # 上海零点后的首个并行调用可能同时读到空桶；唯一键争用不得让业务任务失败。
+        db.execute(
+            pg_insert(SiteBudgetBucket).values(
+                metric_date=date_label,
+                budget_usd=decimal_value(settings.site_budget_usd, default=Decimal("30.00")),
+                concurrent_limit=settings.model_concurrency_limit,
+            ).on_conflict_do_nothing(index_elements=[SiteBudgetBucket.metric_date])
         )
-        db.add(row)
-        db.flush()
+        row = db.scalar(select(SiteBudgetBucket).where(SiteBudgetBucket.metric_date == date_label).with_for_update())
     return row
 
 

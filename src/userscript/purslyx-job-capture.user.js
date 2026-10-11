@@ -2,8 +2,8 @@
 // @name         Purslyx 岗位自动获取
 // @namespace    https://purslyx.com/
 // @author       Purslyx Team
-// @version      0.5.0
-// @description  在支持的 BOSS 直聘／猎聘详情页自动抓取岗位并直接写入 Purslyx 匹配池。
+// @version      0.6.0
+// @description  抓取完整 BOSS／猎聘岗位并入池；账号开启自动处理后逐条解析匹配，提供投递建议。
 // @downloadURL  https://purslyx.com/purslyx-job-capture.user.js
 // @updateURL    https://purslyx.com/purslyx-job-capture.user.js
 // @match        https://www.zhipin.com/job_detail/*
@@ -176,6 +176,11 @@
       value.job_title,
       value.company_name,
       value.job_description_text,
+      value.location_text,
+      value.work_mode,
+      value.salary_text,
+      value.capture_schema_version,
+      [...(value.missing_field_codes || [])].sort(),
     ]);
   }
 
@@ -349,7 +354,8 @@
       });
       removePending(value);
       setDraftLink(draft.pool_path);
-      setStatus(`已获取「${draft.job_title || "当前岗位"}」并直接写入匹配池；匹配时再选择简历和岗位期望。`, "success");
+      const automatic = draft.automatic_processing;
+      setStatus(`已获取「${draft.job_title || "当前岗位"}」并写入匹配池；${automatic?.message || "可到工作台开启自动解析与匹配"}。`, "success");
     } catch (error) {
       seen.delete(valueFingerprint);
       savePending(value);

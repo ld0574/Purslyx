@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 
 import AppShell from "@/components/AppShell.vue";
 import AsyncState from "@/components/AsyncState.vue";
+import DailyRecommendations from "@/components/DailyRecommendations.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import { api } from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
@@ -16,6 +17,7 @@ const days = ref(14);
 const rangeOptions = [7, 14, 30] as const;
 const dashboard = ref<JsonMap>({ counts: {}, balances: [], attention: {}, activity_series: [], practice_series: [] });
 const role = computed(() => auth.role || "seeker");
+const recommendations = ref<InstanceType<typeof DailyRecommendations> | null>(null);
 
 const dimensionLabels: Record<string, string> = {
   relevance: "回答切题度", specificity: "事实具体度", ownership: "个人贡献清晰度",
@@ -84,11 +86,13 @@ function selectRange(value: number) {
   days.value = value;
   void load();
 }
+function refreshAll() { void load(); void recommendations.value?.refresh(); }
 onMounted(load);
 </script>
 
 <template>
-  <AppShell><PageHeader eyebrow="WORKBENCH" title="工作台" :description="role === 'seeker' ? '看清今天的进展，继续完成最重要的一步。' : '集中查看候选人分析进展和下一步工作。'"><button class="button outline small" type="button" @click="load">刷新</button></PageHeader><AsyncState :loading="loading" :error="error" />
+  <AppShell><PageHeader eyebrow="WORKBENCH" title="工作台" :description="role === 'seeker' ? '每天抓取岗位，自动匹配，直接查看值得投递的机会。' : '集中查看候选人分析进展和下一步工作。'"><button class="button outline small" type="button" @click="refreshAll">刷新</button></PageHeader><AsyncState :loading="loading" :error="error" />
+    <DailyRecommendations v-if="role === 'seeker'" ref="recommendations" />
     <template v-if="!loading">
       <section class="metric-grid dashboard-metrics"><article v-for="item in metrics" :key="String(item.label)" class="metric-card"><strong>{{ item.value }}<small v-if="item.unit"> {{ item.unit }}</small></strong><span>{{ item.label }}</span></article></section>
       <section class="dashboard-main-grid">

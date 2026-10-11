@@ -25,7 +25,13 @@ def migrated_schema():
     from alembic.config import Config
 
     from server.app.db import Base, engine
-    from server.app.models import Interview, InterviewPractice, Task
+    from server.app.models import (
+        AutoMatchingConfig,
+        AutoMatchJob,
+        Interview,
+        InterviewPractice,
+        Task,
+    )
 
     expected = os.environ.get("PGOPTIONS", "")
     assert re.fullmatch(r"-c search_path=coaching_test_[a-f0-9]{32}", expected), (
@@ -35,7 +41,7 @@ def migrated_schema():
         assert connection.scalar(text("SELECT current_schema()")) == expected.split("=")[1]
     legacy = MetaData()
     for table in Base.metadata.sorted_tables:
-        if table.name != InterviewPractice.__tablename__:
+        if table.name not in {InterviewPractice.__tablename__, AutoMatchJob.__tablename__, AutoMatchingConfig.__tablename__}:
             table.to_metadata(legacy)
     sessions = legacy.tables[Interview.__tablename__]
     sessions.indexes = {
@@ -83,7 +89,7 @@ def migrated_schema():
         )
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0011_interview_coaching"
+            == "0012_auto_matching"
         )
 
 

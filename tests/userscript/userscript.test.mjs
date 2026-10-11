@@ -215,7 +215,8 @@ test("BOSS 详情页自动提取并直接写入匹配池", async () => {
   assert.equal(body.work_mode, "onsite");
   assert.equal(body.job_description_text, "负责 React 和 TypeScript 项目交付");
   assert.match(request.headers["Idempotency-Key"], /^capture-/);
-  assert.match(runtime.statusText.textContent, /直接写入匹配池/);
+  assert.match(runtime.statusText.textContent, /写入匹配池/);
+  assert.match(runtime.statusText.textContent, /开启自动解析与匹配/);
   assert.equal(runtime.draftLink.style.display, "inline-block");
 });
 
