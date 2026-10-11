@@ -26,7 +26,8 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Respons
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, cast, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -54,6 +55,15 @@ from .interview_rubric import (
     compare_practice,
     enrich_summary,
     question_kind,
+)
+from .job_opportunities import (
+    HANDLING_VERSION,
+    handling_view,
+    job_conditions,
+    list_opportunities,
+    readable_report,
+    source_update_view,
+    state_for,
 )
 from .matching import SCORING_RULE_VERSION, merge_preference_contents
 from .model_provider import add_failure_usage, get_model_provider, merge_model_results
@@ -88,6 +98,8 @@ from .models import (
     InterviewPractice,
     InterviewQuestion,
     InterviewSummary,
+    JobHandlingChange,
+    JobHandlingState,
     JobPoolItem,
     LogExport,
     ModelCall,
@@ -2981,6 +2993,92 @@ class AutoMatchingRequest(BaseModel):
     confirm_usage: bool = False
 
 
+class HandlingStatusRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    status: Literal["pending", "verifying", "applied", "dismissed"]
+    base_revision: int = Field(ge=0, strict=True)
+    confirm_applied: bool = Field(default=False, strict=True)
+
+
+@router.patch("/job-pool/items/{item_id}/handling-status", tags=["job-pool"])
+def update_handling_status(payload: HandlingStatusRequest, request: Request, account: WebAccount,
+                           item_id: str = PathParam(min_length=1, max_length=36), db: Session = Depends(get_db)) -> JSONResponse:
+    _write_guard(request, account)
+    require_seeker(account)
+    _rate_limit(db, request, "job_handling.update", limit=60, subject=account.public_id)
+    key = _idempotency_key(request)
+    _lock_account_write_lane(db, account.id)
+    pool = _pool(db, account.id, item_id)
+    state = state_for(db, pool)
+    digest = payload_hash({"item": pool.public_id, **payload.model_dump()})
+    previous = db.scalar(select(JobHandlingChange).where(JobHandlingChange.account_id == account.id, JobHandlingChange.idempotency_key == key))
+    if previous:
+        if previous.request_hash != digest:
+            raise DomainError("IDEMPOTENCY_CONFLICT", "同一幂等键对应的状态修改不同", 409)
+        return _ok(request, {"handling": handling_view(state), "replayed": True,
+                             "previous_status": previous.previous_status if state and state.revision == previous.revision else None})
+    if payload.status == "applied" and not payload.confirm_applied:
+        raise DomainError("APPLICATION_CONFIRMATION_REQUIRED", "请明确确认：我已在原平台提交", 422)
+    if payload.base_revision != (state.revision if state else 0):
+        raise DomainError("HANDLING_REVISION_CONFLICT", "处理状态已被其他操作修改，请刷新后重试", 409, "refresh")
+    previous_status = state.status if state else "pending"
+    if state is None:
+        state = JobHandlingState(account_id=account.id, opportunity_key=pool.opportunity_key,
+                                 reference_pool_item_id=pool.id, status=payload.status)
+        db.add(state)
+    else:
+        state.status = payload.status
+        state.reference_pool_item_id = pool.id
+        state.revision += 1
+        state.updated_at = now_utc()
+    db.flush()
+    db.add(JobHandlingChange(account_id=account.id, handling_state_id=state.id, reference_pool_item_id=pool.id,
+                             idempotency_key=key, request_hash=digest, previous_status=previous_status,
+                             status=state.status, revision=state.revision))
+    db.commit()
+    LOGGER.info("job handling saved request_id=%s account_id=%s pool_id=%s state_id=%s rule_version=%s stage=save status=%s revision=%s", _meta(request)["request_id"], account.id, pool.public_id, state.public_id, HANDLING_VERSION, state.status, state.revision)
+    return _ok(request, {"handling": handling_view(state), "previous_status": previous_status, "replayed": False})
+
+
+@router.get("/job-pool/opportunities", tags=["job-pool"])
+def get_opportunities(request: Request, account: WebAccount,
+                      view: Literal["unhandled", "handled", "all"] = Query(default="unhandled"),
+                      handling_status: Literal["pending", "verifying", "applied", "dismissed"] | None = Query(default=None),
+                      tier: Literal["priority", "consider", "verify", "defer"] | None = Query(default=None),
+                      search: str | None = Query(default=None, max_length=120),
+                      cursor: str | None = Query(default=None, max_length=512),
+                      limit: int = Query(default=20, ge=1, le=100), db: Session = Depends(get_db)) -> JSONResponse:
+    require_seeker(account)
+    try:
+        data = list_opportunities(db, account.id, view=view, status=handling_status, tier=tier, search=search, cursor=cursor, limit=limit)
+        data.update(_opportunity_progress(db, account.id))
+        return _ok(request, data)
+    except Exception as exc:
+        LOGGER.error("opportunity list failed request_id=%s account_id=%s rule_version=%s stage=aggregate error_type=%s error_code=%s", _meta(request)["request_id"], account.id, HANDLING_VERSION, type(exc).__name__, getattr(exc, "code", "OPPORTUNITIES_UNAVAILABLE"))
+        if isinstance(exc, DomainError):
+            raise
+        raise DomainError("OPPORTUNITIES_UNAVAILABLE", "待投机会暂时不可用，请稍后刷新", 503, "retry") from None
+
+
+def _opportunity_progress(db: Session, account_id: int) -> dict[str, Any]:
+    """每日事实保持原口径，与近 30 天的机会数量分开。"""
+    from .auto_matching import BLOCK_MESSAGES
+
+    day = now_utc().astimezone(ZoneInfo("Asia/Shanghai")).replace(hour=0, minute=0, second=0, microsecond=0)
+    end = day + timedelta(days=1)
+    live = (JobPoolItem.account_id == account_id, JobPoolItem.deleted_at.is_(None))
+    latest = select(Analysis.id).where(Analysis.account_id == account_id, Analysis.job_pool_item_id == JobPoolItem.id, Analysis.deleted_at.is_(None)).order_by(Analysis.created_at.desc(), Analysis.id.desc()).limit(1).correlate(JobPoolItem).scalar_subquery()
+    completed = db.scalar(select(func.count(JobPoolItem.id)).join(Analysis, Analysis.id == latest).where(*live, Analysis.status.in_(["available", "succeeded"]), func.json_typeof(Analysis.result) == "object", cast(Analysis.result, JSONB) != {}, or_(and_(JobPoolItem.created_at >= day, JobPoolItem.created_at < end), and_(Analysis.completed_at >= day, Analysis.completed_at < end)))) or 0
+    captured = db.scalar(select(func.count(JobPoolItem.id)).where(*live, JobPoolItem.source_type == "browser_capture", JobPoolItem.created_at >= day, JobPoolItem.created_at < end)) or 0
+    auto = (AutoMatchJob.account_id == account_id, AutoMatchJob.deleted_at.is_(None))
+    active = db.scalar(select(func.count(AutoMatchJob.id)).join(Task, Task.id == AutoMatchJob.task_id).where(*auto, Task.deleted_at.is_(None), Task.status.in_(["queued", "running", "retry_wait"]))) or 0
+    failed = db.scalar(select(func.count(AutoMatchJob.id)).join(Task, Task.id == AutoMatchJob.task_id).where(*auto, Task.deleted_at.is_(None), Task.status == "failed")) or 0
+    waiting = db.execute(select(AutoMatchJob.blocked_code, func.count(AutoMatchJob.id)).where(*auto, AutoMatchJob.state == "waiting").group_by(AutoMatchJob.blocked_code)).all()
+    return {"automation": config_view(db, account_id),
+            "progress": {"captured": captured, "completed": completed, "active": active, "failed": failed, "waiting": sum(count for _, count in waiting)},
+            "waiting_reasons": [{"code": code, "count": count, "message": BLOCK_MESSAGES.get(code, "已保留待处理")} for code, count in waiting]}
+
+
 def _wake_automatic(background_tasks: BackgroundTasks, account_id: int) -> None:
     if settings.execution_mode == "inline":
         from .worker import run_automatic_inline
@@ -3521,7 +3619,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
     analyses = list(
         db.scalars(
             select(Analysis)
-            .where(Analysis.job_pool_item_id == item.id, Analysis.deleted_at.is_(None))
+            .where(Analysis.job_pool_item_id == item.id, Analysis.account_id == item.account_id, Analysis.deleted_at.is_(None))
             .order_by(Analysis.created_at.desc(), Analysis.id.desc())
         ).all()
     )
@@ -3586,14 +3684,19 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
         ),
         "analysis_summary": _pool_analysis_summary(analyses),
         "automatic_processing": automatic_view(db, item.account_id, item.id),
-        "application_recommendation": application_recommendation(analysis.result) if analysis and analysis.status in {"available", "succeeded"} and analysis.result else None,
+        "application_recommendation": application_recommendation(analysis.result) if analysis and analysis.status in {"available", "succeeded"} and readable_report(analysis.result) else None,
         "match_score": match_score,
         "apply_action": _apply_action(item) if item.source_url else {"available": False},
         "revision": item.revision,
+        "handling": handling_view(state_for(db, item)),
         "captured_at": browser_draft.captured_at.isoformat() if browser_draft else item.created_at.isoformat(),
         "created_at": item.created_at.isoformat(),
         "updated_at": item.updated_at.isoformat(),
     }
+    latest_source = db.scalar(select(JobPoolItem).where(JobPoolItem.account_id == item.account_id, JobPoolItem.opportunity_key == item.opportunity_key, JobPoolItem.deleted_at.is_(None)).order_by(JobPoolItem.created_at.desc(), JobPoolItem.id.desc()))
+    report_version = db.get(DocumentVersion, analysis.job_version_id) if analysis else job_version
+    report_fields = (report_version.content or {}).get("job_fields") if report_version else None
+    data["source_update"] = source_update_view(latest_source, analysis.job_version_id if analysis else item.job_document_version_id, report_fields)
     if detail:
         data["source_url"] = item.source_url
         data["job_content"] = job_version.content if job_version else item.job_fields
@@ -3606,6 +3709,7 @@ def _pool_view(db: Session, item: JobPoolItem, *, detail: bool = False) -> dict[
                 "preference_version_id": db.get(PreferenceVersion, row.preference_version_id).public_id if row.preference_version_id and db.get(PreferenceVersion, row.preference_version_id) else None,
                 "preference_version_ids": _analysis_preference_version_ids(db, row),
                 "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+                "readable": row.status in {"available", "succeeded"} and readable_report(row.result),
             }
             for row in analyses
         ]
@@ -3753,6 +3857,18 @@ def _analysis_view(db: Session, item: Analysis, *, detail: bool = True) -> dict[
     }
     if detail:
         data["report"] = item.result
+        data["application_recommendation"] = application_recommendation(item.result) if item.status in {"available", "succeeded"} and readable_report(item.result) else None
+        if job_version and job_version.account_id == item.account_id:
+            fields = (job_version.content or {}).get("job_fields") or {}
+            latest_source = db.scalar(select(JobPoolItem).where(
+                JobPoolItem.account_id == item.account_id,
+                JobPoolItem.opportunity_key == pool.opportunity_key,
+                JobPoolItem.deleted_at.is_(None),
+            ).order_by(JobPoolItem.created_at.desc(), JobPoolItem.id.desc())) if pool else None
+            data["job_snapshot"] = {"title": fields.get("title"), "company_name": fields.get("company_name"),
+                                    "conditions": job_conditions(fields), "content": job_version.content,
+                                    "version_id": job_version.public_id,
+                                    "source_update": source_update_view(latest_source, job_version.id, fields)}
     return data
 
 
@@ -4133,6 +4249,7 @@ def list_pool_items(
     request: Request,
     account: WebAccount,
     analysis_status: str | None = Query(default=None, max_length=32),
+    handling_status: Literal["pending", "verifying", "applied", "dismissed"] | None = Query(default=None),
     platform: str | None = Query(default=None, max_length=32),
     search: str | None = Query(default=None, max_length=120),
     job_title: str | None = Query(default=None, max_length=200),
@@ -4150,6 +4267,8 @@ def list_pool_items(
 ) -> JSONResponse:
     require_seeker(account)
     statement = select(JobPoolItem).where(JobPoolItem.account_id == account.id, JobPoolItem.deleted_at.is_(None))
+    if handling_status:
+        statement = statement.outerjoin(JobHandlingState, and_(JobHandlingState.account_id == account.id, JobHandlingState.opportunity_key == JobPoolItem.opportunity_key)).where(func.coalesce(JobHandlingState.status, "pending") == handling_status)
     if analysis_status:
         statement = statement.where(JobPoolItem.analysis_status == analysis_status)
     if platform == "manual":

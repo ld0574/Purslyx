@@ -6,13 +6,15 @@ import DailyRecommendations from "@/components/DailyRecommendations.vue";
 
 const apiMock = vi.hoisted(() => vi.fn());
 vi.mock("@/services/api", () => ({ api: apiMock, idempotencyKey: () => "automatic-test-key" }));
+vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 const stubs = { RouterLink: { props: ["to"], template: "<a><slot /></a>" }, AdminDialog: { props: ["open"], template: "<div v-if='open' role='dialog'><slot /></div>" } };
 const policy = { revision: 0, enabled: false, valid: false, daily_limit: 10, preference_ids: [] };
 const recommendations = {
   automation: { ...policy, revision: 1, enabled: true, valid: true, today_scheduled: 2 },
   progress: { captured: 2, completed: 2, active: 0, waiting: 1, failed: 1 },
   waiting_reasons: [{ code: "USAGE_INSUFFICIENT", count: 1, message: "分析次数不足，补充后自动继续" }],
-  tier_counts: { priority: 1, verify: 1 },
+  counts: { total: 2, tiers: { priority: 1, verify: 1 } },
+  page: { has_more: false },
   items: [
     { id: "job-a", job_title: "测试前端岗位", company_name: "合成公司", analysis_id: "report-a", source_url: "https://www.zhipin.com/job_detail/test.html", apply_action: { available: true, click_token: "signed-token" }, recommendation: { tier: "priority", label: "优先投", reason: "已确认经历较贴合", ability_score: 85, evidence_coverage: 0.8, strengths: [{ requirement: "React 项目", explanation: "已有真实依据", evidence: "负责 React 项目交付", segment_key: "segment-1" }], risks: ["部分岗位要求需要确认"], verification_items: ["请确认办公方式"] } },
     { id: "job-b", job_title: "待核实岗位", analysis_id: "report-b", recommendation: { tier: "verify", label: "先核实", reason: "依据不足", ability_score: null, evidence_coverage: 0.3 } },
@@ -22,20 +24,25 @@ const recommendations = {
 beforeEach(() => { apiMock.mockReset(); });
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-describe("今日投递建议", () => {
-  it("展示中文分类、原文依据、风险、等待和失败入口", async () => {
+describe("跨日待投机会", () => {
+  it("精简列表展示中文分类，原文和风险放入详情，保留等待和失败入口", async () => {
     apiMock.mockResolvedValue(recommendations);
     const wrapper = mount(DailyRecommendations, { global: { stubs } });
     await flushPromises();
     expect(wrapper.findAll(".recommendation-item")).toHaveLength(2);
     expect(wrapper.text()).toContain("优先投");
-    expect(wrapper.text()).toContain("原文依据：负责 React 项目交付");
-    expect(wrapper.text()).toContain("风险与边界");
+    expect(wrapper.text()).toContain("待投机会");
+    expect(wrapper.text()).not.toContain("原文依据：负责 React 项目交付");
+    expect(wrapper.text()).not.toContain("风险与边界");
+    expect(wrapper.text()).toContain("未披露");
     expect(wrapper.text()).toContain("分析次数不足");
     expect(wrapper.text()).toContain("失败 1 个");
     expect(wrapper.text()).toContain("去投递点击不等于外部平台提交成功");
     expect(apiMock).toHaveBeenCalledTimes(1);
-    await wrapper.findAll(".recommendation-filters button")[3].trigger("click");
+    apiMock.mockResolvedValueOnce({ ...recommendations, items: [recommendations.items[1]] });
+    await wrapper.find('[aria-label="投递建议筛选"]').findAll("button")[3].trigger("click");
+    await flushPromises();
+    expect(apiMock).toHaveBeenLastCalledWith("/api/v1/job-pool/opportunities?view=unhandled&limit=20&tier=verify");
     expect(wrapper.findAll(".recommendation-item")).toHaveLength(1);
     expect(wrapper.find(".recommendation-item").text()).toContain("待核实岗位");
     wrapper.unmount();
@@ -45,7 +52,7 @@ describe("今日投递建议", () => {
     apiMock.mockResolvedValue({ automation: policy, progress: {}, items: [] });
     const wrapper = mount(DailyRecommendations, { global: { stubs } });
     await flushPromises();
-    expect(wrapper.text()).toContain("今天还没有投递建议");
+    expect(wrapper.text()).toContain("近 30 天暂无未处理机会");
     expect(wrapper.text()).toContain("设置自动处理");
     expect(wrapper.text()).toContain("查看抓取指引");
     expect(apiMock.mock.calls.every(call => !call[1]?.method)).toBe(true);
@@ -123,7 +130,7 @@ describe("今日投递建议", () => {
     const wrapper = mount(DailyRecommendations, { global: { stubs } });
     await flushPromises();
     expect(window.open).not.toHaveBeenCalled();
-    await wrapper.find(".recommendation-item button").trigger("click");
+    await wrapper.findAll(".recommendation-item button")[2].trigger("click");
     await flushPromises();
     expect(apiMock).toHaveBeenLastCalledWith("/api/v1/job-pool/items/job-a/go-to-apply", expect.objectContaining({ method: "POST", body: { click_token: "signed-token" }, redirect: "manual" }));
     expect(destination.location.replace).toHaveBeenCalledWith(recommendations.items[0].source_url);

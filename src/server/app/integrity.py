@@ -47,6 +47,8 @@ from .models import (
     InterviewPractice,
     InterviewQuestion,
     InterviewSummary,
+    JobHandlingChange,
+    JobHandlingState,
     JobPoolItem,
     LogExport,
     ModelCall,
@@ -73,6 +75,7 @@ from .models import (
     UsageReservation,
     WebSession,
     WorkflowCheckpointRef,
+    job_source_key,
 )
 
 
@@ -106,6 +109,8 @@ ACCOUNT_OWNED_MODELS: tuple[type[Any], ...] = (
     UsageBalance,
     UsageLedger,
     JobPoolItem,
+    JobHandlingState,
+    JobHandlingChange,
     AutoMatchJob,
     AutoMatchingConfig,
     Analysis,
@@ -146,6 +151,10 @@ ACCOUNT_OWNED_MODELS: tuple[type[Any], ...] = (
 
 
 REFERENCE_RULES: tuple[ReferenceRule, ...] = (
+    # 状态引用是历史元数据；参考岗位删除后，同源的其他有效岗位仍沿用状态。
+    ReferenceRule("handling.pool", JobHandlingState, "reference_pool_item_id", JobPoolItem),
+    ReferenceRule("handling_change.state", JobHandlingChange, "handling_state_id", JobHandlingState),
+    ReferenceRule("handling_change.pool", JobHandlingChange, "reference_pool_item_id", JobPoolItem),
     ReferenceRule("auto_matching.resume", AutoMatchingConfig, "resume_document_id", Document),
     ReferenceRule("auto_job.config", AutoMatchJob, "config_id", AutoMatchingConfig),
     ReferenceRule("auto_job.pool", AutoMatchJob, "job_pool_item_id", JobPoolItem, parent_deleted_column="deleted_at", child_hidden_column="deleted_at"),
@@ -350,7 +359,22 @@ def collect_integrity_findings(db: Session) -> tuple[list[dict[str, Any]], dict[
                     findings.append(_finding("cross_account_reference", child.__tablename__, resource_id, rule, value))
                 elif source[2] is not None and (visibility is True if child is AutoMatchingConfig else visibility is None):
                     findings.append(_finding("deleted_parent_visible_child", child.__tablename__, resource_id, rule, value))
-    return findings, {"checked_rows": checked_rows, "checked_rules": len(ACCOUNT_OWNED_MODELS) + len(REFERENCE_RULES) + 2}
+    for state, pool_key in db.execute(select(JobHandlingState, JobPoolItem.opportunity_key).join(
+        JobPoolItem, JobPoolItem.id == JobHandlingState.reference_pool_item_id
+    )):
+        checked_rows += 1
+        if state.opportunity_key != pool_key:
+            findings.append(_finding("source_key_mismatch", state.__tablename__, state.public_id,
+                                     "handling.source", state.reference_pool_item_id))
+    for row_id, resource_id, source_type, platform, source_hash, source_key, source_url in db.execute(select(
+        JobPoolItem.id, JobPoolItem.public_id, JobPoolItem.source_type, JobPoolItem.platform,
+        JobPoolItem.source_url_hash, JobPoolItem.opportunity_key, JobPoolItem.source_url,
+    )):
+        checked_rows += 1
+        if source_key != job_source_key(source_type, platform, source_hash, resource_id, source_url):
+            findings.append(_finding("source_key_mismatch", JobPoolItem.__tablename__, resource_id,
+                                     "job_pool.source", row_id))
+    return findings, {"checked_rows": checked_rows, "checked_rules": len(ACCOUNT_OWNED_MODELS) + len(REFERENCE_RULES) + 4}
 
 
 def run_integrity_scan(db: Session, *, max_persisted_findings: int = 1000) -> IntegrityScanRun:

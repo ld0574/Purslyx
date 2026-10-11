@@ -107,6 +107,23 @@ def _upgrade_legacy_schema() -> None:
                 if column_name not in columns:
                     connection.execute(text(f'ALTER TABLE "{table_name}" ADD COLUMN "{column_name}" {column_type}'))
         if "job_pool_items" in inspector.get_table_names():
+            columns = {item["name"] for item in inspector.get_columns("job_pool_items")}
+            if "opportunity_key" not in columns:
+                connection.execute(text("ALTER TABLE job_pool_items ADD COLUMN opportunity_key VARCHAR(128)"))
+                connection.execute(text("""
+                    UPDATE job_pool_items SET opportunity_key = CASE
+                      WHEN source_type = 'browser_capture' AND COALESCE(platform, '') <> '' AND COALESCE(source_url_hash, '') <> ''
+                      THEN 'browser:' || platform || ':' || source_url_hash
+                      ELSE 'manual:' || public_id END
+                """))
+                from .job_sources import job_source_key
+
+                rows = connection.execute(text("SELECT id, public_id, platform, source_url_hash, source_url FROM job_pool_items WHERE source_type='browser_capture' AND source_url IS NOT NULL").execution_options(yield_per=200))
+                for row in rows:
+                    key = job_source_key("browser_capture", row.platform, row.source_url_hash, row.public_id, row.source_url)
+                    connection.execute(text("UPDATE job_pool_items SET opportunity_key=:key WHERE id=:id"), {"key": key, "id": row.id})
+                connection.execute(text("ALTER TABLE job_pool_items ALTER COLUMN opportunity_key SET NOT NULL"))
+            connection.execute(text("CREATE INDEX IF NOT EXISTS ix_job_pool_opportunity ON job_pool_items(account_id, opportunity_key, created_at)"))
             connection.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS uk_job_pool_account_idempotency "

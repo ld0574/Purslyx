@@ -174,7 +174,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=sorted(set(settings.origins + settings.browser_origins)),
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Request-ID", "X-CSRF-Token", "Idempotency-Key"],
 )
 app.include_router(api_router)

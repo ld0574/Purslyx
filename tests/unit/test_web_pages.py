@@ -151,14 +151,17 @@ def test_key_pages_keep_browser_and_business_contracts() -> None:
     assert "详情" in pool
     assert "onBeforeUnmount" in pool
     assert "setInterval" in pool
-    assert "scrollIntoView" in pool
+    assert "JobOpportunityDialog" in pool
+    assert "scrollIntoView" not in pool
+    assert "handling_status" in pool
+    assert ":open=\"manualOpen\"" in pool
     assert "analysisStatusText" in pool
     assert "下一页" in pool
     assert "missing_conditions" not in pool
     assert 'type: "document_version", job_document_version_id: jobVersion.id' in pool
     assert "/api/v1/job-pool/items/batch-analyze" in pool
     assert "preference_version_id" not in pool
-    assert 'redirect: "manual"' in pool
+    assert 'redirect: "manual"' in read("src/components/JobOpportunityDialog.vue")
     assert 'id="answer-form"' in interview
     assert 'data-action="retry-task"' in tasks
     for selector in ["admin-user-search", "admin-role-form", "admin-grant-form"]:

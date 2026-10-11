@@ -23,11 +23,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    event,
+    inspect,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .db import Base
+from .job_sources import job_source_key
 
 
 def utcnow() -> datetime:
@@ -413,6 +416,7 @@ class JobPoolItem(TimestampMixin, Base):
     __tablename__ = "job_pool_items"
     __table_args__ = (
         Index("ix_job_pool_account_status", "account_id", "analysis_status", "updated_at"),
+        Index("ix_job_pool_opportunity", "account_id", "opportunity_key", "created_at"),
         Index(
             "uk_job_pool_account_idempotency",
             "account_id",
@@ -443,6 +447,7 @@ class JobPoolItem(TimestampMixin, Base):
     platform: Mapped[str | None] = mapped_column(String(32))
     source_url: Mapped[str | None] = mapped_column(String(1024))
     source_url_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    opportunity_key: Mapped[str] = mapped_column(String(128), nullable=False)
     job_title: Mapped[str] = mapped_column(String(200), default="未命名岗位", nullable=False)
     company_name: Mapped[str | None] = mapped_column(String(200))
     job_fields: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
@@ -457,6 +462,50 @@ class JobPoolItem(TimestampMixin, Base):
     request_hash: Mapped[str | None] = mapped_column(String(64))
     revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), index=True)
+
+
+@event.listens_for(JobPoolItem, "before_insert")
+def _set_job_source_key(_mapper: Any, _connection: Any, item: JobPoolItem) -> None:
+    item.public_id = item.public_id or public_id()
+    item.opportunity_key = job_source_key(item.source_type or "manual", item.platform, item.source_url_hash, item.public_id, item.source_url)
+
+
+@event.listens_for(JobPoolItem, "before_update")
+def _protect_job_source_key(_mapper: Any, _connection: Any, item: JobPoolItem) -> None:
+    if inspect(item).attrs.opportunity_key.history.has_changes():
+        raise ValueError("Job opportunity source key is immutable")
+
+
+class JobHandlingState(TimestampMixin, Base):
+    __tablename__ = "job_handling_states"
+    __table_args__ = (
+        UniqueConstraint("account_id", "opportunity_key", name="uk_job_handling_source"),
+        CheckConstraint("status IN ('pending', 'verifying', 'applied', 'dismissed')", name="ck_job_handling_status"),
+        CheckConstraint("revision >= 1", name="ck_job_handling_revision"),
+    )
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    opportunity_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    reference_pool_item_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+
+
+class JobHandlingChange(TimestampMixin, Base):
+    """只保存安全状态元数据；幂等键重放不覆盖后续修改。"""
+    __tablename__ = "job_handling_changes"
+    __table_args__ = (UniqueConstraint("account_id", "idempotency_key", name="uk_job_handling_change_key"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(36), default=public_id, unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    handling_state_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    reference_pool_item_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class AutoMatchingConfig(TimestampMixin, Base):

@@ -6,7 +6,8 @@ import { useAuthStore } from "@/stores/auth";
 import DashboardView from "@/views/DashboardView.vue";
 
 const apiMock = vi.hoisted(() => vi.fn());
-vi.mock("@/services/api", () => ({ api: apiMock }));
+vi.mock("@/services/api", () => ({ api: apiMock, idempotencyKey: () => "dashboard-test-key" }));
+vi.mock("vue-router", () => ({ useRouter: () => ({ push: vi.fn() }) }));
 
 const seekerDashboard = {
   registration_role: "seeker",

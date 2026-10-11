@@ -52,6 +52,7 @@ def main() -> None:
                 "pytest",
                 "tests/integration/test_interview_coaching_postgres.py",
                 "tests/integration/test_auto_matching_postgres.py",
+                "tests/integration/test_job_opportunities_postgres.py",
                 "-q",
                 "--tb=short",
             ],

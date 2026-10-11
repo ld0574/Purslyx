@@ -30,6 +30,9 @@ def migrated_schema():
         AutoMatchJob,
         Interview,
         InterviewPractice,
+        JobHandlingChange,
+        JobHandlingState,
+        JobPoolItem,
         Task,
     )
 
@@ -41,19 +44,31 @@ def migrated_schema():
         assert connection.scalar(text("SELECT current_schema()")) == expected.split("=")[1]
     legacy = MetaData()
     for table in Base.metadata.sorted_tables:
-        if table.name not in {InterviewPractice.__tablename__, AutoMatchJob.__tablename__, AutoMatchingConfig.__tablename__}:
+        if table.name not in {InterviewPractice.__tablename__, AutoMatchJob.__tablename__, AutoMatchingConfig.__tablename__, JobHandlingState.__tablename__, JobHandlingChange.__tablename__}:
             table.to_metadata(legacy)
     sessions = legacy.tables[Interview.__tablename__]
     sessions.indexes = {
         index for index in sessions.indexes if "rubric_version" not in index.columns
     }
     sessions._columns.remove(sessions.c.rubric_version)
+    pool = legacy.tables[JobPoolItem.__tablename__]
+    pool.indexes = {index for index in pool.indexes if "opportunity_key" not in index.columns}
+    pool._columns.remove(pool.c.opportunity_key)
     tasks = legacy.tables[Task.__tablename__]
     for constraint in tasks.constraints:
         if constraint.name == "ck_async_tasks_type":
             constraint.sqltext = text(str(constraint.sqltext).replace(", 'interview_practice'", ""))
     legacy.create_all(engine)
     with engine.begin() as connection:
+        for public_id, source_type in (("legacy-browser-a", "browser_capture"), ("legacy-browser-b", "browser_capture"), ("legacy-manual", "manual")):
+            connection.execute(pool.insert().values(public_id=public_id, account_id=0,
+                               source_type=source_type, platform="boss", source_url_hash="a" * 64,
+                               job_title="旧岗位", job_fields={}))
+        for suffix in ("a", "b"):
+            connection.execute(pool.insert().values(public_id="legacy-tracking-" + suffix, account_id=0,
+                               source_type="browser_capture", platform="boss", source_url_hash=suffix * 64,
+                               source_url=f"https://www.zhipin.com/job_detail/legacy-identity.html?tracking={suffix}",
+                               job_title="旧来源追踪参数", job_fields={}))
         connection.execute(
             sessions.insert().values(
                 public_id="old-migration-record",
@@ -89,8 +104,15 @@ def migrated_schema():
         )
         assert (
             connection.scalar(text("SELECT version_num FROM alembic_version"))
-            == "0012_auto_matching"
+            == "0013_job_handling"
         )
+        keys = dict(connection.execute(text("SELECT public_id, opportunity_key FROM job_pool_items WHERE account_id=0")).all())
+        assert keys["legacy-browser-a"] == keys["legacy-browser-b"] == "browser:boss:" + "a" * 64
+        assert keys["legacy-manual"] == "manual:legacy-manual"
+        from server.app.job_sources import job_source_key
+
+        expected_key = job_source_key("browser_capture", "boss", None, "unused", "https://www.zhipin.com/job_detail/legacy-identity.html")
+        assert keys["legacy-tracking-a"] == keys["legacy-tracking-b"] == expected_key
 
 
 @pytest.fixture
